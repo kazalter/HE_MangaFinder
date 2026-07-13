@@ -38,6 +38,11 @@ describe('MergeReview', () => {
       hard_conflicts: [],
       soft_conflicts: [],
       conflict_details: [],
+      core_title_similarity: 0.82,
+      cover_hash_distance: 4,
+      source_identity_titles: ['作品 A'],
+      target_identity_titles: ['作品 B'],
+      shared_context: [],
     }
     const onOpenGroup = vi.fn()
 

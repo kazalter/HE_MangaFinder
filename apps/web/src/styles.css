@@ -146,6 +146,7 @@ main { padding: 48px clamp(28px, 5vw, 76px) 70px; min-width: 0; }
 .candidate-copy em { margin-top: auto; color: #9b5741; font-size: 9px; font-style: normal; font-weight: 600; }
 .candidate-vs { color: #9b5741; font-size: 9px; line-height: 1.45; text-align: center; }
 .candidate-reason { margin: 10px 0; }
+.candidate-identity { margin: 8px 0 12px !important; border-left: 2px solid #c8bda9; padding: 7px 9px; color: #625c54 !important; background: #f7f3eb; line-height: 1.55; }
 .candidate-warning { display: flex; gap: 8px; margin: 9px 0; border-left: 3px solid #b18b3b; padding: 7px 9px; color: #6f5a2e; background: #f5ecd6; font-size: 9px; }
 .candidate-warning.hard { border-left-color: #a34e38; color: #743b2d; background: #f4e5df; }
 .candidate-warning strong { flex: 0 0 auto; }
@@ -154,6 +155,7 @@ main { padding: 48px clamp(28px, 5vw, 76px) 70px; min-width: 0; }
 .suggestion-list .agent-verdict > span { color: #746c62; font-size: 9px; }
 .suggestion-list .agent-verdict p { margin: 6px 0; line-height: 1.5; }
 .suggestion-list .agent-verdict small { color: #91897e; font-size: 8px; }
+.suggestion-list .stale-review { display: block; margin-bottom: 7px; color: #9b5741; font-size: 9px; }
 .suggestion-list .agent-same_work { border-left-color: #47745c; background: #e7efe9; }
 .suggestion-list .agent-different_work, .suggestion-list .agent-blocked { border-left-color: #a34e38; background: #f4e5df; }
 .suggestion-list .agent-uncertain { border-left-color: #b18b3b; background: #f3ead4; }

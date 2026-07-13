@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import MergeSuggestion, WorkGroup
 from app.db.session import get_session
-from app.modules.agent_review.candidates import build_candidate_evidence
+from app.modules.agent_review.candidates import build_candidate_evidence, evidence_hash
 from app.modules.agent_review.repository import AgentReviewRepository
 from app.modules.agent_review.router import review_read
 from app.modules.agent_review.schemas import CandidateEvidence
@@ -95,11 +95,16 @@ def _suggestion(
 ) -> MergeSuggestionRead:
     source = repository.get(item.source_group_id)
     target = repository.get(item.target_group_id)
-    latest_review = AgentReviewRepository(repository.session).latest_for_suggestion(item.id)
     evidence = (
         build_candidate_evidence(item, source, target)
         if source is not None and target is not None
         else None
+    )
+    latest_review = AgentReviewRepository(repository.session).latest_for_suggestion(item.id)
+    review_is_stale = bool(
+        latest_review
+        and evidence
+        and latest_review.evidence_hash != evidence_hash(evidence)
     )
     return MergeSuggestionRead(
         id=item.id,
@@ -112,10 +117,27 @@ def _suggestion(
         confidence=item.confidence,
         reasons=item.reasons or [],
         status=item.status,
-        agent_review=review_read(latest_review) if latest_review else None,
+        agent_review=(
+            review_read(latest_review, is_stale=review_is_stale)
+            if latest_review
+            else None
+        ),
         hard_conflicts=list(evidence.hard_conflicts) if evidence else [],
         soft_conflicts=list(evidence.soft_conflicts) if evidence else [],
         conflict_details=_conflict_details(evidence) if evidence else [],
+        core_title_similarity=evidence.core_title_similarity if evidence else None,
+        cover_hash_distance=evidence.cover_hash_distance if evidence else None,
+        source_identity_titles=(
+            sorted({edition.identity_core for edition in evidence.left.editions})
+            if evidence
+            else []
+        ),
+        target_identity_titles=(
+            sorted({edition.identity_core for edition in evidence.right.editions})
+            if evidence
+            else []
+        ),
+        shared_context=list(evidence.shared_context) if evidence else [],
     )
 
 
@@ -142,6 +164,14 @@ def _conflict_details(evidence: CandidateEvidence) -> list[str]:
         left = sorted({name for item in evidence.left.editions for name in item.authors})
         right = sorted({name for item in evidence.right.editions for name in item.authors})
         details.append(f"作者：{left} vs {right}")
+    if "core_title_mismatch" in conflicts:
+        left = sorted({item.identity_core for item in evidence.left.editions})
+        right = sorted({item.identity_core for item in evidence.right.editions})
+        details.append(f"核心标题：{left} vs {right}")
+    if "cover_dissimilar" in conflicts and evidence.cover_hash_distance is not None:
+        details.append(f"封面明显不同：感知哈希距离 {evidence.cover_hash_distance}")
+    if "insufficient_evidence" in conflicts:
+        details.append("缺少两个相互独立的作品身份信号")
     return details
 
 

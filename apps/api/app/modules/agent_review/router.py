@@ -20,8 +20,9 @@ SessionDep = Annotated[Session, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
-def review_read(review: object) -> AgentReviewRead:
-    return AgentReviewRead.model_validate(review, from_attributes=True)
+def review_read(review: object, *, is_stale: bool = False) -> AgentReviewRead:
+    value = AgentReviewRead.model_validate(review, from_attributes=True)
+    return value.model_copy(update={"is_stale": is_stale})
 
 
 @router.get("/status", response_model=AgentStatusRead)
@@ -34,6 +35,7 @@ def agent_status(settings: SettingsDep) -> AgentStatusRead:
         prompt_version=settings.agent_prompt_version,
         auto_apply=False,
         sends_images=False,
+        review_after_discovery=settings.agent_review_after_discovery,
     )
 
 

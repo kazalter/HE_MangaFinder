@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import httpx
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -9,6 +10,7 @@ from app.db.base import Base
 from app.db.models import AgentReview, Author, MergeSuggestion, WorkGroup
 from app.modules.agent_review.candidates import build_candidate_evidence
 from app.modules.agent_review.client import OpenAICompatibleReviewer, ReviewResponse
+from app.modules.agent_review.grounding import validate_grounding
 from app.modules.agent_review.schemas import AgentVerdict
 from app.modules.agent_review.service import AgentReviewService
 from app.modules.catalog.aggregation import AggregationService
@@ -80,7 +82,7 @@ async def test_agent_review_is_grounded_persisted_and_read_only() -> None:
         confidence=0.95,
         canonical_title="Ocean Belly",
         relation="translation",
-        evidence=["number_match", "page_count_match", "author_match"],
+        evidence=["core_title_match", "number_match", "page_count_match"],
         conflicts=[],
         rationale="作者、编号和页数一致，标题可能是翻译差异。",
         recommended_action="suggest_merge",
@@ -88,7 +90,7 @@ async def test_agent_review_is_grounded_persisted_and_read_only() -> None:
     reviewer = FakeReviewer(verdict)
 
     with Session(engine) as session:
-        suggestion = make_candidate(session, "Ocean Belly", "Ocean Tummy")
+        suggestion = make_candidate(session, "Ocean Belly 2", "Ocean Belly 2 [汉化]")
         original_group_count = len(list(session.scalars(select(WorkGroup))))
         review, outcome = await AgentReviewService(
             session, settings, reviewer
@@ -103,6 +105,108 @@ async def test_agent_review_is_grounded_persisted_and_read_only() -> None:
         assert suggestion.status == "pending"
         assert len(list(session.scalars(select(WorkGroup)))) == original_group_count
         assert session.scalar(select(AgentReview)).input_snapshot["left"]["editions"]
+
+
+def test_common_series_suffix_does_not_become_identity_evidence() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        suggestion = make_candidate(
+            session,
+            "[ラマンダ] アコちゃんサンタのプレゼント (ブルーアーカイブ) [中国翻訳]",
+            "[ラマンダ] サンタアスナとカリンのプレゼント (ブルーアーカイブ)",
+        )
+        evidence = build_candidate_evidence(
+            suggestion,
+            session.get(WorkGroup, suggestion.source_group_id),
+            session.get(WorkGroup, suggestion.target_group_id),
+        )
+
+        assert evidence.core_title_similarity < 0.68
+        assert evidence.shared_context == ["ブルーアーカイブ"]
+        assert "number_match" not in evidence.available_evidence
+        assert "core_title_similarity" not in evidence.available_evidence
+
+        left = session.get(WorkGroup, suggestion.source_group_id)
+        right = session.get(WorkGroup, suggestion.target_group_id)
+        left.members[0].work.fingerprint.cover_hash = "e727a98d9f3b7e5d"
+        right.members[0].work.fingerprint.cover_hash = "765c9b393d1d9dcd"
+        left.members[0].work.fingerprint.page_count = 9
+        right.members[0].work.fingerprint.page_count = 4
+        evidence = build_candidate_evidence(suggestion, left, right)
+
+        assert "cover_dissimilar" in evidence.soft_conflicts
+        assert "page_count_mismatch" in evidence.soft_conflicts
+        assert evidence.page_count_ratio == pytest.approx(4 / 9, rel=1e-4)
+
+        author = session.scalar(select(Author))
+        assert AggregationService(session).prune_pending_suggestions(author.id) == 1
+        assert session.get(MergeSuggestion, suggestion.id) is None
+
+
+def test_high_confidence_same_work_without_independent_support_is_downgraded() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        suggestion = make_candidate(session, "Nure Onaka", "Nugi Onaka")
+        left = session.get(WorkGroup, suggestion.source_group_id)
+        right = session.get(WorkGroup, suggestion.target_group_id)
+        left.members[0].work.fingerprint.page_count = None
+        right.members[0].work.fingerprint.page_count = None
+        evidence = build_candidate_evidence(suggestion, left, right)
+        verdict = AgentVerdict(
+            decision="same_work",
+            confidence=0.95,
+            canonical_title="Nure Onaka",
+            relation="translation",
+            evidence=["core_title_similarity"],
+            conflicts=[],
+            rationale="标题看起来相似。",
+            recommended_action="suggest_merge",
+        )
+
+        calibrated = validate_grounding(evidence, verdict)
+
+        assert calibrated.decision == "uncertain"
+        assert calibrated.confidence == 0.6
+        assert calibrated.recommended_action == "human_review"
+        assert "insufficient_evidence" in calibrated.conflicts
+
+
+def test_model_context_codes_are_removed_before_calibration() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        suggestion = make_candidate(session, "Ocean Belly 2", "Ocean Belly 2 [汉化]")
+        evidence = build_candidate_evidence(
+            suggestion,
+            session.get(WorkGroup, suggestion.source_group_id),
+            session.get(WorkGroup, suggestion.target_group_id),
+        )
+        verdict = AgentVerdict(
+            decision="same_work",
+            confidence=0.95,
+            canonical_title="Ocean Belly 2",
+            relation="translation",
+            evidence=[
+                "normalized_title_match",
+                "number_match",
+                "page_count_match",
+                "author_match",
+            ],
+            conflicts=[],
+            rationale="标题、编号和页数相符。",
+            recommended_action="suggest_merge",
+        )
+
+        calibrated = validate_grounding(evidence, verdict)
+
+        assert calibrated.decision == "same_work"
+        assert calibrated.evidence == [
+            "core_title_match",
+            "number_match",
+            "page_count_match",
+        ]
 
 
 async def test_hard_number_conflict_never_reaches_model() -> None:
@@ -153,7 +257,11 @@ def test_year_and_page_conflicts_are_soft_warnings() -> None:
         evidence = build_candidate_evidence(suggestion, left, right)
 
         assert evidence.hard_conflicts == []
-        assert set(evidence.soft_conflicts) == {"year_mismatch", "page_count_mismatch"}
+        assert set(evidence.soft_conflicts) == {
+            "year_mismatch",
+            "page_count_mismatch",
+            "insufficient_evidence",
+        }
 
 
 def test_repairs_legacy_wnacg_upload_year_without_losing_sort_date() -> None:

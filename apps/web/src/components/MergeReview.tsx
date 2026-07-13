@@ -6,6 +6,12 @@ const decisionLabel = {
   uncertain: '无法确定',
 }
 
+const confidenceLabel = {
+  same_work: '同一作品置信度',
+  different_work: '不同作品置信度',
+  uncertain: '不确定度',
+}
+
 function CandidateWork({ groupId, title, group, busy, onOpen }: {
   groupId: number
   title: string
@@ -56,7 +62,7 @@ export function MergeReview({ suggestions, agentStatus, busy, onRunAgent, onOpen
         <div className="agent-review-toolbar">
           <div>
             <strong>Agent 证据复核</strong>
-            <small>{agentStatus?.configured ? `${agentStatus.model} · 只读建议，不会自动合并` : '尚未在 Dockge 中启用并配置模型'}</small>
+            <small>{agentStatus?.configured ? `${agentStatus.model} · ${agentStatus.review_after_discovery ? '扫描后自动细查' : '手动细查'} · 只读建议` : '尚未在 Dockge 中启用并配置模型'}</small>
           </div>
           <button disabled={busy || !agentStatus?.configured} onClick={onRunAgent}>细查全部候选</button>
         </div>
@@ -69,12 +75,19 @@ export function MergeReview({ suggestions, agentStatus, busy, onRunAgent, onOpen
                 <CandidateWork groupId={item.target_group_id} title={item.target_title} group={item.target_group} busy={busy} onOpen={onOpenGroup} />
               </div>
               <p className="candidate-reason">{item.reasons.join(' · ')} · 置信度 {Math.round(item.confidence * 100)}%</p>
+              <p className="candidate-identity">
+                核心标题：{item.source_identity_titles.join(' / ') || '未知'} ↔ {item.target_identity_titles.join(' / ') || '未知'}
+                {item.core_title_similarity !== null ? ` · 核心相似度 ${Math.round(item.core_title_similarity * 100)}%` : ''}
+                {item.cover_hash_distance !== null ? ` · 封面距离 ${item.cover_hash_distance}` : ''}
+                {item.shared_context.length ? ` · 共同语境 ${item.shared_context.join(' / ')}` : ''}
+              </p>
               {item.soft_conflicts.length > 0 && <div className="candidate-warning"><strong>软警告，不阻止 Agent</strong><span>{item.conflict_details.join(' · ') || item.soft_conflicts.join(' · ')}</span></div>}
               {item.hard_conflicts.length > 0 && <div className="candidate-warning hard"><strong>硬冲突</strong><span>{item.conflict_details.join(' · ') || item.hard_conflicts.join(' · ')}</span></div>}
               {item.agent_review && (
                 <div className={`agent-verdict agent-${item.agent_review.decision ?? item.agent_review.status}`}>
+                  {item.agent_review.is_stale && <b className="stale-review">证据已变化，请重新细查</b>}
                   <strong>{item.agent_review.decision ? decisionLabel[item.agent_review.decision] : item.agent_review.status === 'blocked' ? '硬规则已拦截' : 'Agent 检查失败'}</strong>
-                  {item.agent_review.confidence !== null && <span>置信度 {Math.round(item.agent_review.confidence * 100)}%</span>}
+                  {item.agent_review.confidence !== null && <span>{item.agent_review.decision ? confidenceLabel[item.agent_review.decision] : '置信度'} {Math.round(item.agent_review.confidence * 100)}%</span>}
                   <p>{item.agent_review.rationale ?? item.agent_review.error}</p>
                   {(item.agent_review.evidence_codes.length > 0 || item.agent_review.conflict_codes.length > 0) && <small>{[...item.agent_review.evidence_codes, ...item.agent_review.conflict_codes].join(' · ')}</small>}
                 </div>

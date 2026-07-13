@@ -93,3 +93,8 @@ class MergeSuggestionRead(BaseModel):
     hard_conflicts: list[str] = Field(default_factory=list)
     soft_conflicts: list[str] = Field(default_factory=list)
     conflict_details: list[str] = Field(default_factory=list)
+    core_title_similarity: float | None = None
+    cover_hash_distance: int | None = None
+    source_identity_titles: list[str] = Field(default_factory=list)
+    target_identity_titles: list[str] = Field(default_factory=list)
+    shared_context: list[str] = Field(default_factory=list)

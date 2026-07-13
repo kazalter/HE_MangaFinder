@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.db.base import Base
-from app.db.models import Author, WorkGroup
+from app.db.models import Author, MergeSuggestion, WorkGroup
 from app.modules.catalog.aggregation import (
     AggregationService,
     CoverHasher,
@@ -35,6 +35,36 @@ def test_normalizes_upload_variants_but_keeps_sequel_identity() -> None:
     assert identity_number_signature("jk x onaka 02 jk x 小腹 02") == (2,)
     assert identity_number_signature("作品 01") == (1,)
     assert identity_number_signature("作品 2025 1080p") == ()
+
+
+def test_common_franchise_suffix_does_not_create_merge_candidate() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="ラマンダ")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+        titles = [
+            "[ラマンダ] アコちゃんサンタのプレゼント (ブルーアーカイブ)",
+            "[ラマンダ] サンタアスナとカリンのプレゼント (ブルーアーカイブ)",
+        ]
+        groups = []
+        for index, title in enumerate(titles):
+            work = catalog.upsert(
+                author.id,
+                "wnacg",
+                DiscoveredWork(
+                    external_id=f"christmas-{index}",
+                    title=title,
+                    source_url=f"https://example.test/{index}",
+                ),
+            )
+            groups.append(aggregation.assign_without_cover(work, author))
+
+        assert groups[0].id != groups[1].id
+        assert list(session.scalars(select(MergeSuggestion))) == []
 
     labels = extract_variant_labels("作品 [白杨汉化组] [AI無修正]", "zh-hans")
     assert "白杨汉化组" in labels

@@ -50,6 +50,9 @@ class DiscoveryService:
         finally:
             await cover_hasher.close()
 
+        aggregation.prune_pending_suggestions(author.id)
+        self.session.commit()
+
         if errors and successful_providers == 0:
             raise RuntimeError("; ".join(errors))
         if errors:

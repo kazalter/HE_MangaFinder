@@ -76,6 +76,11 @@ export interface MergeSuggestion {
   hard_conflicts: string[]
   soft_conflicts: string[]
   conflict_details: string[]
+  core_title_similarity: number | null
+  cover_hash_distance: number | null
+  source_identity_titles: string[]
+  target_identity_titles: string[]
+  shared_context: string[]
 }
 
 export interface AgentReview {
@@ -93,6 +98,7 @@ export interface AgentReview {
   prompt_version: string
   error: string | null
   created_at: string
+  is_stale: boolean
 }
 
 export interface AgentStatus {
@@ -103,6 +109,7 @@ export interface AgentStatus {
   prompt_version: string
   auto_apply: boolean
   sends_images: boolean
+  review_after_discovery: boolean
 }
 
 export interface Job {

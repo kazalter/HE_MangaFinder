@@ -3,7 +3,6 @@ import io
 import re
 import unicodedata
 from datetime import UTC, datetime
-from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
@@ -22,6 +21,10 @@ from app.db.models import (
     WorkGroupMember,
 )
 from app.modules.catalog.pair_identity import candidate_key
+from app.modules.catalog.title_identity import (
+    best_identity_similarity,
+    identity_names,
+)
 
 _BRACKET_RE = re.compile(r"([\[【（(])([^\]】）)]{1,100})[\]】）)]")
 _VERSION_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -439,14 +442,7 @@ class AggregationService:
                 other_names = self._fingerprint_names(other)
                 overlap = names & other_names
                 valid_exact = any(len(_compact(value)) >= 3 for value in overlap)
-                score = max(
-                    (
-                        SequenceMatcher(None, left, right).ratio()
-                        for left in names
-                        for right in other_names
-                    ),
-                    default=0.0,
-                )
+                score = best_identity_similarity(names, other_names)
                 if valid_exact:
                     return group, 1.0, True
                 if score > best_score:
@@ -461,10 +457,8 @@ class AggregationService:
         candidates = [candidate for candidate in candidates if candidate]
         return max(
             candidates,
-            key=lambda candidate: max(
-                SequenceMatcher(None, left, right).ratio()
-                for left in names
-                for right in self._fingerprint_names(candidate)
+            key=lambda candidate: best_identity_similarity(
+                names, self._fingerprint_names(candidate)
             ),
             default=None,
         )
@@ -495,9 +489,9 @@ class AggregationService:
     def _numbering_matches(
         left: WorkFingerprint, right: WorkFingerprint
     ) -> bool:
-        return identity_number_signature(
-            left.normalized_title
-        ) == identity_number_signature(right.normalized_title)
+        left_numbers = identity_number_signature(left.normalized_title)
+        right_numbers = identity_number_signature(right.normalized_title)
+        return not left_numbers or not right_numbers or left_numbers == right_numbers
 
     @classmethod
     def _group_numbering_matches(
@@ -674,13 +668,61 @@ class AggregationService:
                     reasons=reasons,
                 )
             )
+        else:
+            existing.confidence = confidence
+            existing.reasons = reasons
+
+    def prune_pending_suggestions(self, author_id: int) -> int:
+        """Drop stale fuzzy candidates that no longer pass the V2 retrieval policy."""
+        from app.modules.agent_review.candidates import build_candidate_evidence
+
+        group_ids = set(
+            self.session.scalars(
+                select(WorkGroupMember.group_id)
+                .join(AuthorWork, AuthorWork.work_id == WorkGroupMember.work_id)
+                .where(AuthorWork.author_id == author_id)
+            )
+        )
+        suggestions = list(
+            self.session.scalars(
+                select(MergeSuggestion).where(MergeSuggestion.status == "pending")
+            )
+        )
+        removed = 0
+        for suggestion in suggestions:
+            if (
+                suggestion.source_group_id not in group_ids
+                or suggestion.target_group_id not in group_ids
+            ):
+                continue
+            source = self.session.get(WorkGroup, suggestion.source_group_id)
+            target = self.session.get(WorkGroup, suggestion.target_group_id)
+            if source is None or target is None:
+                continue
+            evidence = build_candidate_evidence(suggestion, source, target)
+            title_support = bool(
+                set(evidence.available_evidence)
+                & {"core_title_match", "source_alias_match", "core_title_similarity"}
+            )
+            visual_support = (
+                evidence.cover_hash_distance is not None
+                and evidence.cover_hash_distance <= _SUGGEST_COVER_DISTANCE
+            )
+            if not title_support and not visual_support:
+                self.session.delete(suggestion)
+                removed += 1
+        self.session.flush()
+        return removed
 
     @staticmethod
     def _fingerprint_names(fingerprint: WorkFingerprint) -> set[str]:
         return {
             _canonicalize_numbers(value)
-            for value in [fingerprint.normalized_title, *fingerprint.title_aliases]
-            if value
+            for value in identity_names(
+                fingerprint.work.title,
+                fingerprint.normalized_title,
+                fingerprint.title_aliases,
+            )
         }
 
     @classmethod

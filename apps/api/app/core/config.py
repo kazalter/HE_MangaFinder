@@ -33,10 +33,11 @@ class Settings(BaseSettings):
     agent_temperature: float = 0.0
     agent_timeout_seconds: float = 60.0
     agent_max_reviews_per_run: int = 20
+    agent_review_after_discovery: bool = False
     agent_auto_apply: bool = False
     agent_auto_apply_threshold: float = 0.98
     agent_allow_cloud_images: bool = False
-    agent_prompt_version: str = "v5"
+    agent_prompt_version: str = "v6"
     static_dir: Path = Path(__file__).resolve().parents[3] / "web" / "dist"
     user_agent: str = "MangaFinder/0.1 (+https://github.com/local/mangafinder)"
 

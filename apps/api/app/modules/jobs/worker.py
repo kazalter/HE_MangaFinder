@@ -45,6 +45,11 @@ class JobWorker:
                     await DiscoveryService(session, self.providers).discover_author(
                         int(job.payload["author_id"])
                     )
+                    if (
+                        self.settings.agent_review_after_discovery
+                        and self.settings.agent_configured
+                    ):
+                        jobs.enqueue_agent_reviews()
                 elif job.kind == DOWNLOAD_CHAPTER:
                     path = await DownloadService(
                         session, self.providers, self.settings
