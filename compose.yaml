@@ -43,6 +43,8 @@ services:
       - clash_proxy
     volumes:
       - ${MANGAFINDER_DATA_DIR:-./data}:/app/data
+      # 下载文件可以单独放到大容量 HDD；容器内路径保持不变。
+      - ${MANGAFINDER_DOWNLOADS_HOST_DIR:-./data/downloads}:/app/data/downloads
     healthcheck:
       test:
         - CMD
