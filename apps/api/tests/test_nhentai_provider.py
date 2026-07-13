@@ -11,6 +11,23 @@ from app.providers.nhentai import NhentaiProvider
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def embedded_html(*payloads: dict[str, object]) -> str:
+    scripts = "".join(
+        '<script type="application/json">'
+        + json.dumps(
+            {
+                "status": 200,
+                "statusText": "OK",
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps(payload),
+            }
+        )
+        + "</script>"
+        for payload in payloads
+    )
+    return f"<!doctype html><html><body>{scripts}</body></html>"
+
+
 def test_parses_search_gallery_metadata_and_images() -> None:
     payload = json.loads((FIXTURES / "nhentai_search.json").read_text())
 
@@ -34,16 +51,44 @@ def test_parses_search_gallery_metadata_and_images() -> None:
 async def test_discovers_exact_artist_across_pages_and_downloads_cbz(
     tmp_path: Path,
 ) -> None:
-    search_payload = json.loads((FIXTURES / "nhentai_search.json").read_text())
     gallery_payload = json.loads((FIXTURES / "nhentai_gallery.json").read_text())
+    gallery_payload["cover"] = {
+        "path": "galleries/3000000/cover.webp",
+        "width": 350,
+        "height": 500,
+    }
+    gallery_payload["pages"] = [
+        {"number": 1, "path": "galleries/3000000/1.webp"},
+        {"number": 2, "path": "galleries/3000000/2.jpg"},
+    ]
+    gallery_payload.pop("images")
+    artist_payload = {
+        "id": 1,
+        "type": "artist",
+        "name": "mignon",
+        "slug": "mignon",
+    }
+    listing_payload = {
+        "result": [
+            {
+                "id": 123456,
+                "media_id": "3000000",
+                "english_title": "[MIGNON WORKS (mignon)] ONAKA SUMMER 2 [English]",
+                "japanese_title": "[MIGNON WORKS (mignon)] おなかサマー2",
+                "thumbnail": "galleries/3000000/thumb.webp",
+                "num_pages": 2,
+            }
+        ],
+        "num_pages": 2,
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/galleries/search":
+        if request.url.path == "/artist/mignon/":
             page = request.url.params.get("page")
-            payload = search_payload if page == "1" else {"result": [], "num_pages": 2}
-            return httpx.Response(200, json=payload)
-        if request.url.path == "/api/gallery/123456":
-            return httpx.Response(200, json=gallery_payload)
+            payload = listing_payload if page == "1" else {"result": [], "num_pages": 2}
+            return httpx.Response(200, text=embedded_html(artist_payload, payload))
+        if request.url.path == "/g/123456/":
+            return httpx.Response(200, text=embedded_html(gallery_payload))
         if request.url.host == "i.nhentai.net":
             return httpx.Response(200, content=f"image:{request.url.path}".encode())
         return httpx.Response(404)

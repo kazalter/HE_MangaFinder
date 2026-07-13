@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import unicodedata
 import zipfile
@@ -6,8 +7,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.providers.base import (
     Chapter,
@@ -31,6 +34,7 @@ class NhentaiGallery:
     tags: list[str]
     alt_titles: list[str]
     scanlator: str | None
+    page_count: int
 
 
 class NhentaiProvider:
@@ -66,7 +70,7 @@ class NhentaiProvider:
         self._owns_client = client is None
         headers = {
             "User-Agent": user_agent,
-            "Accept": "application/json,text/html;q=0.8,*/*;q=0.5",
+            "Accept": "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.5",
             "Accept-Language": "en-US,en;q=0.9,ja;q=0.7",
         }
         if cookie:
@@ -82,26 +86,76 @@ class NhentaiProvider:
 
     async def discover_by_author(self, author_name: str) -> list[DiscoveredWork]:
         normalized_author = " ".join(author_name.split()).strip()
-        query = f'artist:"{normalized_author.replace(chr(34), "")}"'
         galleries: dict[str, NhentaiGallery] = {}
-        total_pages = 1
-        page = 1
-        while page <= min(total_pages, self._max_search_pages):
-            payload = await self._request_json(
-                "/api/galleries/search",
-                params={"query": query, "page": str(page), "sort": "recent"},
+        path = f"/artist/{quote(self._slug(normalized_author), safe='')}/"
+        first_response: httpx.Response | None = None
+        try:
+            candidate = await self._request_page(
+                path, params={"sort": "date", "page": "1"}
             )
-            parsed, total_pages = self.parse_search(payload)
+            artist = self.parse_artist(candidate.text)
+            if artist and self._identity(artist) == self._identity(normalized_author):
+                first_response = candidate
+        except ProviderError:
+            pass
+
+        if first_response is None:
+            path = "/search/"
+            first_response = await self._request_page(
+                path,
+                params={
+                    "q": f"artist:{normalized_author}",
+                    "sort": "date",
+                    "page": "1",
+                },
+            )
+
+        parsed, total_pages = self.parse_listing(
+            first_response.text, assumed_author=normalized_author
+        )
+        for gallery in parsed:
+            galleries[gallery.external_id] = gallery
+
+        for page in range(2, min(total_pages, self._max_search_pages) + 1):
+            params = {"sort": "date", "page": str(page)}
+            if path == "/search/":
+                params["q"] = f"artist:{normalized_author}"
+            response = await self._request_page(path, params=params)
+            parsed, _ = self.parse_listing(
+                response.text, assumed_author=normalized_author
+            )
             for gallery in parsed:
-                if self._has_author(gallery, normalized_author):
-                    galleries[gallery.external_id] = gallery
-            if page >= min(total_pages, self._max_search_pages):
-                break
-            page += 1
+                galleries[gallery.external_id] = gallery
+
         if not galleries:
             raise AuthorNotFoundError(f'nHentai 未找到作者“{author_name}”')
+
+        semaphore = asyncio.Semaphore(2)
+
+        async def enrich(gallery: NhentaiGallery) -> NhentaiGallery | None:
+            async with semaphore:
+                for attempt in range(2):
+                    try:
+                        detailed = await self._gallery(gallery.external_id)
+                        break
+                    except ProviderError:
+                        if attempt == 1:
+                            return gallery
+                        await asyncio.sleep(0.35)
+                await asyncio.sleep(0.08)
+            if self._has_author(detailed, normalized_author):
+                return detailed
+            return None
+
+        listed = list(galleries.values())
+        detail_limit = min(8, len(listed))
+        enriched = await asyncio.gather(*(enrich(item) for item in listed[:detail_limit]))
+        exact = [item for item in enriched if item is not None]
+        exact.extend(listed[detail_limit:])
+        if not exact:
+            raise AuthorNotFoundError(f'nHentai 未找到作者“{author_name}”')
         return sort_discovered_works(
-            [self._discovered_work(gallery) for gallery in galleries.values()]
+            [self._discovered_work(gallery) for gallery in exact]
         )
 
     async def list_chapters(self, work_external_id: str) -> list[Chapter]:
@@ -152,12 +206,15 @@ class NhentaiProvider:
 
     async def _gallery(self, external_id: str) -> NhentaiGallery:
         self._validate_id(external_id)
-        payload = await self._request_json(f"/api/gallery/{external_id}")
+        response = await self._request_page(f"/g/{external_id}/")
+        payload = self.extract_gallery_payload(response.text)
+        if payload is None:
+            raise ProviderError("nHentai 详情页缺少作品数据，页面结构可能已变化")
         return self.parse_gallery(payload)
 
-    async def _request_json(
+    async def _request_page(
         self, path: str, params: dict[str, str] | None = None
-    ) -> dict[str, Any]:
+    ) -> httpx.Response:
         try:
             response = await self._client.get(
                 f"{self._base_url}{path}",
@@ -167,10 +224,7 @@ class NhentaiProvider:
             response.raise_for_status()
             if self._is_challenge(response.text):
                 raise ProviderError("nHentai 触发 Cloudflare，请配置可用代理或 Cookie")
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise ProviderError("nHentai 返回了无效 JSON")
-            return payload
+            return response
         except ProviderError:
             raise
         except httpx.HTTPStatusError as exc:
@@ -179,8 +233,102 @@ class NhentaiProvider:
                     "nHentai 拒绝访问或触发 Cloudflare，请配置可用代理或 Cookie"
                 ) from exc
             raise ProviderError(f"nHentai 请求失败: HTTP {exc.response.status_code}") from exc
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
             raise ProviderError(f"nHentai 请求失败: {exc}") from exc
+
+    @classmethod
+    def parse_listing(
+        cls, html: str, assumed_author: str
+    ) -> tuple[list[NhentaiGallery], int]:
+        payload = next(
+            (
+                item
+                for item in cls.extract_embedded_payloads(html)
+                if isinstance(item.get("result"), list)
+            ),
+            None,
+        )
+        if payload is None:
+            return [], 1
+        raw_results = payload.get("result")
+        if not isinstance(raw_results, list):
+            return [], 1
+        galleries = [
+            cls.parse_listing_gallery(item, assumed_author)
+            for item in raw_results
+            if isinstance(item, dict)
+        ]
+        num_pages = payload.get("num_pages", 1)
+        return galleries, int(num_pages) if isinstance(num_pages, int | str) else 1
+
+    @classmethod
+    def parse_listing_gallery(
+        cls, payload: dict[str, Any], assumed_author: str
+    ) -> NhentaiGallery:
+        external_id = str(payload.get("id") or "")
+        media_id = str(payload.get("media_id") or "")
+        if not external_id.isdigit() or not media_id.isdigit():
+            raise ProviderError("nHentai 列表项缺少有效 ID")
+        english_title = cls._text(str(payload.get("english_title") or ""))
+        japanese_title = cls._text(str(payload.get("japanese_title") or ""))
+        alt_titles = list(
+            dict.fromkeys(item for item in (english_title, japanese_title) if item)
+        )
+        thumbnail = payload.get("thumbnail")
+        cover_url = (
+            cls._image_url("t.nhentai.net", str(thumbnail))
+            if isinstance(thumbnail, str) and thumbnail
+            else None
+        )
+        page_count = payload.get("num_pages")
+        return NhentaiGallery(
+            external_id=external_id,
+            media_id=media_id,
+            title=english_title or japanese_title or f"#{external_id}",
+            cover_url=cover_url,
+            image_urls=[],
+            language="und",
+            upload_date=None,
+            artists=[assumed_author],
+            tags=[],
+            alt_titles=alt_titles,
+            scanlator=None,
+            page_count=page_count if isinstance(page_count, int) else 0,
+        )
+
+    @classmethod
+    def parse_artist(cls, html: str) -> str | None:
+        for payload in cls.extract_embedded_payloads(html):
+            if payload.get("type") == "artist" and payload.get("name"):
+                return cls._text(str(payload["name"]))
+        return None
+
+    @classmethod
+    def extract_gallery_payload(cls, html: str) -> dict[str, Any] | None:
+        return next(
+            (
+                item
+                for item in cls.extract_embedded_payloads(html)
+                if item.get("media_id") is not None
+                and isinstance(item.get("title"), dict)
+            ),
+            None,
+        )
+
+    @staticmethod
+    def extract_embedded_payloads(html: str) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        soup = BeautifulSoup(html, "html.parser")
+        for script in soup.select('script[type="application/json"]'):
+            try:
+                outer = json.loads(script.string or script.get_text())
+                body = outer.get("body") if isinstance(outer, dict) else None
+                inner = json.loads(body) if isinstance(body, str) else body
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(inner, dict):
+                payloads.append(inner)
+        return payloads
 
     @classmethod
     def parse_search(
@@ -222,18 +370,35 @@ class NhentaiProvider:
         ]
 
         images = payload.get("images") if isinstance(payload.get("images"), dict) else {}
-        raw_pages = images.get("pages") if isinstance(images.get("pages"), list) else []
-        image_urls = [
-            f"https://i.nhentai.net/galleries/{media_id}/{index}.{cls._extension(page)}"
-            for index, page in enumerate(raw_pages, start=1)
-            if isinstance(page, dict)
-        ]
-        cover = images.get("cover") if isinstance(images.get("cover"), dict) else None
-        cover_url = (
-            f"https://t.nhentai.net/galleries/{media_id}/cover.{cls._extension(cover)}"
-            if cover
-            else None
-        )
+        current_pages = payload.get("pages")
+        if isinstance(current_pages, list):
+            image_urls = [
+                cls._image_url("i.nhentai.net", str(page["path"]))
+                for page in current_pages
+                if isinstance(page, dict) and page.get("path")
+            ]
+        else:
+            raw_pages = images.get("pages") if isinstance(images.get("pages"), list) else []
+            image_urls = [
+                f"https://i.nhentai.net/galleries/{media_id}/{index}.{cls._extension(page)}"
+                for index, page in enumerate(raw_pages, start=1)
+                if isinstance(page, dict)
+            ]
+
+        current_cover = payload.get("cover")
+        if isinstance(current_cover, dict) and current_cover.get("path"):
+            cover_url = cls._image_url(
+                "t.nhentai.net", str(current_cover["path"])
+            )
+        else:
+            legacy_cover = (
+                images.get("cover") if isinstance(images.get("cover"), dict) else None
+            )
+            cover_url = (
+                f"https://t.nhentai.net/galleries/{media_id}/cover.{cls._extension(legacy_cover)}"
+                if legacy_cover
+                else None
+            )
         upload_timestamp = payload.get("upload_date")
         upload_date = (
             datetime.fromtimestamp(upload_timestamp, UTC)
@@ -241,6 +406,8 @@ class NhentaiProvider:
             else None
         )
         scanlator = cls._text(str(payload.get("scanlator") or "")) or None
+        raw_page_count = payload.get("num_pages")
+        page_count = raw_page_count if isinstance(raw_page_count, int) else len(image_urls)
         return NhentaiGallery(
             external_id=external_id,
             media_id=media_id,
@@ -253,6 +420,7 @@ class NhentaiProvider:
             tags=list(dict.fromkeys(tag for tag in tags if tag)),
             alt_titles=alt_titles,
             scanlator=scanlator,
+            page_count=page_count,
         )
 
     def _discovered_work(self, gallery: NhentaiGallery) -> DiscoveredWork:
@@ -268,7 +436,7 @@ class NhentaiProvider:
             source_updated_at=gallery.upload_date,
             raw_metadata={
                 "altTitles": gallery.alt_titles,
-                "page_count": len(gallery.image_urls),
+                "page_count": gallery.page_count,
                 "artists": gallery.artists,
                 "media_id": gallery.media_id,
                 "scanlator": gallery.scanlator,
@@ -285,6 +453,10 @@ class NhentaiProvider:
         if extension is None:
             raise ProviderError(f"nHentai 不支持图片类型: {image_type or 'unknown'}")
         return extension
+
+    @staticmethod
+    def _image_url(host: str, path: str) -> str:
+        return f"https://{host}/{path.lstrip('/')}"
 
     @staticmethod
     def _tag_names(tags: list[dict[str, Any]], tag_type: str) -> list[str]:
@@ -316,6 +488,12 @@ class NhentaiProvider:
         return re.sub(r"[^\w\u3040-\u30ff\u3400-\u9fff]+", "", normalized)
 
     @staticmethod
+    def _slug(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+        slug = re.sub(r"[^\w\u3040-\u30ff\u3400-\u9fff]+", "-", normalized)
+        return slug.strip("-")
+
+    @staticmethod
     def _text(value: str) -> str:
         return " ".join(value.split()).strip()
 
@@ -326,9 +504,9 @@ class NhentaiProvider:
             marker in lowered
             for marker in (
                 "cf-mitigated",
-                "challenge-platform",
                 "just a moment...",
                 "attention required! | cloudflare",
+                "cf-chl-widget",
             )
         )
 
