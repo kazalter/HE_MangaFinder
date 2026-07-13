@@ -21,7 +21,9 @@ class DownloadService:
         source = CatalogRepository(self.session).get_source(work_id, provider_name)
         if source is None:
             raise ValueError("作品来源不存在")
-        provider = self.providers.get(provider_name)
+        provider = self.providers.get_optional(provider_name)
+        if provider is None:
+            raise ValueError("该来源已停用，只保留历史记录")
         if ProviderCapability.DOWNLOAD not in provider.capabilities:
             raise ValueError("该来源不支持下载")
 

@@ -5,6 +5,7 @@ interface Props {
   group: WorkGroupDetail
   allGroups: WorkGroup[]
   busy: boolean
+  enabledProviders: string[]
   onClose: () => void
   onDownload: (edition: Edition, source: WorkSource) => void
   onSplit: (workId: number) => void
@@ -15,7 +16,7 @@ function displayDate(value: string | null) {
   return value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(new Date(value)) : '日期未知'
 }
 
-export function WorkDetail({ group, allGroups, busy, onClose, onDownload, onSplit, onMerge }: Props) {
+export function WorkDetail({ group, allGroups, busy, enabledProviders, onClose, onDownload, onSplit, onMerge }: Props) {
   const [provider, setProvider] = useState('all')
   const [mergeTarget, setMergeTarget] = useState('')
   const providers = group.providers
@@ -63,7 +64,7 @@ export function WorkDetail({ group, allGroups, busy, onClose, onDownload, onSpli
                     <div key={`${source.provider}-${source.external_id}`}>
                       <span className={`source-badge source-${source.provider}`}>{source.provider}</span>
                       <a href={source.source_url} target="_blank" rel="noreferrer">原站 ↗</a>
-                      <button disabled={busy} onClick={() => onDownload(edition, source)}>选择章节并下载 ↓</button>
+                      <button disabled={busy || !enabledProviders.includes(source.provider)} onClick={() => onDownload(edition, source)}>{enabledProviders.includes(source.provider) ? '选择章节并下载 ↓' : '历史来源（已停用）'}</button>
                     </div>
                   ))}
                 </div>

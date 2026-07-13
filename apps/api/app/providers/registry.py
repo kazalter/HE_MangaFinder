@@ -2,8 +2,8 @@ from collections.abc import Iterable
 
 from app.core.config import Settings
 from app.providers.base import SourceProvider
-from app.providers.hanimeone import HanimeOneProvider
 from app.providers.mangadex import MangaDexProvider
+from app.providers.nhentai import NhentaiProvider
 from app.providers.wnacg import WnacgProvider
 
 
@@ -17,6 +17,9 @@ class ProviderRegistry:
     def get(self, name: str) -> SourceProvider:
         return self._providers[name]
 
+    def get_optional(self, name: str) -> SourceProvider | None:
+        return self._providers.get(name)
+
     async def close(self) -> None:
         for provider in self._providers.values():
             await provider.close()
@@ -24,25 +27,26 @@ class ProviderRegistry:
 
 def build_registry(settings: Settings) -> ProviderRegistry:
     providers: list[SourceProvider] = [
-            MangaDexProvider(
-                user_agent=settings.user_agent,
-                use_data_saver=settings.use_data_saver,
-                chapter_languages=settings.chapter_language_list,
-            ),
-            WnacgProvider(
-                user_agent=settings.user_agent,
-                base_urls=settings.wnacg_base_url_list,
-                cookie=settings.wnacg_cookie,
-                max_search_pages=settings.wnacg_max_search_pages,
-            ),
-        ]
-    if settings.hanimeone_enabled:
+        MangaDexProvider(
+            user_agent=settings.user_agent,
+            use_data_saver=settings.use_data_saver,
+            chapter_languages=settings.chapter_language_list,
+        ),
+        WnacgProvider(
+            user_agent=settings.user_agent,
+            base_urls=settings.wnacg_base_url_list,
+            cookie=settings.wnacg_cookie,
+            max_search_pages=settings.wnacg_max_search_pages,
+        ),
+    ]
+    if settings.nhentai_enabled:
         providers.append(
-            HanimeOneProvider(
+            NhentaiProvider(
                 user_agent=settings.user_agent,
-                base_url=settings.hanimeone_base_url,
-                proxy_url=settings.hanimeone_proxy_url,
-                cookie=settings.hanimeone_cookie,
+                base_url=settings.nhentai_base_url,
+                proxy_url=settings.nhentai_proxy_url,
+                cookie=settings.nhentai_cookie,
+                max_search_pages=settings.nhentai_max_search_pages,
             )
         )
     return ProviderRegistry(providers)

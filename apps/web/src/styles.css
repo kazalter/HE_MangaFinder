@@ -81,6 +81,8 @@ main { padding: 48px clamp(28px, 5vw, 76px) 70px; min-width: 0; }
 .source-badge { display: inline-flex; align-items: center; border-radius: 2px; padding: 4px 7px; background: #e7e1d7; color: #504a42; font-size: 9px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; }
 .source-mangadex { background: #f2ddd5; color: #9c4429; }
 .source-wnacg { background: #dce8df; color: #315c43; }
+.source-nhentai { background: #eadde4; color: #8f345f; }
+.source-hanimeone { opacity: .62; }
 .review-banner { width: 100%; display: flex; justify-content: space-between; margin-top: 18px; border: 1px solid #d9c798; padding: 12px 15px; color: #574a2d; background: #f2e8ca; font-size: 12px; text-align: left; }
 .review-banner span { color: #9b5741; font-weight: 700; }
 .modal-backdrop { position: fixed; z-index: 50; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(20, 27, 23, .65); backdrop-filter: blur(4px); }

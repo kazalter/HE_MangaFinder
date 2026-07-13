@@ -34,9 +34,11 @@ MANGAFINDER_USE_DATA_SAVER=true
 MANGAFINDER_WNACG_BASE_URLS=https://www.wnacg.com,https://www.wn08.cfd,https://www.wn07.cfd
 MANGAFINDER_WNACG_COOKIE=
 MANGAFINDER_WNACG_MAX_SEARCH_PAGES=5
-MANGAFINDER_HANIMEONE_ENABLED=true
-MANGAFINDER_HANIMEONE_PROXY_URL=http://172.19.0.1:7897
-MANGAFINDER_HANIMEONE_COOKIE=
+MANGAFINDER_NHENTAI_ENABLED=true
+MANGAFINDER_NHENTAI_BASE_URL=https://nhentai.net
+MANGAFINDER_NHENTAI_PROXY_URL=http://172.19.0.1:7897
+MANGAFINDER_NHENTAI_COOKIE=
+MANGAFINDER_NHENTAI_MAX_SEARCH_PAGES=3
 MANGAFINDER_PROXY_NETWORK=he-manager_default
 TZ=Asia/Shanghai
 ```
@@ -82,7 +84,9 @@ WNACG 主域可能返回 Cloudflare 403。系统会顺序尝试 `MANGAFINDER_WNA
 
 WNACG 可能包含成人内容。当前应用没有用户鉴权，启用该来源时不要直接暴露到未受保护的公网或未成年人可访问的网络。
 
-Hanime1 可能按出口 IP 返回 Cloudflare 403。代理只配置给该来源，不要在容器里填写 `127.0.0.1:7897`，因为它指向 MangaFinder 容器自身。本机的 Clash Verge 只监听回环地址，因此 Compose 会通过 `MANGAFINDER_PROXY_NETWORK` 加入代理桥所在网络，并访问 `http://172.19.0.1:7897`；若代理本身监听 Docker 宿主网关，则可改用 `http://host.docker.internal:端口`。代理不可用时该来源会记录失败，但不会让其他成功来源的作者刷新任务失败。系统不会绕过验证码。
+nHentai 可能返回 Cloudflare 403。代理只配置给该来源，不要在容器里填写 `127.0.0.1:7897`，因为它指向 MangaFinder 容器自身。Compose 会通过 `MANGAFINDER_PROXY_NETWORK` 加入代理桥网络，并可访问 `http://172.19.0.1:7897`；若代理监听 Docker 宿主网关，也可使用 `http://host.docker.internal:端口`。代理不足以通过来源验证时，可在自己有权使用的浏览器会话中取得 Cookie，填入 `MANGAFINDER_NHENTAI_COOKIE`。系统不会破解验证码或自动绕过 Cloudflare。
+
+已存在的 Hanime1 作品不会被删除，界面中会显示为“历史来源（已停用）”，但不再刷新或下载。
 
 4. 确保数据目录可写：`mkdir -p /opt/stacks/mangafinder/data`。
 5. 进入 Dockge，点击右上角菜单中的 **Scan Stacks Folder**。

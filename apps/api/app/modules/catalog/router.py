@@ -57,7 +57,9 @@ async def list_chapters(
     if source is None:
         raise HTTPException(status_code=404, detail="作品来源不存在")
     registry: ProviderRegistry = request.app.state.providers
-    source_provider = registry.get(provider)
+    source_provider = registry.get_optional(provider)
+    if source_provider is None:
+        raise HTTPException(status_code=409, detail="该来源已停用，只保留历史记录")
     if ProviderCapability.CHAPTER_LIST not in source_provider.capabilities:
         raise HTTPException(status_code=409, detail="该来源不提供章节列表")
     chapters = await source_provider.list_chapters(source.external_id)
@@ -74,7 +76,9 @@ def download_chapter(
     if source is None:
         raise HTTPException(status_code=404, detail="作品来源不存在")
     registry: ProviderRegistry = request.app.state.providers
-    source_provider = registry.get(payload.provider)
+    source_provider = registry.get_optional(payload.provider)
+    if source_provider is None:
+        raise HTTPException(status_code=409, detail="该来源已停用，只保留历史记录")
     if ProviderCapability.DOWNLOAD not in source_provider.capabilities:
         raise HTTPException(status_code=409, detail="该来源不支持下载")
     job = JobRepository(session).enqueue_download(

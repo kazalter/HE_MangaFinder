@@ -1,0 +1,27 @@
+{
+  "id": 123456,
+  "media_id": "3000000",
+  "title": {
+    "english": "[MIGNON WORKS (mignon)] ONAKA SUMMER 2 [English]",
+    "japanese": "[MIGNON WORKS (mignon)] おなかサマー2",
+    "pretty": "ONAKA SUMMER 2"
+  },
+  "images": {
+    "pages": [
+      {"t": "w", "w": 1200, "h": 1600},
+      {"t": "j", "w": 1200, "h": 1600}
+    ],
+    "cover": {"t": "w", "w": 350, "h": 500},
+    "thumbnail": {"t": "w", "w": 250, "h": 350}
+  },
+  "scanlator": "Example Group",
+  "upload_date": 1783814400,
+  "tags": [
+    {"id": 1, "type": "artist", "name": "mignon", "url": "/artist/mignon/", "count": 20},
+    {"id": 2, "type": "language", "name": "english", "url": "/language/english/", "count": 1},
+    {"id": 3, "type": "tag", "name": "full color", "url": "/tag/full-color/", "count": 1},
+    {"id": 4, "type": "category", "name": "doujinshi", "url": "/category/doujinshi/", "count": 1}
+  ],
+  "num_pages": 2,
+  "num_favorites": 100
+}

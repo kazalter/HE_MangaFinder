@@ -20,10 +20,11 @@ class Settings(BaseSettings):
     )
     wnacg_cookie: str = ""
     wnacg_max_search_pages: int = 5
-    hanimeone_enabled: bool = True
-    hanimeone_base_url: str = "https://hanimeone.me"
-    hanimeone_proxy_url: str = ""
-    hanimeone_cookie: str = ""
+    nhentai_enabled: bool = True
+    nhentai_base_url: str = "https://nhentai.net"
+    nhentai_proxy_url: str = ""
+    nhentai_cookie: str = ""
+    nhentai_max_search_pages: int = 3
     agent_enabled: bool = False
     agent_provider: str = "openai_compatible"
     agent_base_url: str = "http://host.docker.internal:11434/v1"
