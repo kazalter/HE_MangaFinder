@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -48,6 +49,39 @@ class CatalogRepository:
         if link is None:
             self.session.add(AuthorWork(author_id=author_id, work_id=work.id))
         return work
+
+    def preferred_author_query_name(
+        self, author_id: int, provider: str, fallback: str
+    ) -> str:
+        """Reuse a dominant provider-native artist tag learned from prior scans."""
+
+        metadata_rows = self.session.scalars(
+            select(WorkSource.raw_metadata)
+            .join(AuthorWork, AuthorWork.work_id == WorkSource.work_id)
+            .where(
+                AuthorWork.author_id == author_id,
+                WorkSource.provider == provider,
+            )
+        )
+        counts: Counter[str] = Counter()
+        display_names: dict[str, str] = {}
+        for metadata in metadata_rows:
+            artists = metadata.get("artists") if isinstance(metadata, dict) else None
+            if not isinstance(artists, list):
+                continue
+            for value in set(item for item in artists if isinstance(item, str)):
+                cleaned = " ".join(value.split()).strip()
+                identity = cleaned.casefold()
+                if identity:
+                    counts[identity] += 1
+                    display_names.setdefault(identity, cleaned)
+        if not counts:
+            return fallback
+        ranked = counts.most_common(2)
+        identity, support = ranked[0]
+        if support < 2 or (len(ranked) > 1 and ranked[1][1] == support):
+            return fallback
+        return display_names[identity]
 
     def list_for_author(self, author_id: int | None = None) -> list[tuple[Work, datetime]]:
         statement = (

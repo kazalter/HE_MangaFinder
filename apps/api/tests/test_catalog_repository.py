@@ -69,3 +69,33 @@ def test_lists_works_by_latest_source_date_with_undated_last() -> None:
         rows = repository.list_for_author(author.id)
 
         assert [work.title for work, _ in rows] == ["New", "Old", "Undated"]
+
+
+def test_reuses_dominant_provider_artist_name() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        author = Author(name="ラマンダ")
+        session.add(author)
+        session.flush()
+        repository = CatalogRepository(session)
+        for external_id, artist in (("1", "ramanda"), ("2", "ramanda"), ("3", "other")):
+            repository.upsert(
+                author.id,
+                "nhentai",
+                DiscoveredWork(
+                    external_id=external_id,
+                    title=f"Work {external_id}",
+                    source_url=f"https://example.test/{external_id}",
+                    raw_metadata={"artists": [artist]},
+                ),
+            )
+        session.commit()
+
+        assert (
+            repository.preferred_author_query_name(
+                author.id, "nhentai", author.name
+            )
+            == "ramanda"
+        )

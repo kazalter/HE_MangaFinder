@@ -3,6 +3,7 @@ import json
 import re
 import unicodedata
 import zipfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -86,44 +87,20 @@ class NhentaiProvider:
 
     async def discover_by_author(self, author_name: str) -> list[DiscoveredWork]:
         normalized_author = " ".join(author_name.split()).strip()
-        galleries: dict[str, NhentaiGallery] = {}
-        path = f"/artist/{quote(self._slug(normalized_author), safe='')}/"
-        first_response: httpx.Response | None = None
-        try:
-            candidate = await self._request_page(
-                path, params={"sort": "date", "page": "1"}
-            )
-            artist = self.parse_artist(candidate.text)
-            if artist and self._identity(artist) == self._identity(normalized_author):
-                first_response = candidate
-        except ProviderError:
-            pass
-
-        if first_response is None:
-            path = "/search/"
-            first_response = await self._request_page(
-                path,
-                params={
-                    "q": f"artist:{normalized_author}",
-                    "sort": "date",
-                    "page": "1",
-                },
-            )
-
-        parsed, total_pages = self.parse_listing(
-            first_response.text, assumed_author=normalized_author
+        path, query_author, first_response = await self._find_author_listing(
+            normalized_author
         )
+        parsed, total_pages = self.parse_listing(first_response.text, query_author)
+        galleries: dict[str, NhentaiGallery] = {}
         for gallery in parsed:
             galleries[gallery.external_id] = gallery
 
         for page in range(2, min(total_pages, self._max_search_pages) + 1):
             params = {"sort": "date", "page": str(page)}
             if path == "/search/":
-                params["q"] = f"artist:{normalized_author}"
+                params["q"] = f"artist:{query_author}"
             response = await self._request_page(path, params=params)
-            parsed, _ = self.parse_listing(
-                response.text, assumed_author=normalized_author
-            )
+            parsed, _ = self.parse_listing(response.text, query_author)
             for gallery in parsed:
                 galleries[gallery.external_id] = gallery
 
@@ -143,7 +120,7 @@ class NhentaiProvider:
                             return gallery
                         await asyncio.sleep(0.35)
                 await asyncio.sleep(0.08)
-            if self._has_author(detailed, normalized_author):
+            if self._has_author(detailed, query_author):
                 return detailed
             return None
 
@@ -157,6 +134,93 @@ class NhentaiProvider:
         return sort_discovered_works(
             [self._discovered_work(gallery) for gallery in exact]
         )
+
+    async def _find_author_listing(
+        self, author_name: str
+    ) -> tuple[str, str, httpx.Response]:
+        """Find an authoritative listing, resolving site-specific aliases safely."""
+
+        path = f"/artist/{quote(self._slug(author_name), safe='')}/"
+        try:
+            response = await self._request_page(
+                path, params={"sort": "date", "page": "1"}
+            )
+            listed_artist = self.parse_artist(response.text)
+            if listed_artist and self._identity(listed_artist) == self._identity(author_name):
+                return path, listed_artist, response
+        except ProviderError:
+            pass
+
+        exact_response = await self._request_page(
+            "/search/",
+            params={
+                "q": f"artist:{author_name}",
+                "sort": "date",
+                "page": "1",
+            },
+        )
+        exact_galleries, _ = self.parse_listing(exact_response.text, author_name)
+        if exact_galleries:
+            return "/search/", author_name, exact_response
+
+        alias = await self._discover_author_alias(author_name)
+        if alias is None:
+            raise AuthorNotFoundError(f'nHentai 未找到作者“{author_name}”')
+
+        alias_path = f"/artist/{quote(self._slug(alias), safe='')}/"
+        alias_response = await self._request_page(
+            alias_path, params={"sort": "date", "page": "1"}
+        )
+        listed_alias = self.parse_artist(alias_response.text)
+        if not listed_alias or self._identity(listed_alias) != self._identity(alias):
+            raise AuthorNotFoundError(f'nHentai 未找到作者“{author_name}”')
+        return alias_path, listed_alias, alias_response
+
+    async def _discover_author_alias(self, author_name: str) -> str | None:
+        """Infer one dominant real artist tag from a bounded plain-search sample."""
+
+        response = await self._request_page(
+            "/search/",
+            params={"q": author_name, "sort": "date", "page": "1"},
+        )
+        candidates, _ = self.parse_listing(response.text, author_name)
+        sample = candidates[:8]
+        if len(sample) < 2:
+            return None
+
+        semaphore = asyncio.Semaphore(2)
+
+        async def detail(gallery: NhentaiGallery) -> NhentaiGallery | None:
+            async with semaphore:
+                try:
+                    result = await self._gallery(gallery.external_id)
+                except ProviderError:
+                    return None
+                await asyncio.sleep(0.08)
+                return result
+
+        resolved = await asyncio.gather(*(detail(item) for item in sample))
+        details = [item for item in resolved if item]
+        if len(details) < 2:
+            return None
+
+        counts: Counter[str] = Counter()
+        display_names: dict[str, str] = {}
+        for gallery in details:
+            for artist in set(gallery.artists):
+                identity = self._identity(artist)
+                if identity:
+                    counts[identity] += 1
+                    display_names.setdefault(identity, artist)
+        if not counts:
+            return None
+
+        ranked = counts.most_common(2)
+        identity, support = ranked[0]
+        tied = len(ranked) > 1 and ranked[1][1] == support
+        if support < 2 or support / len(details) < 0.6 or tied:
+            return None
+        return display_names[identity]
 
     async def list_chapters(self, work_external_id: str) -> list[Chapter]:
         gallery = await self._gallery(work_external_id)

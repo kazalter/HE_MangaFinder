@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     nhentai_base_url: str = "https://nhentai.net"
     nhentai_proxy_url: str = ""
     nhentai_cookie: str = ""
-    nhentai_max_search_pages: int = 3
+    nhentai_max_search_pages: int = 10
     agent_enabled: bool = False
     agent_provider: str = "openai_compatible"
     agent_base_url: str = "http://host.docker.internal:11434/v1"

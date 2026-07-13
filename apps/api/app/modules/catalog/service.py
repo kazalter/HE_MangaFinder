@@ -32,9 +32,16 @@ class DiscoveryService:
         try:
             for provider in self.providers.all():
                 try:
-                    works = sort_discovered_works(
-                        await provider.discover_by_author(author.name)
+                    query_name = catalog.preferred_author_query_name(
+                        author.id, provider.name, author.name
                     )
+                    try:
+                        found = await provider.discover_by_author(query_name)
+                    except AuthorNotFoundError:
+                        if query_name == author.name:
+                            raise
+                        found = await provider.discover_by_author(author.name)
+                    works = sort_discovered_works(found)
                     for work in works:
                         stored_work = catalog.upsert(author.id, provider.name, work)
                         await aggregation.assign(stored_work, author)
