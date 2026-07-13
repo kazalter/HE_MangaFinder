@@ -67,6 +67,8 @@ export interface MergeSuggestion {
   source_title: string
   target_group_id: number
   target_title: string
+  source_group: WorkGroup | null
+  target_group: WorkGroup | null
   confidence: number
   reasons: string[]
   status: 'pending' | 'accepted' | 'rejected'

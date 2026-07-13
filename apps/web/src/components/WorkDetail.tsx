@@ -25,7 +25,7 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, onClose, 
   )), [group.editions, provider])
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="modal-backdrop work-detail-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <section className="work-detail" role="dialog" aria-modal="true" aria-label={`${group.title} 版本详情`}>
         <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
         <header className="detail-header">

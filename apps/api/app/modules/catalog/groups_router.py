@@ -107,6 +107,8 @@ def _suggestion(
         source_title=source.title if source else "已删除作品",
         target_group_id=item.target_group_id,
         target_title=target.title if target else "已删除作品",
+        source_group=_summary(source) if source else None,
+        target_group=_summary(target) if target else None,
         confidence=item.confidence,
         reasons=item.reasons or [],
         status=item.status,

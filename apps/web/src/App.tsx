@@ -60,9 +60,9 @@ export default function App() {
     finally { setBusy(false) }
   }
 
-  async function openWork(work: WorkGroup) {
+  async function openWork(work: WorkGroup | number) {
     setBusy(true)
-    try { setOpenedWork(await api.workGroup(work.id)) }
+    try { setOpenedWork(await api.workGroup(typeof work === 'number' ? work : work.id)) }
     catch (reason) { setError(reason instanceof Error ? reason.message : '加载版本失败') }
     finally { setBusy(false) }
   }
@@ -154,7 +154,7 @@ export default function App() {
         )}
       </main>
       {openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} />}
-      {reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
+      {reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
     </div>
   )
 }

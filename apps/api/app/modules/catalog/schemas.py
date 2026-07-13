@@ -84,6 +84,8 @@ class MergeSuggestionRead(BaseModel):
     source_title: str
     target_group_id: int
     target_title: str
+    source_group: WorkGroupRead | None = None
+    target_group: WorkGroupRead | None = None
     confidence: float
     reasons: list[str]
     status: str
