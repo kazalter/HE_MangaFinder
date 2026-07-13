@@ -1,0 +1,31 @@
+{
+  "result": "ok",
+  "response": "collection",
+  "data": [
+    {
+      "id": "manga-1",
+      "type": "manga",
+      "attributes": {
+        "title": { "en": "Goodnight Punpun", "ja": "おやすみプンプン" },
+        "altTitles": [],
+        "description": { "en": "A coming-of-age story." },
+        "originalLanguage": "ja",
+        "lastVolume": "13",
+        "lastChapter": "147",
+        "publicationDemographic": "seinen",
+        "status": "completed",
+        "year": 2007,
+        "updatedAt": "2025-01-02T03:04:05+00:00",
+        "tags": [
+          { "attributes": { "name": { "en": "Drama" } } }
+        ]
+      },
+      "relationships": [
+        { "id": "cover-1", "type": "cover_art", "attributes": { "fileName": "cover.jpg" } }
+      ]
+    }
+  ],
+  "limit": 100,
+  "offset": 0,
+  "total": 1
+}

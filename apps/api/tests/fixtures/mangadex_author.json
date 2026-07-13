@@ -1,0 +1,15 @@
+{
+  "result": "ok",
+  "response": "collection",
+  "data": [
+    {
+      "id": "author-1",
+      "type": "author",
+      "attributes": { "name": "Asano Inio" },
+      "relationships": []
+    }
+  ],
+  "limit": 20,
+  "offset": 0,
+  "total": 1
+}

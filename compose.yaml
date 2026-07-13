@@ -1,0 +1,62 @@
+services:
+  mangafinder:
+    image: mangafinder:local
+    build:
+      context: .
+      # Dockge 使用宿主机已构建的 Web 产物，避免在家用服务器重复安装 Node 工具链。
+      dockerfile: Dockerfile.dockge
+    ports:
+      - "${MANGAFINDER_PORT:-8000}:8000"
+    environment:
+      MANGAFINDER_DATABASE_URL: sqlite:////app/data/mangafinder.db
+      MANGAFINDER_DOWNLOADS_DIR: /app/data/downloads
+      MANGAFINDER_CHAPTER_LANGUAGES: ${MANGAFINDER_CHAPTER_LANGUAGES:-zh-hans,zh-hant,en,ja}
+      MANGAFINDER_USE_DATA_SAVER: ${MANGAFINDER_USE_DATA_SAVER:-true}
+      MANGAFINDER_WNACG_BASE_URLS: ${MANGAFINDER_WNACG_BASE_URLS:-https://www.wnacg.com,https://www.wn08.cfd,https://www.wn07.cfd,https://www.wn08.shop,https://www.wn07.shop}
+      MANGAFINDER_WNACG_COOKIE: ${MANGAFINDER_WNACG_COOKIE:-}
+      MANGAFINDER_WNACG_MAX_SEARCH_PAGES: ${MANGAFINDER_WNACG_MAX_SEARCH_PAGES:-5}
+      MANGAFINDER_HANIMEONE_ENABLED: ${MANGAFINDER_HANIMEONE_ENABLED:-true}
+      MANGAFINDER_HANIMEONE_BASE_URL: ${MANGAFINDER_HANIMEONE_BASE_URL:-https://hanimeone.me}
+      MANGAFINDER_HANIMEONE_PROXY_URL: ${MANGAFINDER_HANIMEONE_PROXY_URL:-}
+      MANGAFINDER_HANIMEONE_COOKIE: ${MANGAFINDER_HANIMEONE_COOKIE:-}
+      # Agent 默认关闭且只返回审核建议。模型可运行在宿主机、同一 Docker 网络或云端。
+      MANGAFINDER_AGENT_ENABLED: ${MANGAFINDER_AGENT_ENABLED:-false}
+      MANGAFINDER_AGENT_PROVIDER: ${MANGAFINDER_AGENT_PROVIDER:-openai_compatible}
+      MANGAFINDER_AGENT_BASE_URL: ${MANGAFINDER_AGENT_BASE_URL:-http://host.docker.internal:11434/v1}
+      MANGAFINDER_AGENT_MODEL: ${MANGAFINDER_AGENT_MODEL:-}
+      MANGAFINDER_AGENT_API_KEY: ${MANGAFINDER_AGENT_API_KEY:-}
+      MANGAFINDER_AGENT_TEMPERATURE: ${MANGAFINDER_AGENT_TEMPERATURE:-0}
+      MANGAFINDER_AGENT_TIMEOUT_SECONDS: ${MANGAFINDER_AGENT_TIMEOUT_SECONDS:-60}
+      MANGAFINDER_AGENT_MAX_REVIEWS_PER_RUN: ${MANGAFINDER_AGENT_MAX_REVIEWS_PER_RUN:-20}
+      MANGAFINDER_AGENT_AUTO_APPLY: ${MANGAFINDER_AGENT_AUTO_APPLY:-false}
+      MANGAFINDER_AGENT_AUTO_APPLY_THRESHOLD: ${MANGAFINDER_AGENT_AUTO_APPLY_THRESHOLD:-0.98}
+      MANGAFINDER_AGENT_ALLOW_CLOUD_IMAGES: ${MANGAFINDER_AGENT_ALLOW_CLOUD_IMAGES:-false}
+      MANGAFINDER_AGENT_PROMPT_VERSION: ${MANGAFINDER_AGENT_PROMPT_VERSION:-v5}
+      TZ: ${TZ:-Etc/UTC}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - clash_proxy
+    volumes:
+      - ${MANGAFINDER_DATA_DIR:-./data}:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+networks:
+  clash_proxy:
+    external: true
+    name: ${MANGAFINDER_PROXY_NETWORK:-he-manager_default}

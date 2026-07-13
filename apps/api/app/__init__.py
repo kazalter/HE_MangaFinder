@@ -1,0 +1,1 @@
+"""MangaFinder API package."""
