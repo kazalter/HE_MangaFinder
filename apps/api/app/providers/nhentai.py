@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -17,6 +17,7 @@ from app.providers.base import (
     Chapter,
     DiscoveredWork,
     ProviderCapability,
+    RemoteImage,
     sort_discovered_works,
 )
 from app.providers.errors import AuthorNotFoundError, ProviderError
@@ -234,6 +235,27 @@ class NhentaiProvider:
                 source_url=f"{self._base_url}/g/{gallery.external_id}/",
             )
         ]
+
+    async def fetch_cover(
+        self, work_external_id: str, cover_url: str
+    ) -> RemoteImage:
+        self._validate_id(work_external_id)
+        parsed = urlsplit(cover_url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "t.nhentai.net"
+            or not parsed.path.startswith("/galleries/")
+        ):
+            raise ProviderError("nHentai 封面地址不受信任")
+        try:
+            response = await self._client.get(
+                cover_url,
+                headers={"Referer": f"{self._base_url}/g/{work_external_id}/"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"nHentai 封面下载失败: {exc}") from exc
+        return self._remote_image(response)
 
     async def download_chapter(
         self, work_external_id: str, chapter_external_id: str, destination: str
@@ -578,6 +600,15 @@ class NhentaiProvider:
     def _validate_id(value: str) -> None:
         if not value.isdigit():
             raise ProviderError("nHentai gallery ID 无效")
+
+    @staticmethod
+    def _remote_image(response: httpx.Response) -> RemoteImage:
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if not content_type.startswith("image/") or not response.content:
+            raise ProviderError("nHentai 封面响应不是有效图片")
+        if len(response.content) > 8 * 1024 * 1024:
+            raise ProviderError("nHentai 封面超过 8 MB 限制")
+        return RemoteImage(content=response.content, content_type=content_type)
 
     async def close(self) -> None:
         if self._owns_client:

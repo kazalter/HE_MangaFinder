@@ -14,6 +14,7 @@ from app.modules.catalog.schemas import (
 )
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.schemas import JobRead
+from app.modules.media.urls import work_cover_url
 from app.providers.base import ProviderCapability
 from app.providers.registry import ProviderRegistry
 
@@ -29,7 +30,7 @@ def list_works(session: SessionDep, author_id: int | None = None) -> list[WorkRe
             id=work.id,
             title=work.title,
             description=work.description,
-            cover_url=work.cover_url,
+            cover_url=work_cover_url(work),
             status=work.status,
             year=work.year,
             language=work.language,

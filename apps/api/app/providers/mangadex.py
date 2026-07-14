@@ -3,6 +3,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -10,6 +11,7 @@ from app.providers.base import (
     Chapter,
     DiscoveredWork,
     ProviderCapability,
+    RemoteImage,
     sort_discovered_works,
 )
 from app.providers.errors import AuthorNotFoundError, ProviderError
@@ -110,6 +112,28 @@ class MangaDexProvider:
             if not data or offset >= payload.get("total", 0):
                 break
         return results
+
+    async def fetch_cover(
+        self, work_external_id: str, cover_url: str
+    ) -> RemoteImage:
+        parsed = urlsplit(cover_url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "uploads.mangadex.org"
+            or not parsed.path.startswith(f"/covers/{work_external_id}/")
+        ):
+            raise ProviderError("MangaDex 封面地址不受信任")
+        try:
+            response = await self._client.get(cover_url, headers={"Accept": "image/*"})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"MangaDex 封面下载失败: {exc}") from exc
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if not content_type.startswith("image/") or not response.content:
+            raise ProviderError("MangaDex 封面响应不是有效图片")
+        if len(response.content) > 8 * 1024 * 1024:
+            raise ProviderError("MangaDex 封面超过 8 MB 限制")
+        return RemoteImage(content=response.content, content_type=content_type)
 
     async def download_chapter(
         self, work_external_id: str, chapter_external_id: str, destination: str

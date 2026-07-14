@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     max_job_attempts: int = 3
     worker_enabled: bool = True
     downloads_dir: Path = Path("./data/downloads")
+    cover_cache_dir: Path = Path("./data/cover-cache")
     use_data_saver: bool = True
     chapter_languages: str = "zh-hans,zh-hant,en,ja"
     wnacg_base_urls: str = (

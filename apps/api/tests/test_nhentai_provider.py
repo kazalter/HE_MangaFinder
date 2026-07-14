@@ -192,3 +192,12 @@ async def test_reports_cloudflare_without_bypassing_it() -> None:
     with pytest.raises(ProviderError, match="Cloudflare"):
         await provider.discover_by_author("mignon")
     await client.aclose()
+
+
+async def test_rejects_untrusted_cover_host() -> None:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
+    provider = NhentaiProvider(user_agent="test", client=client)
+
+    with pytest.raises(ProviderError, match="不受信任"):
+        await provider.fetch_cover("123456", "https://attacker.example/cover.jpg")
+    await client.aclose()

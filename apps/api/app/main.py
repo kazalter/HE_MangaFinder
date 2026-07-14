@@ -15,6 +15,8 @@ from app.modules.catalog.groups_router import router as groups_router
 from app.modules.catalog.router import router as catalog_router
 from app.modules.jobs.router import router as jobs_router
 from app.modules.jobs.worker import JobWorker
+from app.modules.media.router import router as media_router
+from app.modules.media.service import CoverCacheService
 from app.modules.sources.router import router as sources_router
 from app.providers.registry import build_registry
 
@@ -26,6 +28,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
     providers = build_registry(settings)
     app.state.providers = providers
+    app.state.cover_cache = CoverCacheService(settings.cover_cache_dir, providers)
     worker_task = None
     if settings.worker_enabled:
         worker_task = asyncio.create_task(JobWorker(settings, providers).run())
@@ -56,6 +59,7 @@ app.include_router(agent_reviews_router, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(groups_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
+app.include_router(media_router, prefix="/api")
 app.include_router(sources_router, prefix="/api")
 
 if settings.static_dir.exists():

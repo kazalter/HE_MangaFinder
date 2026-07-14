@@ -49,6 +49,12 @@ class Chapter:
     source_url: str
 
 
+@dataclass(frozen=True, slots=True)
+class RemoteImage:
+    content: bytes
+    content_type: str
+
+
 class SourceProvider(Protocol):
     name: str
     display_name: str
@@ -61,5 +67,9 @@ class SourceProvider(Protocol):
     async def download_chapter(
         self, work_external_id: str, chapter_external_id: str, destination: str
     ) -> str: ...
+
+    async def fetch_cover(
+        self, work_external_id: str, cover_url: str
+    ) -> RemoteImage: ...
 
     async def close(self) -> None: ...

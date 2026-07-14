@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Edition, WorkGroup, WorkGroupDetail, WorkSource } from '../types'
+import { CoverImage } from './CoverImage'
 
 interface Props {
   group: WorkGroupDetail
@@ -29,7 +30,7 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, onClose, 
       <section className="work-detail" role="dialog" aria-modal="true" aria-label={`${group.title} 版本详情`}>
         <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
         <header className="detail-header">
-          {group.cover_url ? <img src={group.cover_url} alt={`${group.title} 封面`} /> : <div className="detail-cover-empty">冊</div>}
+          <CoverImage src={group.cover_url} alt={`${group.title} 封面`} fallback={<div className="detail-cover-empty">冊</div>} />
           <div>
             <p className="eyebrow">WORK / EDITIONS</p>
             <h2>{group.title}</h2>
@@ -52,7 +53,7 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, onClose, 
         <div className="edition-list">
           {editions.map((edition) => (
             <article className="edition-card" key={edition.work_id}>
-              {edition.cover_url ? <img src={edition.cover_url} alt="" loading="lazy" /> : <div className="edition-cover-empty">冊</div>}
+              <CoverImage src={edition.cover_url} alt={`${edition.title} 封面`} loading="lazy" fallback={<div className="edition-cover-empty">冊</div>} />
               <div className="edition-copy">
                 <h3>{edition.title}</h3>
                 <p>{displayDate(edition.latest_source_at)}{edition.language ? ` · ${edition.language.toUpperCase()}` : ''}</p>

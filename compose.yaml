@@ -10,6 +10,7 @@ services:
     environment:
       MANGAFINDER_DATABASE_URL: sqlite:////app/data/mangafinder.db
       MANGAFINDER_DOWNLOADS_DIR: /app/data/downloads
+      MANGAFINDER_COVER_CACHE_DIR: /app/data/cover-cache
       MANGAFINDER_CHAPTER_LANGUAGES: ${MANGAFINDER_CHAPTER_LANGUAGES:-zh-hans,zh-hant,en,ja}
       MANGAFINDER_USE_DATA_SAVER: ${MANGAFINDER_USE_DATA_SAVER:-true}
       MANGAFINDER_USER_AGENT: ${MANGAFINDER_USER_AGENT:-MangaFinder/0.1}
@@ -45,6 +46,8 @@ services:
       - ${MANGAFINDER_DATA_DIR:-./data}:/app/data
       # 下载文件可以单独放到大容量 HDD；容器内路径保持不变。
       - ${MANGAFINDER_DOWNLOADS_HOST_DIR:-./data/downloads}:/app/data/downloads
+      # 第三方封面通过服务端代理后缓存在大容量盘，浏览器只访问同源 API。
+      - ${MANGAFINDER_COVER_CACHE_HOST_DIR:-./data/cover-cache}:/app/data/cover-cache
     healthcheck:
       test:
         - CMD

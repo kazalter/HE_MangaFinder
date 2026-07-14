@@ -50,6 +50,13 @@ class CatalogRepository:
             self.session.add(AuthorWork(author_id=author_id, work_id=work.id))
         return work
 
+    def get(self, work_id: int) -> Work | None:
+        return self.session.scalar(
+            select(Work)
+            .options(selectinload(Work.sources))
+            .where(Work.id == work_id)
+        )
+
     def preferred_author_query_name(
         self, author_id: int, provider: str, fallback: str
     ) -> str:

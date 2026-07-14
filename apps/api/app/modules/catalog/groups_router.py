@@ -20,6 +20,7 @@ from app.modules.catalog.schemas import (
     WorkGroupRead,
     WorkSourceRead,
 )
+from app.modules.media.urls import group_cover_url, work_cover_url
 
 router = APIRouter(prefix="/work-groups", tags=["work-groups"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -32,7 +33,7 @@ def _edition(member: object) -> EditionRead:
         work_id=work.id,
         title=work.title,
         description=work.description,
-        cover_url=work.cover_url,
+        cover_url=work_cover_url(work),
         status=work.status,
         year=work.year,
         language=work.language,
@@ -66,7 +67,7 @@ def _summary(group: WorkGroup) -> WorkGroupRead:
         id=group.id,
         title=group.title,
         description=group.description,
-        cover_url=group.cover_url,
+        cover_url=group_cover_url(group),
         status=group.status,
         year=group.year,
         language=group.language,

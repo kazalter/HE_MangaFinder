@@ -1,4 +1,5 @@
 import type { WorkGroup } from '../types'
+import { CoverImage } from './CoverImage'
 
 const statusMap: Record<string, string> = {
   ongoing: '连载中', completed: '已完结', hiatus: '暂停', cancelled: '已取消',
@@ -8,11 +9,12 @@ export function WorkCard({ work, onOpen }: { work: WorkGroup, onOpen: (work: Wor
   return (
     <article className="work-card" onClick={() => onOpen(work)}>
       <div className="cover-wrap">
-        {work.cover_url ? (
-          <img src={work.cover_url} alt={`${work.title} 封面`} loading="lazy" />
-        ) : (
-          <div className="cover-placeholder">暂无封面</div>
-        )}
+        <CoverImage
+          src={work.cover_url}
+          alt={`${work.title} 封面`}
+          loading="lazy"
+          fallback={<div className="cover-placeholder">{work.cover_url ? '封面加载失败' : '暂无封面'}</div>}
+        />
         {work.status && <span className="status-pill">{statusMap[work.status] ?? work.status}</span>}
       </div>
       <div className="work-info">

@@ -1,4 +1,5 @@
 import type { AgentStatus, MergeSuggestion, WorkGroup } from '../types'
+import { CoverImage } from './CoverImage'
 
 const decisionLabel = {
   same_work: '倾向同一作品',
@@ -28,7 +29,7 @@ function CandidateWork({ groupId, title, group, busy, onOpen }: {
       aria-label={`查看《${title}》的作品详情`}
     >
       <span className="candidate-cover">
-        {group?.cover_url ? <img src={group.cover_url} alt={`${title} 封面`} loading="lazy" /> : <span>暂无封面</span>}
+        <CoverImage src={group?.cover_url ?? null} alt={`${title} 封面`} loading="lazy" fallback={<span>封面加载失败</span>} />
       </span>
       <span className="candidate-copy">
         <strong>{title}</strong>

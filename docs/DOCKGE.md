@@ -29,6 +29,8 @@ Dockge 默认扫描 `/opt/stacks/<stack-name>/compose.yaml`，因此推荐结构
 ```dotenv
 MANGAFINDER_PORT=8000
 MANGAFINDER_DATA_DIR=./data
+MANGAFINDER_DOWNLOADS_HOST_DIR=/mnt/hdd/mangafinder/downloads
+MANGAFINDER_COVER_CACHE_HOST_DIR=/mnt/hdd/mangafinder/cover-cache
 MANGAFINDER_CHAPTER_LANGUAGES=zh-hans,zh-hant,en,ja
 MANGAFINDER_USE_DATA_SAVER=true
 MANGAFINDER_WNACG_BASE_URLS=https://www.wnacg.com,https://www.wn08.cfd,https://www.wn07.cfd
