@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AuthorSidebar } from './components/AuthorSidebar'
 import { MergeReview } from './components/MergeReview'
+import { SocialRadar } from './components/SocialRadar'
 import { WorkCard } from './components/WorkCard'
 import { WorkDetail } from './components/WorkDetail'
 import { api } from './lib/api'
-import type { AgentStatus, Author, Edition, Job, MergeSuggestion, Source, WorkGroup, WorkGroupDetail, WorkSource } from './types'
+import type { AgentStatus, Author, Edition, Job, MergeSuggestion, ReleaseSignal, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkSource } from './types'
 
 export default function App() {
   const [authors, setAuthors] = useState<Author[]>([])
@@ -15,6 +16,13 @@ export default function App() {
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
   const [openedWork, setOpenedWork] = useState<WorkGroupDetail | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [radarOpen, setRadarOpen] = useState(() => new URLSearchParams(window.location.search).has('radar'))
+  const [focusSignalId] = useState<number | null>(() => {
+    const value = new URLSearchParams(window.location.search).get('radar')
+    return value && /^\d+$/.test(value) ? Number(value) : null
+  })
+  const [socialStatus, setSocialStatus] = useState<SocialStatus | null>(null)
+  const [socialSignals, setSocialSignals] = useState<ReleaseSignal[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -22,8 +30,8 @@ export default function App() {
 
   const load = useCallback(async () => {
     try {
-      const [nextAuthors, nextWorks, nextJobs, nextSources, nextSuggestions, nextAgentStatus] = await Promise.all([
-        api.authors(), api.workGroups(selectedId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.agentStatus(),
+      const [nextAuthors, nextWorks, nextJobs, nextSources, nextSuggestions, nextAgentStatus, nextSocialStatus, nextSocialSignals] = await Promise.all([
+        api.authors(), api.workGroups(selectedId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.agentStatus(), api.socialStatus(), api.socialRadar(selectedId ?? undefined),
       ])
       setAuthors(nextAuthors)
       setWorks(nextWorks)
@@ -31,6 +39,8 @@ export default function App() {
       setSources(nextSources)
       setSuggestions(nextSuggestions)
       setAgentStatus(nextAgentStatus)
+      setSocialStatus(nextSocialStatus)
+      setSocialSignals(nextSocialSignals)
       setError(null)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '加载失败')
@@ -125,9 +135,12 @@ export default function App() {
             <h1>{selectedAuthor?.name ?? '作品总览'}</h1>
             <p>{selectedAuthor ? '这个作者在所有来源中的作品' : '你订阅作者的作品，都在这里。'}</p>
           </div>
-          <div className="search-box">
-            <span aria-hidden="true">⌕</span>
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索已发现作品" aria-label="搜索作品" />
+          <div className="topbar-tools">
+            <button className="radar-button" onClick={() => setRadarOpen(true)}>动态雷达{socialStatus?.unread_count ? <span>{socialStatus.unread_count}</span> : null}</button>
+            <div className="search-box">
+              <span aria-hidden="true">⌕</span>
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索已发现作品" aria-label="搜索作品" />
+            </div>
           </div>
         </header>
 
@@ -155,6 +168,7 @@ export default function App() {
       </main>
       {openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} />}
       {reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
+      {radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
     </div>
   )
 }

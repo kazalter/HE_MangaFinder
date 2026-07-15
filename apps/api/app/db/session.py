@@ -31,10 +31,12 @@ def init_db() -> None:
     # Additive, idempotent migration: legacy source records remain untouched.
     from app.modules.catalog.aggregation import backfill_work_groups
     from app.modules.catalog.repairs import repair_wnacg_upload_years
+    from app.modules.social.events import seed_event_registry
 
     with Session(engine) as session:
         repair_wnacg_upload_years(session)
         backfill_work_groups(session)
+        seed_event_registry(session)
 
 
 def get_session() -> Generator[Session, None, None]:

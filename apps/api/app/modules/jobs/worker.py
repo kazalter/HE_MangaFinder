@@ -8,10 +8,14 @@ from app.modules.catalog.downloads import DownloadService
 from app.modules.catalog.service import DiscoveryService
 from app.modules.jobs.repository import (
     AGENT_REVIEW_SUGGESTIONS,
+    DELIVER_NOTIFICATIONS,
     DISCOVER_AUTHOR,
     DOWNLOAD_CHAPTER,
+    SOCIAL_SYNC_ACCOUNT,
     JobRepository,
 )
+from app.modules.social.notifications import NotificationService
+from app.modules.social.service import SocialSyncService
 from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -63,6 +67,17 @@ class JobWorker:
                     result = await AgentReviewService(
                         session, self.settings
                     ).run_pending(job.payload.get("max_reviews"))
+                    job.payload = {**job.payload, **result}
+                elif job.kind == SOCIAL_SYNC_ACCOUNT:
+                    result = await SocialSyncService(
+                        session, self.settings
+                    ).sync_account(int(job.payload["account_id"]))
+                    job.payload = {**job.payload, **result}
+                    jobs.enqueue_notification_delivery_if_needed()
+                elif job.kind == DELIVER_NOTIFICATIONS:
+                    result = await NotificationService(
+                        session, self.settings
+                    ).deliver_pending()
                     job.payload = {**job.payload, **result}
                 else:
                     raise ValueError(f"未知任务类型: {job.kind}")

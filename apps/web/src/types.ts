@@ -135,3 +135,75 @@ export interface Source {
   display_name: string
   capabilities: string[]
 }
+
+export interface SocialAccount {
+  id: number
+  author_id: number
+  platform: string
+  handle: string
+  display_name: string | null
+  profile_url: string | null
+  avatar_url: string | null
+  account_type: 'personal' | 'circle'
+  status: 'suggested' | 'confirmed' | 'paused' | 'error'
+  match_score: number | null
+  evidence: string[]
+  last_synced_at: string | null
+  next_sync_at: string | null
+  sync_error: string | null
+}
+
+export interface SocialAccountSuggestion {
+  handle: string
+  display_name: string | null
+  profile_url: string
+  avatar_url: string | null
+  score: number
+  evidence: string[]
+}
+
+export interface SocialPost {
+  id: number
+  platform_post_id: string
+  post_type: 'original' | 'reply' | 'quote' | 'retweet'
+  text: string
+  url: string
+  media: Array<{ type?: string; url?: string; alt_text?: string }>
+  links: string[]
+  ocr_text: string | null
+  posted_at: string
+}
+
+export interface ReleaseSignal {
+  id: number
+  author_id: number
+  author_name: string
+  kind: string
+  title: string | null
+  event_code: string | null
+  booth: string | null
+  release_date: string | null
+  store_urls: string[]
+  confidence: number
+  status: 'pending' | 'confirmed' | 'rejected' | 'linked' | 'released' | 'cancelled' | 'archived'
+  is_read: boolean
+  evidence: string[]
+  counter_evidence: string[]
+  missing_information: string[]
+  linked_group_id: number | null
+  reviewed_by: string | null
+  created_at: string
+  updated_at: string
+  posts: SocialPost[]
+}
+
+export interface SocialStatus {
+  enabled: boolean
+  collector_configured: boolean
+  agent_configured: boolean
+  qq_configured: boolean
+  auto_confirm_threshold: number
+  candidate_threshold: number
+  pending_count: number
+  unread_count: number
+}

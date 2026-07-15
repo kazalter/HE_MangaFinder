@@ -39,6 +39,26 @@ class Settings(BaseSettings):
     agent_auto_apply_threshold: float = 0.98
     agent_allow_cloud_images: bool = False
     agent_prompt_version: str = "v6"
+    social_enabled: bool = False
+    social_collector_base_url: str = "http://social-collector:8010"
+    social_collector_token: str = ""
+    social_sync_interval_minutes: int = 120
+    social_event_sync_interval_minutes: int = 30
+    social_initial_backfill_days: int = 90
+    social_max_posts_per_sync: int = 100
+    social_agent_enabled: bool = True
+    social_agent_prompt_version: str = "social-v1"
+    social_auto_confirm_threshold: float = 0.92
+    social_candidate_threshold: float = 0.60
+    social_media_dir: Path = Path("./data/social-media")
+    social_ocr_enabled: bool = True
+    public_base_url: str = "http://localhost:8000"
+    qq_bot_enabled: bool = False
+    qq_bot_app_id: str = ""
+    qq_bot_client_secret: str = ""
+    qq_bot_user_openid: str = ""
+    qq_bot_api_base_url: str = "https://api.sgroup.qq.com"
+    qq_bot_token_url: str = "https://bots.qq.com/app/getAppAccessToken"
     static_dir: Path = Path(__file__).resolve().parents[3] / "web" / "dist"
     user_agent: str = "MangaFinder/0.1 (+https://github.com/local/mangafinder)"
 
@@ -65,6 +85,19 @@ class Settings(BaseSettings):
     @property
     def agent_configured(self) -> bool:
         return bool(self.agent_enabled and self.agent_model.strip())
+
+    @property
+    def social_agent_configured(self) -> bool:
+        return bool(self.social_agent_enabled and self.agent_configured)
+
+    @property
+    def qq_bot_configured(self) -> bool:
+        return bool(
+            self.qq_bot_enabled
+            and self.qq_bot_app_id.strip()
+            and self.qq_bot_client_secret.strip()
+            and self.qq_bot_user_openid.strip()
+        )
 
 
 @lru_cache

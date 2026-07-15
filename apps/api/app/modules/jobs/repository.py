@@ -1,13 +1,15 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Job, JobStatus
+from app.db.models import Job, JobStatus, NotificationOutbox
 
 DISCOVER_AUTHOR = "discover_author"
 DOWNLOAD_CHAPTER = "download_chapter"
 AGENT_REVIEW_SUGGESTIONS = "agent_review_suggestions"
+SOCIAL_SYNC_ACCOUNT = "social_sync_account"
+DELIVER_NOTIFICATIONS = "deliver_notifications"
 
 
 class JobRepository:
@@ -58,6 +60,48 @@ class JobRepository:
             return active
         payload = {"max_reviews": maximum} if maximum is not None else {}
         job = Job(kind=AGENT_REVIEW_SUGGESTIONS, payload=payload)
+        self.session.add(job)
+        self.session.flush()
+        return job
+
+    def enqueue_social_sync(self, account_id: int) -> Job:
+        active = self.session.scalars(
+            select(Job).where(
+                Job.kind == SOCIAL_SYNC_ACCOUNT,
+                Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+            )
+        )
+        existing = next(
+            (job for job in active if job.payload.get("account_id") == account_id), None
+        )
+        if existing:
+            return existing
+        job = Job(kind=SOCIAL_SYNC_ACCOUNT, payload={"account_id": account_id})
+        self.session.add(job)
+        self.session.flush()
+        return job
+
+    def enqueue_notification_delivery_if_needed(self) -> Job | None:
+        pending = self.session.scalar(
+            select(NotificationOutbox.id).where(
+                NotificationOutbox.status == "pending",
+                or_(
+                    NotificationOutbox.next_attempt_at.is_(None),
+                    NotificationOutbox.next_attempt_at <= datetime.now(UTC),
+                ),
+            )
+        )
+        if pending is None:
+            return None
+        active = self.session.scalar(
+            select(Job).where(
+                Job.kind == DELIVER_NOTIFICATIONS,
+                Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+            )
+        )
+        if active:
+            return active
+        job = Job(kind=DELIVER_NOTIFICATIONS, payload={})
         self.session.add(job)
         self.session.flush()
         return job

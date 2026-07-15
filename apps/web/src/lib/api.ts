@@ -1,4 +1,4 @@
-import type { AgentStatus, Author, Chapter, Job, MergeSuggestion, Source, Work, WorkGroup, WorkGroupDetail } from '../types'
+import type { AgentStatus, Author, Chapter, Job, MergeSuggestion, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialStatus, Source, Work, WorkGroup, WorkGroupDetail } from '../types'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -49,4 +49,34 @@ export const api = {
     request<Job>(`/works/${workId}/downloads`, {
       method: 'POST', body: JSON.stringify({ provider, chapter_id: chapterId }),
     }),
+  socialStatus: () => request<SocialStatus>('/social/status'),
+  socialRadar: (authorId?: number, status?: string) => {
+    const params = new URLSearchParams()
+    if (authorId) params.set('author_id', String(authorId))
+    if (status) params.set('status', status)
+    return request<ReleaseSignal[]>(`/social/radar${params.size ? `?${params}` : ''}`)
+  },
+  socialAccounts: (authorId: number) =>
+    request<SocialAccount[]>(`/authors/${authorId}/social-accounts`),
+  socialAccountSuggestions: (authorId: number) =>
+    request<SocialAccountSuggestion[]>(`/authors/${authorId}/social-account-suggestions`),
+  addSocialAccount: (authorId: number, handle: string, accountType: 'personal' | 'circle' = 'personal') =>
+    request<SocialAccount>(`/authors/${authorId}/social-accounts`, {
+      method: 'POST', body: JSON.stringify({ handle, account_type: accountType, confirmed: true }),
+    }),
+  confirmSocialAccount: (authorId: number, accountId: number) =>
+    request<SocialAccount>(`/authors/${authorId}/social-accounts/${accountId}/confirm`, { method: 'POST' }),
+  deleteSocialAccount: (authorId: number, accountId: number) =>
+    request<void>(`/authors/${authorId}/social-accounts/${accountId}`, { method: 'DELETE' }),
+  syncSocial: (authorId: number) => request<Job[]>(`/authors/${authorId}/social-sync`, { method: 'POST' }),
+  reviewSocialSignal: (signalId: number, decision: 'confirm' | 'reject') =>
+    request<ReleaseSignal>(`/social/signals/${signalId}/review`, {
+      method: 'POST', body: JSON.stringify({ decision }),
+    }),
+  linkSocialSignal: (signalId: number, groupId: number) =>
+    request<ReleaseSignal>(`/social/signals/${signalId}/link-work`, {
+      method: 'POST', body: JSON.stringify({ group_id: groupId }),
+    }),
+  markSocialSignalRead: (signalId: number) =>
+    request<void>(`/social/signals/${signalId}/read`, { method: 'POST' }),
 }

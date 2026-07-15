@@ -1,0 +1,73 @@
+from datetime import datetime
+from typing import Any
+
+import httpx
+from pydantic import BaseModel, Field
+
+from app.core.config import Settings
+from app.modules.social.schemas import SocialAccountSuggestion
+
+
+class CollectorPost(BaseModel):
+    id: str
+    text: str = ""
+    url: str
+    post_type: str = "original"
+    posted_at: datetime
+    conversation_id: str | None = None
+    replied_to_post_id: str | None = None
+    quoted_post_id: str | None = None
+    media: list[dict[str, Any]] = Field(default_factory=list)
+    links: list[str] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class XBrowserCollector:
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
+        self.settings = settings
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.settings.social_collector_token:
+            headers["Authorization"] = f"Bearer {self.settings.social_collector_token}"
+        return headers
+
+    async def _request(self, method: str, path: str, **kwargs: object) -> Any:
+        owns_client = self._client is None
+        client = self._client or httpx.AsyncClient(timeout=90, follow_redirects=True)
+        try:
+            response = await client.request(
+                method,
+                f"{self.settings.social_collector_base_url.rstrip('/')}{path}",
+                headers=self._headers(),
+                **kwargs,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500]
+            raise RuntimeError(
+                f"X 采集器返回 HTTP {exc.response.status_code}：{detail}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"无法连接 X 采集器：{exc}") from exc
+        finally:
+            if owns_client:
+                await client.aclose()
+
+    async def suggestions(self, query: str) -> list[SocialAccountSuggestion]:
+        body = await self._request("GET", "/accounts/suggest", params={"q": query})
+        return [SocialAccountSuggestion.model_validate(item) for item in body]
+
+    async def posts(
+        self, handle: str, since_id: str | None, limit: int
+    ) -> list[CollectorPost]:
+        params: dict[str, str | int] = {"limit": limit}
+        if since_id:
+            params["since_id"] = since_id
+        body = await self._request(
+            "GET", f"/accounts/{handle}/posts", params=params
+        )
+        return [CollectorPost.model_validate(item) for item in body]
+

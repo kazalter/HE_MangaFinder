@@ -17,6 +17,8 @@ from app.modules.jobs.router import router as jobs_router
 from app.modules.jobs.worker import JobWorker
 from app.modules.media.router import router as media_router
 from app.modules.media.service import CoverCacheService
+from app.modules.social.router import router as social_router
+from app.modules.social.scheduler import SocialScheduler
 from app.modules.sources.router import router as sources_router
 from app.providers.registry import build_registry
 
@@ -30,12 +32,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.providers = providers
     app.state.cover_cache = CoverCacheService(settings.cover_cache_dir, providers)
     worker_task = None
+    social_scheduler_task = None
     if settings.worker_enabled:
         worker_task = asyncio.create_task(JobWorker(settings, providers).run())
+    if settings.social_enabled:
+        social_scheduler_task = asyncio.create_task(SocialScheduler(settings).run())
     yield
-    if worker_task:
-        worker_task.cancel()
-        await asyncio.gather(worker_task, return_exceptions=True)
+    tasks = [task for task in (worker_task, social_scheduler_task) if task]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
     await providers.close()
 
 
@@ -61,6 +68,7 @@ app.include_router(groups_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(media_router, prefix="/api")
 app.include_router(sources_router, prefix="/api")
+app.include_router(social_router, prefix="/api")
 
 if settings.static_dir.exists():
     assets_dir = settings.static_dir / "assets"

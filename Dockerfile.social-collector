@@ -1,8 +1,6 @@
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 
 RUN sed -i \
@@ -11,18 +9,18 @@ RUN sed -i \
       -e 's/ trixie-updates//' \
       /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-jpn tesseract-ocr-jpn-vert \
+    && apt-get install -y --no-install-recommends chromium fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-COPY apps/api ./apps/api
+COPY apps/social_collector ./apps/social_collector
 RUN pip install --no-cache-dir \
       --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-      ./apps/api
+      ./apps/social_collector
 
-COPY apps/web/dist ./apps/web/dist
+RUN useradd --create-home --uid 1000 pwuser \
+    && mkdir -p /session \
+    && chown -R pwuser:pwuser /session /app
+USER pwuser
 
-RUN mkdir -p /app/data
-
-EXPOSE 8000
-
-CMD ["uvicorn", "app.main:app", "--app-dir", "apps/api", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 8010
+CMD ["uvicorn", "app.main:app", "--app-dir", "apps/social_collector", "--host", "0.0.0.0", "--port", "8010"]
