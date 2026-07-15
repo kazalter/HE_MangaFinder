@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     social_candidate_threshold: float = 0.60
     social_media_dir: Path = Path("./data/social-media")
     social_ocr_enabled: bool = True
+    social_ocr_max_posts_per_sync: int = 12
+    social_ocr_timeout_seconds: float = 30.0
     public_base_url: str = "http://localhost:8000"
     qq_bot_enabled: bool = False
     qq_bot_app_id: str = ""

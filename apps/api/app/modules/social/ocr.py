@@ -50,11 +50,20 @@ class LocalMediaOcr:
                         str(path),
                         "stdout",
                         "-l",
-                        "jpn+jpn_vert+eng",
+                        "jpn+eng",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    stdout, _ = await result.communicate()
+                    try:
+                        stdout, _ = await asyncio.wait_for(
+                            result.communicate(),
+                            timeout=self.settings.social_ocr_timeout_seconds,
+                        )
+                    except TimeoutError:
+                        result.kill()
+                        await result.communicate()
+                        logger.info("Social media OCR timed out: %s", url)
+                        continue
                     text = stdout.decode("utf-8", errors="replace").strip()
                     if text:
                         texts.append(text[:6000])

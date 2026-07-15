@@ -7,10 +7,27 @@ name = "mangafinder-social-collector"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+  "curl-cffi>=0.13,<1",
   "fastapi>=0.115,<1",
   "playwright==1.55.0",
   "uvicorn[standard]>=0.30,<1",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.8,<1",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

@@ -74,6 +74,66 @@ class SocialPostRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+ActivityCategory = Literal[
+    "creation_progress",
+    "release",
+    "event",
+    "sales",
+    "artwork",
+    "collaboration",
+    "schedule_notice",
+    "personal",
+    "other",
+]
+
+
+class ActivityItemRead(BaseModel):
+    id: int
+    author_id: int
+    author_name: str
+    category: str
+    headline: str
+    summary: str
+    importance: str
+    confidence: float
+    is_read: bool
+    started_at: datetime
+    ended_at: datetime
+    posts: list[SocialPostRead]
+
+
+class DigestHighlight(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+    category: ActivityCategory
+    importance: Literal["critical", "high", "normal", "low"] = "normal"
+    factuality: Literal["fact", "plan", "inference"] = "fact"
+    post_ids: list[int] = Field(min_length=1, max_length=10)
+
+
+class ActivityDigestVerdict(BaseModel):
+    summary: str = Field(min_length=1, max_length=1200)
+    highlights: list[DigestHighlight] = Field(default_factory=list, max_length=12)
+    uncertainties: list[str] = Field(default_factory=list, max_length=10)
+
+
+class AuthorDigestRead(BaseModel):
+    id: int
+    author_id: int
+    author_name: str
+    period_type: str
+    period_start: datetime
+    period_end: datetime
+    summary: str
+    highlights: list[DigestHighlight]
+    uncertainties: list[str]
+    evidence_post_ids: list[int]
+    generated_by: str
+    model: str | None
+    error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ReleaseSignalRead(BaseModel):
     id: int
     author_id: int

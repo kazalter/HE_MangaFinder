@@ -16,8 +16,10 @@ from app.db.models import (
     SocialPost,
     Work,
 )
+from app.modules.social.activity import ActivityService
 from app.modules.social.agent import SocialReleaseReviewer
 from app.modules.social.collector import CollectorPost, XBrowserCollector
+from app.modules.social.digest import DigestService
 from app.modules.social.ocr import LocalMediaOcr
 from app.modules.social.repository import SocialRepository
 from app.modules.social.rules import RuleAssessment, assess_post, cluster_key
@@ -67,6 +69,17 @@ class SocialSyncService:
         created_count = 0
         analyzed_count = 0
         signal_count = 0
+        activity_count = 0
+        # First sync may return a large media-heavy timeline. Persist every post, but spend
+        # OCR time on the newest items; later incremental runs naturally process all new media.
+        newest_media_post_ids = [
+            item.id
+            for item in sorted(incoming, key=lambda value: value.posted_at, reverse=True)
+            if item.media
+        ]
+        ocr_post_ids = set(
+            newest_media_post_ids[: max(0, self.settings.social_ocr_max_posts_per_sync)]
+        )
         for item in sorted(incoming, key=lambda value: value.posted_at):
             posted_at = item.posted_at
             if posted_at.tzinfo is None:
@@ -99,17 +112,22 @@ class SocialSyncService:
                 continue
             if post.post_type == "retweet":
                 continue
-            if post.media and not post.ocr_text:
+            if post.media and not post.ocr_text and item.id in ocr_post_ids:
                 post.ocr_text = await LocalMediaOcr(self.settings).extract(post.media)
             analyzed_count += 1
+            if ActivityService(self.session).ingest(account, post):
+                activity_count += 1
             if await self.analyze_post(account, post):
                 signal_count += 1
+        if activity_count:
+            await DigestService(self.session, self.settings).refresh(account.author_id)
         self.session.flush()
         return {
             "fetched": len(incoming),
             "created": created_count,
             "analyzed": analyzed_count,
             "signals": signal_count,
+            "activities": activity_count,
         }
 
     async def analyze_post(self, account: SocialAccount, post: SocialPost) -> ReleaseSignal | None:

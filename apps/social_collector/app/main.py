@@ -11,19 +11,21 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from playwright.async_api import (
     Browser,
     BrowserContext,
-    Error as PlaywrightError,
     Page,
     async_playwright,
 )
+from playwright.async_api import (
+    Error as PlaywrightError,
+)
+
+from app.graphql import GraphQLTransientError, GraphQLUnavailable, WebGraphQLCollector
 
 TOKEN = os.getenv("SOCIAL_COLLECTOR_TOKEN", "")
 STATE_SOURCE = Path(os.getenv("SOCIAL_COLLECTOR_STORAGE_STATE", "/session/storage-state.json"))
 STATE_RUNTIME = Path(os.getenv("SOCIAL_COLLECTOR_RUNTIME_STATE", "/session/runtime-state.json"))
 HEADLESS = os.getenv("SOCIAL_COLLECTOR_HEADLESS", "true").lower() != "false"
 PROXY_URL = os.getenv("SOCIAL_COLLECTOR_PROXY_URL", "").strip()
-CHROMIUM_EXECUTABLE = os.getenv(
-    "SOCIAL_COLLECTOR_CHROMIUM_EXECUTABLE", "/usr/bin/chromium"
-).strip()
+CHROMIUM_EXECUTABLE = os.getenv("SOCIAL_COLLECTOR_CHROMIUM_EXECUTABLE", "/usr/bin/chromium").strip()
 POST_RE = re.compile(r"/status/(\d+)")
 HANDLE_RE = re.compile(r"^/([A-Za-z0-9_]{1,15})$")
 
@@ -121,11 +123,17 @@ class BrowserCollector:
                             handle = match.group(1)
                             profile_url = f"https://x.com/{handle}"
                             break
-                    if not handle or any(item["handle"].casefold() == handle.casefold() for item in results):
+                    if not handle or any(
+                        item["handle"].casefold() == handle.casefold() for item in results
+                    ):
                         continue
                     avatar = cell.locator('img[src*="profile_images"]')
-                    avatar_url = await avatar.first.get_attribute("src") if await avatar.count() else None
-                    display_name = next((line for line in text.splitlines() if not line.startswith("@")), handle)
+                    avatar_url = (
+                        await avatar.first.get_attribute("src") if await avatar.count() else None
+                    )
+                    display_name = next(
+                        (line for line in text.splitlines() if not line.startswith("@")), handle
+                    )
                     exact = query.casefold() in text.casefold()
                     results.append(
                         {
@@ -134,7 +142,9 @@ class BrowserCollector:
                             "profile_url": profile_url,
                             "avatar_url": avatar_url,
                             "score": 0.88 if exact else 0.55,
-                            "evidence": ["X 用户搜索命中作者名" if exact else "X 用户搜索候选；需要人工核对"],
+                            "evidence": [
+                                "X 用户搜索命中作者名" if exact else "X 用户搜索候选；需要人工核对"
+                            ],
                         }
                     )
                 return results
@@ -158,10 +168,14 @@ class BrowserCollector:
                         if not parsed:
                             continue
                         if since_id and parsed["id"] == since_id:
-                            return sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
+                            return sorted(
+                                found.values(), key=lambda item: item["posted_at"], reverse=True
+                            )
                         found[parsed["id"]] = parsed
                         if len(found) >= limit:
-                            return sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
+                            return sorted(
+                                found.values(), key=lambda item: item["posted_at"], reverse=True
+                            )
                     stalled = stalled + 1 if len(found) == before else 0
                     if stalled >= 3:
                         break
@@ -204,7 +218,9 @@ class BrowserCollector:
             post_type = "retweet"
         elif author_handle.casefold() != handle.casefold():
             post_type = "retweet"
-        elif any(term in article_text.casefold() for term in ("replying to", "返信先", "回复", "回覆")):
+        elif any(
+            term in article_text.casefold() for term in ("replying to", "返信先", "回复", "回覆")
+        ):
             post_type = "reply"
         card = article.locator('[data-testid="card.wrapper"]')
         if post_type == "original" and await time_locator.count() > 1:
@@ -237,7 +253,9 @@ class BrowserCollector:
             "text": text,
             "url": tweet_url,
             "post_type": post_type,
-            "posted_at": datetime.fromisoformat(posted.replace("Z", "+00:00")).astimezone(UTC).isoformat(),
+            "posted_at": datetime.fromisoformat(posted.replace("Z", "+00:00"))
+            .astimezone(UTC)
+            .isoformat(),
             "conversation_id": related_id if post_type == "reply" else post_id,
             "replied_to_post_id": related_id if post_type == "reply" else None,
             "quoted_post_id": related_id if post_type == "quote" else None,
@@ -252,6 +270,15 @@ class BrowserCollector:
 
 
 collector = BrowserCollector()
+graphql_collector = WebGraphQLCollector(
+    STATE_SOURCE,
+    PROXY_URL,
+    os.getenv("SOCIAL_COLLECTOR_USER_AGENT", "").strip()
+    or (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    ),
+)
 
 
 @asynccontextmanager
@@ -274,12 +301,21 @@ def health(_: Annotated[None, Depends(authorize)]) -> dict[str, object]:
     return {
         "status": "ok",
         "session_present": STATE_SOURCE.exists() or STATE_RUNTIME.exists(),
+        "graphql_session_present": graphql_collector.available,
+        "primary_provider": "x_web_graphql" if graphql_collector.available else "browser",
         "headless": HEADLESS,
     }
 
 
 @app.get("/accounts/suggest", dependencies=[Depends(authorize)])
 async def suggest(q: Annotated[str, Query(min_length=1, max_length=200)]) -> list[dict[str, Any]]:
+    if graphql_collector.available:
+        try:
+            exact = await asyncio.to_thread(graphql_collector.suggestions, q)
+            if exact:
+                return exact
+        except (GraphQLUnavailable, GraphQLTransientError):
+            pass
     return await collector.suggest(q)
 
 
@@ -292,4 +328,11 @@ async def posts(
     clean = handle.removeprefix("@")
     if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", clean):
         raise HTTPException(status_code=422, detail="X 账号格式无效")
+    if graphql_collector.available:
+        try:
+            return await asyncio.to_thread(graphql_collector.posts, clean, since_id, limit)
+        except GraphQLUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except GraphQLTransientError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     return await collector.posts(clean, since_id, limit)

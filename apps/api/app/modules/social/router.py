@@ -6,14 +6,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db.models import ReleaseSignal, SocialAccount, SocialPost, WorkGroup
+from app.db.models import (
+    ActivityItem,
+    AuthorDigest,
+    ReleaseSignal,
+    SocialAccount,
+    SocialPost,
+    WorkGroup,
+)
 from app.db.session import get_session
 from app.modules.authors.repository import AuthorRepository
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.schemas import JobRead
 from app.modules.social.collector import XBrowserCollector
+from app.modules.social.digest import DigestService
 from app.modules.social.repository import SocialRepository
 from app.modules.social.schemas import (
+    ActivityItemRead,
+    AuthorDigestRead,
     ReleaseSignalRead,
     SignalLinkRequest,
     SignalReviewRequest,
@@ -62,6 +72,49 @@ def _signal_read(session: Session, signal: ReleaseSignal) -> ReleaseSignalRead:
     )
 
 
+def _activity_read(session: Session, activity: ActivityItem) -> ActivityItemRead:
+    repository = SocialRepository(session)
+    author = repository.author(activity.author_id)
+    return ActivityItemRead(
+        id=activity.id,
+        author_id=activity.author_id,
+        author_name=author.name if author else "已删除作者",
+        category=activity.category,
+        headline=activity.headline,
+        summary=activity.summary,
+        importance=activity.importance,
+        confidence=activity.confidence,
+        is_read=activity.is_read,
+        started_at=activity.started_at,
+        ended_at=activity.ended_at,
+        posts=[
+            SocialPostRead.model_validate(post)
+            for post in repository.activity_posts(activity.id)
+        ],
+    )
+
+
+def _digest_read(session: Session, digest: AuthorDigest) -> AuthorDigestRead:
+    author = SocialRepository(session).author(digest.author_id)
+    return AuthorDigestRead(
+        id=digest.id,
+        author_id=digest.author_id,
+        author_name=author.name if author else "已删除作者",
+        period_type=digest.period_type,
+        period_start=digest.period_start,
+        period_end=digest.period_end,
+        summary=digest.summary,
+        highlights=digest.highlights,
+        uncertainties=digest.uncertainties,
+        evidence_post_ids=digest.evidence_post_ids,
+        generated_by=digest.generated_by,
+        model=digest.model,
+        error=digest.error,
+        created_at=digest.created_at,
+        updated_at=digest.updated_at,
+    )
+
+
 @router.get("/social/status", response_model=SocialStatusRead)
 def social_status(session: SessionDep) -> SocialStatusRead:
     settings = get_settings()
@@ -73,6 +126,9 @@ def social_status(session: SessionDep) -> SocialStatusRead:
                 .where(ReleaseSignal.status.in_(["pending", "confirmed", "linked"]))
             )
         )
+    )
+    unread += len(
+        list(session.scalars(select(ActivityItem.id).where(ActivityItem.is_read.is_(False))))
     )
     return SocialStatusRead(
         enabled=settings.social_enabled,
@@ -206,6 +262,76 @@ def list_radar(
 ) -> list[ReleaseSignalRead]:
     rows = SocialRepository(session).list_signals(author_id, signal_status, limit)
     return [_signal_read(session, signal) for signal in rows]
+
+
+@router.get("/social/activity", response_model=list[ActivityItemRead])
+def list_activity(
+    session: SessionDep,
+    author_id: int | None = None,
+    category: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=300)] = 100,
+) -> list[ActivityItemRead]:
+    rows = SocialRepository(session).list_activities(author_id, category, limit)
+    return [_activity_read(session, item) for item in rows]
+
+
+@router.get(
+    "/authors/{author_id}/social-digest", response_model=AuthorDigestRead | None
+)
+def get_author_digest(author_id: int, session: SessionDep) -> AuthorDigestRead | None:
+    if not AuthorRepository(session).get(author_id):
+        raise HTTPException(status_code=404, detail="作者不存在")
+    digest = SocialRepository(session).latest_digest(author_id)
+    return _digest_read(session, digest) if digest else None
+
+
+@router.post(
+    "/authors/{author_id}/social-digest/refresh",
+    response_model=AuthorDigestRead | None,
+)
+async def refresh_author_digest(
+    author_id: int, session: SessionDep
+) -> AuthorDigestRead | None:
+    _require_social_enabled()
+    if not AuthorRepository(session).get(author_id):
+        raise HTTPException(status_code=404, detail="作者不存在")
+    digest = await DigestService(session, get_settings()).refresh(author_id)
+    session.commit()
+    return _digest_read(session, digest) if digest else None
+
+
+@router.get(
+    "/authors/{author_id}/social-posts", response_model=list[SocialPostRead]
+)
+def list_author_social_posts(
+    author_id: int,
+    session: SessionDep,
+    post_type: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=300)] = 100,
+) -> list[SocialPostRead]:
+    if not AuthorRepository(session).get(author_id):
+        raise HTTPException(status_code=404, detail="作者不存在")
+    statement = (
+        select(SocialPost)
+        .join(SocialAccount, SocialAccount.id == SocialPost.account_id)
+        .where(SocialAccount.author_id == author_id)
+    )
+    if post_type:
+        statement = statement.where(SocialPost.post_type == post_type)
+    rows = list(
+        session.scalars(statement.order_by(SocialPost.posted_at.desc()).limit(limit))
+    )
+    return [SocialPostRead.model_validate(post) for post in rows]
+
+
+@router.post("/social/activity/{activity_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+def mark_activity_read(activity_id: int, session: SessionDep) -> Response:
+    item = session.get(ActivityItem, activity_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="作者动态不存在")
+    item.is_read = True
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/social/signals/{signal_id}", response_model=ReleaseSignalRead)

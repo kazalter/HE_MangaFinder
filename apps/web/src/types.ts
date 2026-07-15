@@ -209,3 +209,44 @@ export interface SocialStatus {
   pending_count: number
   unread_count: number
 }
+
+export interface ActivityItem {
+  id: number
+  author_id: number
+  author_name: string
+  category: string
+  headline: string
+  summary: string
+  importance: 'critical' | 'high' | 'normal' | 'low'
+  confidence: number
+  is_read: boolean
+  started_at: string
+  ended_at: string
+  posts: SocialPost[]
+}
+
+export interface DigestHighlight {
+  text: string
+  category: string
+  importance: 'critical' | 'high' | 'normal' | 'low'
+  factuality: 'fact' | 'plan' | 'inference'
+  post_ids: number[]
+}
+
+export interface AuthorDigest {
+  id: number
+  author_id: number
+  author_name: string
+  period_type: string
+  period_start: string
+  period_end: string
+  summary: string
+  highlights: DigestHighlight[]
+  uncertainties: string[]
+  evidence_post_ids: number[]
+  generated_by: 'agent' | 'rules'
+  model: string | null
+  error: string | null
+  created_at: string
+  updated_at: string
+}

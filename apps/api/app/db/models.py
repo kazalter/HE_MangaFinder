@@ -295,6 +295,73 @@ class SocialPost(Base):
     )
 
 
+class ActivityItem(Base):
+    """A grounded author activity topic assembled from one or more social posts."""
+
+    __tablename__ = "activity_items"
+    __table_args__ = (UniqueConstraint("author_id", "cluster_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    primary_post_id: Mapped[int] = mapped_column(
+        ForeignKey("social_posts.id", ondelete="CASCADE"), index=True
+    )
+    cluster_key: Mapped[str] = mapped_column(String(64), index=True)
+    category: Mapped[str] = mapped_column(String(40), index=True)
+    headline: Mapped[str] = mapped_column(String(500))
+    summary: Mapped[str] = mapped_column(Text, default="")
+    importance: Mapped[str] = mapped_column(String(20), default="normal", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class ActivityItemPost(Base):
+    __tablename__ = "activity_item_posts"
+
+    activity_id: Mapped[int] = mapped_column(
+        ForeignKey("activity_items.id", ondelete="CASCADE"), primary_key=True
+    )
+    post_id: Mapped[int] = mapped_column(
+        ForeignKey("social_posts.id", ondelete="CASCADE"), primary_key=True, unique=True
+    )
+    relation: Mapped[str] = mapped_column(String(30), default="evidence")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuthorDigest(Base):
+    __tablename__ = "author_digests"
+    __table_args__ = (UniqueConstraint("author_id", "period_type", "period_end"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    period_type: Mapped[str] = mapped_column(String(30), default="rolling_7d", index=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    highlights: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    uncertainties: Mapped[list[str]] = mapped_column(JSON, default=list)
+    evidence_post_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    generated_by: Mapped[str] = mapped_column(String(30), default="rules")
+    model: Mapped[str | None] = mapped_column(String(200))
+    prompt_version: Mapped[str | None] = mapped_column(String(50))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class EventRegistry(Base):
     __tablename__ = "events"
 

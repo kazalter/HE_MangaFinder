@@ -1,4 +1,4 @@
-import type { AgentStatus, Author, Chapter, Job, MergeSuggestion, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialStatus, Source, Work, WorkGroup, WorkGroupDetail } from '../types'
+import type { ActivityItem, AgentStatus, Author, AuthorDigest, Chapter, Job, MergeSuggestion, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, Work, WorkGroup, WorkGroupDetail } from '../types'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -60,6 +60,23 @@ export const api = {
     request<SocialAccount[]>(`/authors/${authorId}/social-accounts`),
   socialAccountSuggestions: (authorId: number) =>
     request<SocialAccountSuggestion[]>(`/authors/${authorId}/social-account-suggestions`),
+  socialActivity: (authorId?: number, category?: string) => {
+    const params = new URLSearchParams()
+    if (authorId) params.set('author_id', String(authorId))
+    if (category) params.set('category', category)
+    return request<ActivityItem[]>(`/social/activity${params.size ? `?${params}` : ''}`)
+  },
+  socialDigest: (authorId: number) =>
+    request<AuthorDigest | null>(`/authors/${authorId}/social-digest`),
+  refreshSocialDigest: (authorId: number) =>
+    request<AuthorDigest | null>(`/authors/${authorId}/social-digest/refresh`, { method: 'POST' }),
+  socialPosts: (authorId: number, postType?: string) => {
+    const params = new URLSearchParams()
+    if (postType) params.set('post_type', postType)
+    return request<SocialPost[]>(`/authors/${authorId}/social-posts${params.size ? `?${params}` : ''}`)
+  },
+  markActivityRead: (activityId: number) =>
+    request<void>(`/social/activity/${activityId}/read`, { method: 'POST' }),
   addSocialAccount: (authorId: number, handle: string, accountType: 'personal' | 'circle' = 'personal') =>
     request<SocialAccount>(`/authors/${authorId}/social-accounts`, {
       method: 'POST', body: JSON.stringify({ handle, account_type: accountType, confirmed: true }),

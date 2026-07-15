@@ -8,11 +8,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
-from app.db.session import init_db
+from app.db.session import SessionLocal, init_db
 from app.modules.agent_review.router import router as agent_reviews_router
 from app.modules.authors.router import router as authors_router
 from app.modules.catalog.groups_router import router as groups_router
 from app.modules.catalog.router import router as catalog_router
+from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.router import router as jobs_router
 from app.modules.jobs.worker import JobWorker
 from app.modules.media.router import router as media_router
@@ -28,6 +29,8 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
+    with SessionLocal() as session:
+        JobRepository(session).recover_interrupted()
     providers = build_registry(settings)
     app.state.providers = providers
     app.state.cover_cache = CoverCacheService(settings.cover_cache_dir, providers)

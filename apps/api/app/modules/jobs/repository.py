@@ -136,6 +136,19 @@ class JobRepository:
             self.session.commit()
         return job
 
+    def recover_interrupted(self) -> int:
+        """Requeue jobs left RUNNING when the previous process stopped unexpectedly."""
+        interrupted = list(
+            self.session.scalars(select(Job).where(Job.status == JobStatus.RUNNING))
+        )
+        for job in interrupted:
+            job.status = JobStatus.PENDING
+            job.started_at = None
+            job.error = "上次运行被服务重启中断，已自动重新排队"
+        if interrupted:
+            self.session.commit()
+        return len(interrupted)
+
     def succeed(self, job: Job) -> None:
         job.status = JobStatus.SUCCEEDED
         job.finished_at = datetime.now(UTC)

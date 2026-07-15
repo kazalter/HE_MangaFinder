@@ -4,7 +4,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    ActivityItem,
+    ActivityItemPost,
     Author,
+    AuthorDigest,
     NotificationOutbox,
     ReleaseSignal,
     ReleaseSignalPost,
@@ -139,6 +142,85 @@ class SocialRepository:
                 .where(ReleaseSignalPost.signal_id == signal_id)
                 .order_by(SocialPost.posted_at)
             )
+        )
+
+    def activity_by_cluster(self, author_id: int, key: str) -> ActivityItem | None:
+        return self.session.scalar(
+            select(ActivityItem).where(
+                ActivityItem.author_id == author_id,
+                ActivityItem.cluster_key == key,
+            )
+        )
+
+    def attach_activity_post(self, activity: ActivityItem, post: SocialPost) -> None:
+        if not self.session.get(ActivityItemPost, (activity.id, post.id)):
+            self.session.add(ActivityItemPost(activity_id=activity.id, post_id=post.id))
+
+    def activity_posts(self, activity_id: int) -> list[SocialPost]:
+        return list(
+            self.session.scalars(
+                select(SocialPost)
+                .join(ActivityItemPost, ActivityItemPost.post_id == SocialPost.id)
+                .where(ActivityItemPost.activity_id == activity_id)
+                .order_by(SocialPost.posted_at)
+            )
+        )
+
+    def list_activities(
+        self,
+        author_id: int | None = None,
+        category: str | None = None,
+        limit: int = 100,
+    ) -> list[ActivityItem]:
+        statement = select(ActivityItem)
+        if author_id is not None:
+            statement = statement.where(ActivityItem.author_id == author_id)
+        if category:
+            statement = statement.where(ActivityItem.category == category)
+        return list(
+            self.session.scalars(
+                statement.order_by(ActivityItem.ended_at.desc(), ActivityItem.id.desc()).limit(
+                    limit
+                )
+            )
+        )
+
+    def recent_posts_for_author(self, author_id: int, since: datetime) -> list[SocialPost]:
+        return list(
+            self.session.scalars(
+                select(SocialPost)
+                .join(SocialAccount, SocialAccount.id == SocialPost.account_id)
+                .where(
+                    SocialAccount.author_id == author_id,
+                    SocialPost.posted_at >= since,
+                    SocialPost.post_type != "retweet",
+                )
+                .order_by(SocialPost.posted_at)
+            )
+        )
+
+    def digest_for_period(
+        self, author_id: int, period_type: str, period_end: datetime
+    ) -> AuthorDigest | None:
+        return self.session.scalar(
+            select(AuthorDigest).where(
+                AuthorDigest.author_id == author_id,
+                AuthorDigest.period_type == period_type,
+                AuthorDigest.period_end == period_end,
+            )
+        )
+
+    def latest_digest(
+        self, author_id: int, period_type: str = "rolling_7d"
+    ) -> AuthorDigest | None:
+        return self.session.scalar(
+            select(AuthorDigest)
+            .where(
+                AuthorDigest.author_id == author_id,
+                AuthorDigest.period_type == period_type,
+            )
+            .order_by(AuthorDigest.period_end.desc(), AuthorDigest.id.desc())
+            .limit(1)
         )
 
     def count_signals(self, status: str | None = None) -> int:
