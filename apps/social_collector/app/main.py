@@ -8,7 +8,13 @@ from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    Error as PlaywrightError,
+    Page,
+    async_playwright,
+)
 
 TOKEN = os.getenv("SOCIAL_COLLECTOR_TOKEN", "")
 STATE_SOURCE = Path(os.getenv("SOCIAL_COLLECTOR_STORAGE_STATE", "/session/storage-state.json"))
@@ -78,14 +84,26 @@ class BrowserCollector:
         if "something went wrong" in body or "問題が発生しました" in body:
             raise HTTPException(status_code=503, detail="X 页面加载失败或触发访问限制")
 
+    async def navigate(self, page: Page, url: str) -> None:
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        except PlaywrightError as exc:
+            message = str(exc).casefold()
+            if "err_timed_out" in message or "timeout" in message:
+                detail = "连接 X 超时，请检查动态雷达的代理地址和代理服务"
+            elif "err_proxy_connection_failed" in message:
+                detail = "无法连接动态雷达代理，请检查代理地址和端口"
+            else:
+                detail = "无法打开 X 页面，请检查网络、代理或 X 的访问状态"
+            raise HTTPException(status_code=503, detail=detail) from exc
+
     async def suggest(self, query: str) -> list[dict[str, Any]]:
         async with self.lock:
             page = await self.page()
             try:
-                await page.goto(
+                await self.navigate(
+                    page,
                     f"https://x.com/search?q={quote(query)}&src=typed_query&f=user",
-                    wait_until="domcontentloaded",
-                    timeout=60000,
                 )
                 await page.wait_for_timeout(2500)
                 await self.ensure_access(page)
@@ -127,9 +145,7 @@ class BrowserCollector:
         async with self.lock:
             page = await self.page()
             try:
-                await page.goto(
-                    f"https://x.com/{handle}", wait_until="domcontentloaded", timeout=60000
-                )
+                await self.navigate(page, f"https://x.com/{handle}")
                 await page.wait_for_timeout(2500)
                 await self.ensure_access(page)
                 found: dict[str, dict[str, Any]] = {}

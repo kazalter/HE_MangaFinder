@@ -33,6 +33,16 @@ class XBrowserCollector:
             headers["Authorization"] = f"Bearer {self.settings.social_collector_token}"
         return headers
 
+    @staticmethod
+    def _response_error_detail(response: httpx.Response) -> str:
+        try:
+            body = response.json()
+        except ValueError:
+            return response.text.strip()[:500] or "采集器没有返回错误说明"
+        if isinstance(body, dict) and isinstance(body.get("detail"), str):
+            return body["detail"][:500]
+        return response.text.strip()[:500] or "采集器没有返回错误说明"
+
     async def _request(self, method: str, path: str, **kwargs: object) -> Any:
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=90, follow_redirects=True)
@@ -46,10 +56,8 @@ class XBrowserCollector:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as exc:
-            detail = exc.response.text[:500]
-            raise RuntimeError(
-                f"X 采集器返回 HTTP {exc.response.status_code}：{detail}"
-            ) from exc
+            detail = self._response_error_detail(exc.response)
+            raise RuntimeError(f"X 采集器暂时不可用：{detail}") from exc
         except httpx.HTTPError as exc:
             raise RuntimeError(f"无法连接 X 采集器：{exc}") from exc
         finally:
@@ -70,4 +78,3 @@ class XBrowserCollector:
             "GET", f"/accounts/{handle}/posts", params=params
         )
         return [CollectorPost.model_validate(item) for item in body]
-
