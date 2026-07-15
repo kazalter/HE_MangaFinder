@@ -15,12 +15,82 @@ from app.modules.social.schemas import ActivityDigestVerdict
 
 DIGEST_SYSTEM_PROMPT = """You summarize recent public posts by a tracked comic creator.
 
-Use only the supplied JSON. Write concise Simplified Chinese, preserve Japanese titles and event
-codes, and distinguish fact, author plan, and inference. Pure reposts are absent. A quoted post is
-not automatically the tracked creator's own work. Every highlight must cite one or more supplied
-integer post_ids. Never invent an ID, title, date, event, or causal relationship. Personal chatter
-is low priority unless it explains an absence or schedule change. Return JSON only.
+Use only the supplied JSON. All prose in summary, highlights.text, and uncertainties MUST be
+natural Simplified Chinese. Translate ordinary Japanese words and phrases instead of mixing them
+into Chinese. Use translation_hints when present. Preserve creator names, circle names, work
+titles, store names, booth numbers, and event codes exactly; on first mention, explain an
+unfamiliar Japanese event nickname as `中文解释（原文）`. Do not translate inside an exact work
+title. If a proper noun is ambiguous, keep its original spelling and state the uncertainty rather
+than guessing.
+
+Distinguish fact, author plan, and inference. Pure reposts are absent. For a quote post, the
+quoted_text belongs to another account: describe it as the creator quoting/commenting on that
+content, never as the creator's own work and never call it a repost. Give low-value quotes and
+chatter low priority. Every highlight must cite one or more supplied integer post_ids. Never
+invent an ID, title, date, event, translation, or causal relationship. Return JSON only.
 """
+
+TRANSLATION_HINTS: tuple[tuple[str, str], ...] = (
+    ("トレカケースアクキー", "卡套亚克力挂件"),
+    ("トレカケース", "卡套"),
+    ("アクリルキーホルダー", "亚克力挂件"),
+    ("アクキー", "亚克力挂件"),
+    ("アクリルスタンド", "亚克力立牌"),
+    ("アクスタ", "亚克力立牌"),
+    ("委託申請", "委托销售申请"),
+    ("予約開始", "开放预订"),
+    ("通販", "网售"),
+    ("お品書き", "商品目录"),
+    ("夏コミ", "夏季 Comic Market（夏コミ）"),
+    ("冬コミ", "冬季 Comic Market（冬コミ）"),
+    ("コミティア", "COMITIA（コミティア）"),
+    ("サンプル", "样品"),
+    ("スペース", "展位"),
+    ("頒布", "现场销售"),
+    ("表紙", "封面"),
+    ("原稿", "创作稿件"),
+    ("入稿", "交稿付印"),
+    ("脱稿", "完成稿件"),
+    ("新刊", "新作同人志"),
+)
+DIGEST_LOCALIZATION_VERSION = "zh-cn-2026-07-15.2"
+
+
+def translation_hints(posts: list[SocialPost]) -> list[dict[str, str]]:
+    corpus = "\n".join(
+        part
+        for post in posts
+        for part in (
+            post.text,
+            post.ocr_text or "",
+            str(post.raw_metadata.get("quoted_text") or ""),
+        )
+        if part
+    )
+    return [
+        {"source": source, "preferred_zh": translated}
+        for source, translated in TRANSLATION_HINTS
+        if source in corpus
+    ]
+
+
+def localize_known_terms(text: str) -> str:
+    localized = text
+    for source, translated in TRANSLATION_HINTS:
+        if source in localized and translated not in localized:
+            localized = localized.replace(source, translated)
+    # Pure reposts never reach a digest. Any such wording therefore refers to a quote post and
+    # must retain the distinction between the creator's commentary and the quoted account.
+    localized = localized.replace("转发", "引用").replace("转推", "引用")
+    return localized
+
+
+def localize_verdict(verdict: ActivityDigestVerdict) -> ActivityDigestVerdict:
+    verdict.summary = localize_known_terms(verdict.summary)
+    for item in verdict.highlights:
+        item.text = localize_known_terms(item.text)
+    verdict.uncertainties = [localize_known_terms(item) for item in verdict.uncertainties]
+    return verdict
 
 
 class ActivityDigestReviewer:
@@ -116,9 +186,18 @@ class DigestService:
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
             "posts": [self._post_snapshot(post) for post in posts],
+            "translation_hints": translation_hints(posts),
         }
         content_hash = sha256(
-            json.dumps(evidence, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            json.dumps(
+                {
+                    "evidence": evidence,
+                    "prompt_version": self.settings.social_agent_prompt_version,
+                    "localization_version": DIGEST_LOCALIZATION_VERSION,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
         ).hexdigest()
         digest = self.repository.digest_for_period(author_id, "rolling_7d", period_end)
         if digest and digest.content_hash == content_hash:
@@ -137,6 +216,7 @@ class DigestService:
             except Exception as exc:
                 error = str(exc)[:2000]
 
+        verdict = localize_verdict(verdict)
         evidence_ids = sorted(
             {post_id for item in verdict.highlights for post_id in item.post_ids}
         )
@@ -206,7 +286,7 @@ class DigestService:
         ranked.sort(reverse=True, key=lambda item: (item[0], item[1]))
         highlights = [
             {
-                "text": assessment.headline,
+                "text": localize_known_terms(assessment.headline),
                 "category": assessment.category,
                 "importance": assessment.importance,
                 "factuality": "fact",

@@ -8,7 +8,11 @@ from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import Author, SocialAccount, SocialPost
 from app.modules.social.activity import ActivityService, assess_activity
-from app.modules.social.digest import DigestService
+from app.modules.social.digest import (
+    DigestService,
+    localize_known_terms,
+    translation_hints,
+)
 from app.modules.social.repository import SocialRepository
 
 
@@ -106,3 +110,64 @@ async def test_fallback_digest_is_grounded_in_non_retweets(session: Session) -> 
     assert digest.generated_by == "rules"
     assert digest.evidence_post_ids == [original.id]
     assert all(original.id in item["post_ids"] for item in digest.highlights)
+
+
+def test_translation_hints_and_fallback_terms_are_readable_chinese(session: Session) -> None:
+    author = Author(name="作家")
+    session.add(author)
+    session.flush()
+    account = SocialAccount(author_id=author.id, handle="creator", status="confirmed")
+    session.add(account)
+    session.flush()
+    post = make_post(
+        session,
+        account.id,
+        "30",
+        "夏コミ用トレカケースアクキーのサンプル、通販は明日から",
+    )
+
+    hints = translation_hints([post])
+
+    assert {item["source"] for item in hints} >= {
+        "夏コミ",
+        "トレカケースアクキー",
+        "サンプル",
+        "通販",
+    }
+    localized = localize_known_terms(post.text)
+    assert "用于夏季" not in localized  # deterministic fallback translates terms, not grammar
+    assert "夏季 Comic Market（夏コミ）" in localized
+    assert "卡套亚克力挂件" in localized
+    assert "样品" in localized
+    assert "网售" in localized
+    assert localize_known_terms("夏季 Comic Market（夏コミ）") == "夏季 Comic Market（夏コミ）"
+    assert localize_known_terms("转发了一条花店照片") == "引用了一条花店照片"
+    assert localize_known_terms("转发花店照片") == "引用花店照片"
+
+
+@pytest.mark.asyncio
+async def test_prompt_version_invalidates_digest_cache(session: Session) -> None:
+    author = Author(name="作家")
+    session.add(author)
+    session.flush()
+    account = SocialAccount(author_id=author.id, handle="creator", status="confirmed")
+    session.add(account)
+    session.flush()
+    make_post(session, account.id, "40", "夏コミ新刊の予約開始")
+
+    first = await DigestService(
+        session,
+        Settings(social_agent_enabled=False, social_agent_prompt_version="social-v1"),
+    ).refresh(author.id)
+    assert first is not None
+    first_hash = first.content_hash
+
+    second = await DigestService(
+        session,
+        Settings(social_agent_enabled=False, social_agent_prompt_version="social-zh-v2"),
+    ).refresh(author.id)
+
+    assert second is not None
+    assert second.id == first.id
+    assert second.content_hash != first_hash
+    assert second.prompt_version == "social-zh-v2"

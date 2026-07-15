@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     social_initial_backfill_days: int = 90
     social_max_posts_per_sync: int = 100
     social_agent_enabled: bool = True
-    social_agent_prompt_version: str = "social-v1"
+    social_agent_prompt_version: str = "social-zh-v2"
     social_auto_confirm_threshold: float = 0.92
     social_candidate_threshold: float = 0.60
     social_media_dir: Path = Path("./data/social-media")
