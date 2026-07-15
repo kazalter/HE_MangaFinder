@@ -10,7 +10,8 @@ from app.modules.agent_review.schemas import (
     GroupEvidence,
     SourceEvidence,
 )
-from app.modules.catalog.aggregation import cover_hash_distance, identity_number_signature
+from app.modules.catalog.aggregation import identity_number_signature
+from app.modules.catalog.cover_fingerprint import CoverComparison, compare_fingerprints
 from app.modules.catalog.pair_identity import candidate_key
 from app.modules.catalog.title_identity import (
     best_identity_similarity,
@@ -46,8 +47,10 @@ def build_candidate_evidence(
     left_evidence = _group_evidence(left)
     right_evidence = _group_evidence(right)
     core_score = _title_similarity(left_evidence, right_evidence)
-    cover_distances = _cover_distances(left_evidence, right_evidence)
-    cover_distance = min(cover_distances, default=None)
+    cover_comparisons = _cover_comparisons(left, right)
+    cover_distances = sorted({item.distance for item in cover_comparisons})
+    best_cover = min(cover_comparisons, key=lambda item: item.distance, default=None)
+    cover_distance = best_cover.distance if best_cover else None
     page_delta, page_ratio = _page_comparison(left_evidence, right_evidence)
     shared_terms = sorted(_contexts(left_evidence) & _contexts(right_evidence))
     available, hard_conflicts, soft_conflicts, context_only = _signals(
@@ -55,6 +58,7 @@ def build_candidate_evidence(
         right_evidence,
         core_score,
         cover_distances,
+        best_cover,
         page_delta,
         page_ratio,
         shared_terms,
@@ -68,6 +72,9 @@ def build_candidate_evidence(
         core_title_similarity=round(core_score, 5),
         cover_hash_distance=cover_distance,
         cover_hash_distances=cover_distances,
+        cover_match_mode=best_cover.mode if best_cover else None,
+        cover_legacy_distance=best_cover.legacy_distance if best_cover else None,
+        cover_negative_reliable=(best_cover.reliable_negative if best_cover else False),
         page_count_delta=page_delta,
         page_count_ratio=page_ratio,
         shared_context=shared_terms,
@@ -101,6 +108,21 @@ def _group_evidence(group: WorkGroup) -> GroupEvidence:
                 year=work.year,
                 page_count=fingerprint.page_count if fingerprint else None,
                 cover_hash=fingerprint.cover_hash if fingerprint else None,
+                cover_fingerprint_version=(
+                    fingerprint.cover_fingerprint.get("version")
+                    if fingerprint and fingerprint.cover_fingerprint
+                    else None
+                ),
+                cover_width=(
+                    fingerprint.cover_fingerprint.get("width")
+                    if fingerprint and fingerprint.cover_fingerprint
+                    else None
+                ),
+                cover_height=(
+                    fingerprint.cover_fingerprint.get("height")
+                    if fingerprint and fingerprint.cover_fingerprint
+                    else None
+                ),
                 tags=work.tags or [],
                 authors=sorted(author.name for author in work.authors),
                 sources=[
@@ -180,19 +202,35 @@ def _title_similarity(left: GroupEvidence, right: GroupEvidence) -> float:
     )
 
 
-def _cover_distances(left: GroupEvidence, right: GroupEvidence) -> list[int]:
-    distances = {
-        distance
-        for left_edition in left.editions
-        for right_edition in right.editions
-        if (
-            distance := cover_hash_distance(
-                left_edition.cover_hash, right_edition.cover_hash
+def _cover_comparisons(left: WorkGroup, right: WorkGroup) -> list[CoverComparison]:
+    comparisons: list[CoverComparison] = []
+    seen: set[tuple[int, str, int | None, bool]] = set()
+    for left_member in left.members:
+        left_fingerprint = left_member.work.fingerprint
+        if not left_fingerprint:
+            continue
+        for right_member in right.members:
+            right_fingerprint = right_member.work.fingerprint
+            if not right_fingerprint:
+                continue
+            comparison = compare_fingerprints(
+                left_fingerprint.cover_fingerprint,
+                right_fingerprint.cover_fingerprint,
+                left_legacy=left_fingerprint.cover_hash,
+                right_legacy=right_fingerprint.cover_hash,
             )
-        )
-        is not None
-    }
-    return sorted(distances)
+            if comparison is None:
+                continue
+            key = (
+                comparison.distance,
+                comparison.mode,
+                comparison.legacy_distance,
+                comparison.reliable_negative,
+            )
+            if key not in seen:
+                seen.add(key)
+                comparisons.append(comparison)
+    return comparisons
 
 
 def _page_comparison(
@@ -214,6 +252,7 @@ def _signals(
     right: GroupEvidence,
     title_score: float,
     cover_distances: list[int],
+    best_cover: CoverComparison | None,
     page_delta: int | None,
     page_ratio: float | None,
     shared_terms: list[str],
@@ -250,13 +289,17 @@ def _signals(
         else:
             hard_conflicts.append("number_mismatch")
 
-    if cover_distances:
+    if cover_distances and best_cover:
         minimum_cover_distance = min(cover_distances)
-        if minimum_cover_distance <= 6:
-            evidence.append("cover_hash_strong")
-        elif minimum_cover_distance <= 10:
+        strong_threshold = 6 if best_cover.mode == "legacy" else 8
+        weak_threshold = 10 if best_cover.mode == "legacy" else 13
+        if minimum_cover_distance <= strong_threshold:
+            evidence.append(
+                "cover_crop_match" if best_cover.mode == "crop" else "cover_hash_strong"
+            )
+        elif minimum_cover_distance <= weak_threshold:
             evidence.append("cover_hash_weak")
-        elif minimum_cover_distance >= 17:
+        elif best_cover.reliable_negative and minimum_cover_distance >= 23:
             soft_conflicts.append("cover_dissimilar")
 
     left_pages = {item.page_count for item in left.editions if item.page_count is not None}
@@ -310,6 +353,7 @@ def _signals(
         "number_match",
         "cover_hash_strong",
         "cover_hash_weak",
+        "cover_crop_match",
         "page_count_match",
         "year_match",
     }

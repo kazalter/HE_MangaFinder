@@ -10,6 +10,7 @@ DOWNLOAD_CHAPTER = "download_chapter"
 AGENT_REVIEW_SUGGESTIONS = "agent_review_suggestions"
 SOCIAL_SYNC_ACCOUNT = "social_sync_account"
 DELIVER_NOTIFICATIONS = "deliver_notifications"
+REFRESH_COVER_FINGERPRINTS = "refresh_cover_fingerprints"
 
 
 class JobRepository:
@@ -60,6 +61,20 @@ class JobRepository:
             return active
         payload = {"max_reviews": maximum} if maximum is not None else {}
         job = Job(kind=AGENT_REVIEW_SUGGESTIONS, payload=payload)
+        self.session.add(job)
+        self.session.flush()
+        return job
+
+    def enqueue_cover_fingerprint_refresh(self, force: bool = False) -> Job:
+        active = self.session.scalar(
+            select(Job).where(
+                Job.kind == REFRESH_COVER_FINGERPRINTS,
+                Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+            )
+        )
+        if active:
+            return active
+        job = Job(kind=REFRESH_COVER_FINGERPRINTS, payload={"force": force})
         self.session.add(job)
         self.session.flush()
         return job

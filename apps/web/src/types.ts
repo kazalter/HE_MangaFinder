@@ -78,6 +78,8 @@ export interface MergeSuggestion {
   conflict_details: string[]
   core_title_similarity: number | null
   cover_hash_distance: number | null
+  cover_match_mode: 'full' | 'crop' | 'legacy' | null
+  cover_legacy_distance: number | null
   source_identity_titles: string[]
   target_identity_titles: string[]
   shared_context: string[]

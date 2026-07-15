@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = "v2"
+SCHEMA_VERSION = "v3"
 
 EvidenceCode = Literal[
     "title_similarity",
@@ -21,6 +21,7 @@ EvidenceCode = Literal[
     "source_alias_match",
     "cover_hash_strong",
     "cover_hash_weak",
+    "cover_crop_match",
 ]
 ConflictCode = Literal[
     "number_mismatch",
@@ -64,6 +65,9 @@ class EditionEvidence(BaseModel):
     year: int | None
     page_count: int | None
     cover_hash: str | None
+    cover_fingerprint_version: int | None = None
+    cover_width: int | None = None
+    cover_height: int | None = None
     tags: list[str]
     authors: list[str]
     sources: list[SourceEvidence]
@@ -85,6 +89,9 @@ class CandidateEvidence(BaseModel):
     core_title_similarity: float
     cover_hash_distance: int | None
     cover_hash_distances: list[int] = Field(default_factory=list)
+    cover_match_mode: Literal["full", "crop", "legacy"] | None = None
+    cover_legacy_distance: int | None = None
+    cover_negative_reliable: bool = False
     page_count_delta: int | None = None
     page_count_ratio: float | None = None
     shared_context: list[str] = Field(default_factory=list)

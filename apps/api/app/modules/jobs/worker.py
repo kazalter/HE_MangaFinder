@@ -4,6 +4,7 @@ import logging
 from app.core.config import Settings
 from app.db.session import SessionLocal
 from app.modules.agent_review.service import AgentReviewService
+from app.modules.catalog.cover_maintenance import CoverFingerprintRefreshService
 from app.modules.catalog.downloads import DownloadService
 from app.modules.catalog.service import DiscoveryService
 from app.modules.jobs.repository import (
@@ -11,6 +12,7 @@ from app.modules.jobs.repository import (
     DELIVER_NOTIFICATIONS,
     DISCOVER_AUTHOR,
     DOWNLOAD_CHAPTER,
+    REFRESH_COVER_FINGERPRINTS,
     SOCIAL_SYNC_ACCOUNT,
     JobRepository,
 )
@@ -63,6 +65,13 @@ class JobWorker:
                         str(job.payload["chapter_id"]),
                     )
                     job.payload = {**job.payload, "output_path": path}
+                elif job.kind == REFRESH_COVER_FINGERPRINTS:
+                    result = await CoverFingerprintRefreshService(
+                        session, self.providers
+                    ).run(
+                        bool(job.payload.get("force", False))
+                    )
+                    job.payload = {**job.payload, **result}
                 elif job.kind == AGENT_REVIEW_SUGGESTIONS:
                     result = await AgentReviewService(
                         session, self.settings
@@ -82,6 +91,13 @@ class JobWorker:
                 else:
                     raise ValueError(f"未知任务类型: {job.kind}")
                 jobs.succeed(job)
+                if job.kind == REFRESH_COVER_FINGERPRINTS:
+                    if int(job.payload.get("remaining", 0)) > 0:
+                        jobs.enqueue_cover_fingerprint_refresh()
+                        session.commit()
+                    elif self.settings.agent_configured:
+                        jobs.enqueue_agent_reviews()
+                        session.commit()
             except Exception as exc:
                 logger.warning("Job %s failed: %s", job.id, exc)
                 jobs.fail(job, str(exc), self.settings.max_job_attempts)

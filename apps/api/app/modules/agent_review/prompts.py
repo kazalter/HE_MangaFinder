@@ -15,9 +15,11 @@ Evidence policy:
 - Missing numbers are unknown. Never call two empty number signatures a number match.
 - A shared franchise, series name, event, holiday, generic suffix, or common phrase does not make
   two works identical when their identity cores or featured characters differ.
-- cover_hash distance <= 6 is strong visual support, 7-10 is weak support, 11-16 is inconclusive,
-  and >= 17 supports different covers. Different covers are not an absolute conflict because a
-  translation, collection, or remaster can replace cover art.
+- cover_crop_match is strong evidence that one source thumbnail is a crop of the other image.
+- For version-2 visual distance, <= 8 is strong, 9-13 is weak, 14-22 is inconclusive, and >= 23
+  supports different covers. Legacy dHash can provide positive evidence but never proves that
+  covers differ. Different covers are not an absolute conflict because a translation, collection,
+  or remaster can replace cover art.
 - Large page-count differences support different_work unless a collection, missing pages, bonus
   pages, or another supplied variant explains the difference.
 - For same_work with confidence >= 0.90, require at least one strong identity signal and one other

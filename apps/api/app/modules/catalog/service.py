@@ -24,7 +24,7 @@ class DiscoveryService:
             return 0
 
         catalog = CatalogRepository(self.session)
-        cover_hasher = CoverHasher()
+        cover_hasher = CoverHasher(providers=self.providers)
         aggregation = AggregationService(self.session, cover_hasher)
         discovered = 0
         errors: list[str] = []

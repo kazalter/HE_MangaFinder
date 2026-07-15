@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
+from PIL import Image, ImageDraw
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from app.modules.agent_review.grounding import validate_grounding
 from app.modules.agent_review.schemas import AgentVerdict
 from app.modules.agent_review.service import AgentReviewService
 from app.modules.catalog.aggregation import AggregationService
+from app.modules.catalog.cover_fingerprint import fingerprint_image
 from app.modules.catalog.repairs import repair_wnacg_upload_years
 from app.modules.catalog.repository import CatalogRepository
 from app.providers.base import DiscoveredWork
@@ -129,8 +131,14 @@ def test_common_series_suffix_does_not_become_identity_evidence() -> None:
 
         left = session.get(WorkGroup, suggestion.source_group_id)
         right = session.get(WorkGroup, suggestion.target_group_id)
-        left.members[0].work.fingerprint.cover_hash = "e727a98d9f3b7e5d"
-        right.members[0].work.fingerprint.cover_hash = "765c9b393d1d9dcd"
+        first_cover = Image.new("RGB", (320, 440), "white")
+        second_cover = Image.new("RGB", (320, 440), "#17294f")
+        first_draw = ImageDraw.Draw(first_cover)
+        second_draw = ImageDraw.Draw(second_cover)
+        first_draw.rectangle((25, 25, 295, 415), fill="#bd4232")
+        second_draw.ellipse((35, 70, 285, 320), fill="#dfc64a")
+        left.members[0].work.fingerprint.cover_fingerprint = fingerprint_image(first_cover)
+        right.members[0].work.fingerprint.cover_fingerprint = fingerprint_image(second_cover)
         left.members[0].work.fingerprint.page_count = 9
         right.members[0].work.fingerprint.page_count = 4
         evidence = build_candidate_evidence(suggestion, left, right)
@@ -207,6 +215,33 @@ def test_model_context_codes_are_removed_before_calibration() -> None:
             "number_match",
             "page_count_match",
         ]
+
+
+def test_model_unsupported_conflict_is_removed_instead_of_failing_review() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        suggestion = make_candidate(session, "Ocean Belly", "Ocean Tummy")
+        evidence = build_candidate_evidence(
+            suggestion,
+            session.get(WorkGroup, suggestion.source_group_id),
+            session.get(WorkGroup, suggestion.target_group_id),
+        )
+        verdict = AgentVerdict(
+            decision="different_work",
+            confidence=0.96,
+            canonical_title="",
+            relation="unrelated",
+            evidence=[],
+            conflicts=["core_title_mismatch"],
+            rationale="模型给出了规则证据中不存在的冲突。",
+            recommended_action="keep_separate",
+        )
+
+        calibrated = validate_grounding(evidence, verdict)
+
+        assert calibrated.conflicts == []
+        assert calibrated.confidence == 0.85
 
 
 async def test_hard_number_conflict_never_reaches_model() -> None:

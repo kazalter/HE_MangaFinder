@@ -6,6 +6,7 @@ _STRONG_IDENTITY = {
     "source_alias_match",
     "number_match",
     "cover_hash_strong",
+    "cover_crop_match",
 }
 _IDENTITY_DIMENSIONS = {
     "core_title_match": "title",
@@ -17,6 +18,7 @@ _IDENTITY_DIMENSIONS = {
     "cover_hash_strong": "cover",
     "cover_hash_weak": "cover",
     "cover_hash_match": "cover",
+    "cover_crop_match": "cover",
     "page_count_match": "pages",
     "year_match": "year",
 }
@@ -85,7 +87,11 @@ def _normalize_model_codes(
         "core_title_match": ("source_alias_match",),
         "normalized_title_match": ("core_title_match", "source_alias_match"),
         "title_similarity": ("core_title_similarity",),
-        "cover_hash_match": ("cover_hash_strong", "cover_hash_weak"),
+        "cover_hash_match": (
+            "cover_crop_match",
+            "cover_hash_strong",
+            "cover_hash_weak",
+        ),
     }
     for code in verdict.evidence:
         selected = code
@@ -102,7 +108,17 @@ def _normalize_model_codes(
             selected = ""
         if selected and selected not in normalized:
             normalized.append(selected)
-    return verdict.model_copy(update={"evidence": normalized})
+    allowed_conflicts = {
+        *evidence.hard_conflicts,
+        *evidence.soft_conflicts,
+        "insufficient_evidence",
+    }
+    normalized_conflicts = [
+        code for code in verdict.conflicts if code in allowed_conflicts
+    ]
+    return verdict.model_copy(
+        update={"evidence": normalized, "conflicts": normalized_conflicts}
+    )
 
 
 def _calibrate(
@@ -189,6 +205,7 @@ def _grounded_rationale(
         "cover_hash_match": "封面感知哈希相似",
         "cover_hash_strong": "封面强相似",
         "cover_hash_weak": "封面弱相似",
+        "cover_crop_match": "同图裁切匹配",
         "page_count_match": "页数相近",
         "year_match": "年份相符",
         "author_match": "作者一致",

@@ -1,7 +1,7 @@
 import io
 
 import httpx
-from PIL import Image
+from PIL import Image, ImageDraw
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,10 @@ from app.modules.catalog.aggregation import (
     extract_variant_labels,
     identity_number_signature,
     normalize_title,
+)
+from app.modules.catalog.cover_fingerprint import (
+    compare_fingerprints,
+    fingerprint_image,
 )
 from app.modules.catalog.repository import CatalogRepository
 from app.providers.base import DiscoveredWork
@@ -311,3 +315,53 @@ async def test_cover_hasher_is_visual_not_url_based() -> None:
         "https://another.example/resized.png"
     )
     await client.aclose()
+
+
+def test_cover_fingerprint_matches_same_art_after_aggressive_center_crop() -> None:
+    wide = Image.new("RGB", (500, 270), "#d8b195")
+    draw = ImageDraw.Draw(wide)
+    draw.rectangle((170, 15, 330, 255), fill="#253f72")
+    draw.ellipse((205, 45, 295, 135), fill="#f2d1ba")
+    draw.line((180, 230, 320, 150), fill="#ecb343", width=15)
+    portrait = wide.crop((149, 0, 351, 270)).resize((300, 400))
+
+    comparison = compare_fingerprints(
+        fingerprint_image(wide), fingerprint_image(portrait)
+    )
+
+    assert comparison is not None
+    assert comparison.mode == "crop"
+    assert comparison.distance <= 8
+    assert comparison.reliable_negative is True
+
+
+def test_cover_fingerprint_keeps_unrelated_art_separate() -> None:
+    first = Image.new("RGB", (500, 270), "white")
+    second = Image.new("RGB", (300, 400), "#18294f")
+    first_draw = ImageDraw.Draw(first)
+    second_draw = ImageDraw.Draw(second)
+    for offset in range(0, 500, 35):
+        first_draw.line((offset, 0, 500 - offset, 270), fill="#bb3f32", width=9)
+    for offset in range(0, 400, 30):
+        second_draw.ellipse((30, offset, 270, offset + 18), fill="#e6c851")
+
+    comparison = compare_fingerprints(
+        fingerprint_image(first), fingerprint_image(second)
+    )
+
+    assert comparison is not None
+    assert comparison.distance >= 23
+    assert comparison.reliable_negative is True
+
+
+def test_legacy_cover_hash_never_proves_covers_are_different() -> None:
+    comparison = compare_fingerprints(
+        None,
+        None,
+        left_legacy="0000000000000000",
+        right_legacy="ffffffffffffffff",
+    )
+
+    assert comparison is not None and comparison.distance == 64
+    assert comparison.mode == "legacy"
+    assert comparison.reliable_negative is False

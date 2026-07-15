@@ -151,6 +151,7 @@ class WorkFingerprint(Base):
     variant_labels: Mapped[list[str]] = mapped_column(JSON, default=list)
     page_count: Mapped[int | None]
     cover_hash: Mapped[str | None] = mapped_column(String(16), index=True)
+    cover_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

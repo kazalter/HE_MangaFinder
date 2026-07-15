@@ -40,6 +40,8 @@ describe('MergeReview', () => {
       conflict_details: [],
       core_title_similarity: 0.82,
       cover_hash_distance: 4,
+      cover_match_mode: 'crop',
+      cover_legacy_distance: 28,
       source_identity_titles: ['作品 A'],
       target_identity_titles: ['作品 B'],
       shared_context: [],

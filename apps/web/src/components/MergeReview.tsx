@@ -79,7 +79,7 @@ export function MergeReview({ suggestions, agentStatus, busy, onRunAgent, onOpen
               <p className="candidate-identity">
                 核心标题：{item.source_identity_titles.join(' / ') || '未知'} ↔ {item.target_identity_titles.join(' / ') || '未知'}
                 {item.core_title_similarity !== null ? ` · 核心相似度 ${Math.round(item.core_title_similarity * 100)}%` : ''}
-                {item.cover_hash_distance !== null ? ` · 封面距离 ${item.cover_hash_distance}` : ''}
+                {item.cover_hash_distance !== null ? ` · 封面视觉距离 ${item.cover_hash_distance}${item.cover_match_mode === 'crop' ? `（同图裁切匹配${item.cover_legacy_distance !== null ? `，旧 dHash ${item.cover_legacy_distance}` : ''}）` : item.cover_match_mode === 'legacy' ? '（旧指纹，仅作正向参考）' : ''}` : ''}
                 {item.shared_context.length ? ` · 共同语境 ${item.shared_context.join(' / ')}` : ''}
               </p>
               {item.soft_conflicts.length > 0 && <div className="candidate-warning"><strong>软警告，不阻止 Agent</strong><span>{item.conflict_details.join(' · ') || item.soft_conflicts.join(' · ')}</span></div>}

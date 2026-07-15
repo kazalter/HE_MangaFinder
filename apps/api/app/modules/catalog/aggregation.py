@@ -3,7 +3,7 @@ import io
 import re
 import unicodedata
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from PIL import Image, UnidentifiedImageError
@@ -20,11 +20,21 @@ from app.db.models import (
     WorkGroup,
     WorkGroupMember,
 )
+from app.modules.catalog.cover_fingerprint import (
+    compare_fingerprints,
+    fingerprint_image,
+    hash_distance,
+    is_current_fingerprint,
+)
 from app.modules.catalog.pair_identity import candidate_key
 from app.modules.catalog.title_identity import (
     best_identity_similarity,
     identity_names,
 )
+from app.providers.errors import ProviderError
+
+if TYPE_CHECKING:
+    from app.providers.registry import ProviderRegistry
 
 _BRACKET_RE = re.compile(r"([\[【（(])([^\]】）)]{1,100})[\]】）)]")
 _VERSION_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -58,9 +68,9 @@ _CHAPTER_SUFFIX_RE = re.compile(
 )
 _TITLE_FUZZY_THRESHOLD = 0.94
 _TITLE_WITH_COVER_THRESHOLD = 0.72
-_TITLE_WITH_COVER_DISTANCE = 7
-_STRONG_COVER_DISTANCE = 6
-_SUGGEST_COVER_DISTANCE = 10
+_TITLE_WITH_COVER_DISTANCE = 10
+_STRONG_COVER_DISTANCE = 8
+_SUGGEST_COVER_DISTANCE = 13
 
 
 def extract_variant_labels(title: str, language: str | None = None) -> list[str]:
@@ -138,14 +148,32 @@ def _canonicalize_numbers(value: str) -> str:
 
 
 def cover_hash_distance(left: str | None, right: str | None) -> int | None:
-    if not left or not right:
-        return None
-    return (int(left, 16) ^ int(right, 16)).bit_count()
+    """Legacy 64-bit dHash distance kept for API and old database compatibility."""
+    return hash_distance(left, right)
+
+
+def cover_fingerprint_distance(
+    left: WorkFingerprint, right: WorkFingerprint
+) -> tuple[int | None, str | None, bool]:
+    comparison = compare_fingerprints(
+        left.cover_fingerprint,
+        right.cover_fingerprint,
+        left_legacy=left.cover_hash,
+        right_legacy=right.cover_hash,
+    )
+    if comparison is None:
+        return None, None, False
+    return comparison.distance, comparison.mode, comparison.reliable_negative
 
 
 class CoverHasher:
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient | None = None,
+        providers: "ProviderRegistry | None" = None,
+    ) -> None:
         self._owns_client = client is None
+        self._providers = providers
         self._client = client or httpx.AsyncClient(
             headers={"User-Agent": "MangaFinder/0.1 cover-fingerprint"},
             follow_redirects=True,
@@ -154,30 +182,53 @@ class CoverHasher:
         )
 
     async def hash_url(self, url: str | None) -> str | None:
+        fingerprint = await self.fingerprint_url(url)
+        if not fingerprint:
+            return None
+        variants = fingerprint.get("variants", [])
+        return variants[0].get("dhash") if variants else None
+
+    async def fingerprint_url(
+        self,
+        url: str | None,
+        provider_name: str | None = None,
+        external_id: str | None = None,
+    ) -> dict[str, Any] | None:
         if not url or not url.startswith(("http://", "https://")):
             return None
         if re.search(r"placeholder|no[-_]?cover|default[-_]?cover", url, re.IGNORECASE):
             return None
         try:
-            async with self._client.stream("GET", url) as response:
-                response.raise_for_status()
-                content = bytearray()
-                async for chunk in response.aiter_bytes():
-                    content.extend(chunk)
-                    if len(content) > 6 * 1024 * 1024:
-                        return None
+            content: bytes | bytearray
+            provider = (
+                self._providers.get_optional(provider_name)
+                if self._providers and provider_name
+                else None
+            )
+            if provider and external_id:
+                remote = await provider.fetch_cover(external_id, url)
+                content = remote.content
+                if len(content) > 6 * 1024 * 1024:
+                    return None
+            else:
+                streamed = bytearray()
+                async with self._client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes():
+                        streamed.extend(chunk)
+                        if len(streamed) > 6 * 1024 * 1024:
+                            return None
+                content = streamed
             with Image.open(io.BytesIO(content)) as image:
-                gray = image.convert("L").resize((9, 8), Image.Resampling.LANCZOS)
-                get_pixels = getattr(gray, "get_flattened_data", gray.getdata)
-                pixels = list(get_pixels())
-                bits = 0
-                for row in range(8):
-                    for column in range(8):
-                        left = pixels[row * 9 + column]
-                        right = pixels[row * 9 + column + 1]
-                        bits = (bits << 1) | int(left > right)
-                return f"{bits:016x}"
-        except (httpx.HTTPError, OSError, UnidentifiedImageError, ValueError):
+                return fingerprint_image(image)
+        except (
+            httpx.HTTPError,
+            Image.DecompressionBombError,
+            OSError,
+            ProviderError,
+            UnidentifiedImageError,
+            ValueError,
+        ):
             return None
 
     async def close(self) -> None:
@@ -192,6 +243,8 @@ class AggregationService:
 
     async def assign(self, work: Work, author: Author) -> WorkGroup:
         fingerprint = self._upsert_fingerprint(work, author.name)
+        if self.cover_hasher:
+            await self._ensure_cover_fingerprint(fingerprint, work.cover_url)
         membership = work.group_membership
         if (
             membership
@@ -204,8 +257,6 @@ class AggregationService:
             membership = None
 
         if membership:
-            if self.cover_hasher:
-                fingerprint.cover_hash = await self.cover_hasher.hash_url(work.cover_url)
             group = membership.group
             if not any(member.is_manual for member in group.members):
                 group = self._reconcile_existing(
@@ -218,18 +269,17 @@ class AggregationService:
         best_group, title_score, exact = self._best_title_candidate(fingerprint, candidates)
         cover_distance: int | None = None
 
-        if self.cover_hasher:
-            fingerprint.cover_hash = await self.cover_hasher.hash_url(work.cover_url)
-
         if best_group and not exact and title_score >= 0.58 and self.cover_hasher:
             candidate_fingerprint = self._best_fingerprint(fingerprint, best_group)
-            if candidate_fingerprint and not candidate_fingerprint.cover_hash:
-                candidate_fingerprint.cover_hash = await self.cover_hasher.hash_url(
-                    candidate_fingerprint.work.cover_url
+            if candidate_fingerprint and not is_current_fingerprint(
+                candidate_fingerprint.cover_fingerprint
+            ):
+                await self._ensure_cover_fingerprint(
+                    candidate_fingerprint, candidate_fingerprint.work.cover_url
                 )
             if candidate_fingerprint:
-                cover_distance = cover_hash_distance(
-                    fingerprint.cover_hash, candidate_fingerprint.cover_hash
+                cover_distance, _, _ = cover_fingerprint_distance(
+                    fingerprint, candidate_fingerprint
                 )
 
         if best_group and exact:
@@ -254,15 +304,22 @@ class AggregationService:
             )
             return self._attach(work, best_group, confidence, "title_fuzzy_cover")
 
-        cover_group, cover_fingerprint, cover_distance = self._best_cover_candidate(
-            fingerprint, candidates
-        )
+        (
+            cover_group,
+            cover_fingerprint,
+            cover_distance,
+            cover_mode,
+        ) = self._best_cover_candidate(fingerprint, candidates)
         if (
             cover_group
             and cover_fingerprint
             and cover_distance is not None
             and cover_distance <= _STRONG_COVER_DISTANCE
             and self._page_counts_compatible(fingerprint, cover_fingerprint)
+            and (
+                cover_mode != "crop"
+                or self._page_counts_match(fingerprint, cover_fingerprint)
+            )
             and self._years_match(work, cover_fingerprint.work)
         ):
             confidence = 0.96 - cover_distance * 0.01
@@ -274,7 +331,7 @@ class AggregationService:
         if best_group and title_score >= 0.68:
             reasons = [f"标题相似度 {title_score:.0%}"]
             if cover_distance is not None:
-                reasons.append(f"封面感知哈希距离 {cover_distance}")
+                reasons.append(f"封面视觉距离 {cover_distance}")
             self._suggest(group, best_group, title_score, reasons)
         return group
 
@@ -414,6 +471,30 @@ class AggregationService:
         self.session.flush()
         return fingerprint
 
+    async def _ensure_cover_fingerprint(
+        self, fingerprint: WorkFingerprint, cover_url: str | None
+    ) -> None:
+        if not self.cover_hasher or not cover_url:
+            return
+        current = fingerprint.cover_fingerprint
+        if is_current_fingerprint(current) and current.get("source_url") == cover_url:
+            return
+        source = next(iter(fingerprint.work.sources), None)
+        computed = await self.cover_hasher.fingerprint_url(
+            cover_url,
+            source.provider if source else None,
+            source.external_id if source else None,
+        )
+        if computed is None:
+            if not current or current.get("source_url") != cover_url:
+                fingerprint.cover_hash = None
+                fingerprint.cover_fingerprint = None
+            return
+        computed["source_url"] = cover_url
+        fingerprint.cover_fingerprint = computed
+        variants = computed.get("variants", [])
+        fingerprint.cover_hash = variants[0].get("dhash") if variants else None
+
     def _candidate_groups(self, author_id: int) -> list[WorkGroup]:
         return list(
             self.session.scalars(
@@ -465,10 +546,11 @@ class AggregationService:
 
     def _best_cover_candidate(
         self, fingerprint: WorkFingerprint, groups: list[WorkGroup]
-    ) -> tuple[WorkGroup | None, WorkFingerprint | None, int | None]:
+    ) -> tuple[WorkGroup | None, WorkFingerprint | None, int | None, str | None]:
         best_group: WorkGroup | None = None
         best_fingerprint: WorkFingerprint | None = None
         best_distance: int | None = None
+        best_mode: str | None = None
         for group in groups:
             if not self._group_numbering_matches(fingerprint, group):
                 continue
@@ -476,14 +558,13 @@ class AggregationService:
                 candidate = member.work.fingerprint
                 if not candidate:
                     continue
-                distance = cover_hash_distance(
-                    fingerprint.cover_hash, candidate.cover_hash
-                )
+                distance, mode, _ = cover_fingerprint_distance(fingerprint, candidate)
                 if distance is not None and (best_distance is None or distance < best_distance):
                     best_group = group
                     best_fingerprint = candidate
                     best_distance = distance
-        return best_group, best_fingerprint, best_distance
+                    best_mode = mode
+        return best_group, best_fingerprint, best_distance, best_mode
 
     @staticmethod
     def _numbering_matches(
@@ -566,7 +647,9 @@ class AggregationService:
         candidates = [
             group for group in self._candidate_groups(author.id) if group.id != current_group.id
         ]
-        target, candidate, distance = self._best_cover_candidate(fingerprint, candidates)
+        target, candidate, distance, mode = self._best_cover_candidate(
+            fingerprint, candidates
+        )
         if not target or not candidate or distance is None:
             return current_group
         has_manual_members = any(
@@ -576,6 +659,7 @@ class AggregationService:
             not has_manual_members
             and distance <= _STRONG_COVER_DISTANCE
             and self._page_counts_compatible(fingerprint, candidate)
+            and (mode != "crop" or self._page_counts_match(fingerprint, candidate))
             and self._years_match(work, candidate.work)
         ):
             return self.merge_groups(
@@ -589,7 +673,7 @@ class AggregationService:
                 current_group,
                 target,
                 0.76,
-                [f"封面感知哈希距离 {distance}", "同一作者，标题语言或写法不同"],
+                [f"封面视觉距离 {distance}", "同一作者，标题语言或写法不同"],
             )
         return current_group
 
@@ -704,9 +788,9 @@ class AggregationService:
                 set(evidence.available_evidence)
                 & {"core_title_match", "source_alias_match", "core_title_similarity"}
             )
-            visual_support = (
-                evidence.cover_hash_distance is not None
-                and evidence.cover_hash_distance <= _SUGGEST_COVER_DISTANCE
+            visual_support = bool(
+                set(evidence.available_evidence)
+                & {"cover_hash_strong", "cover_hash_weak", "cover_crop_match"}
             )
             if not title_support and not visual_support:
                 self.session.delete(suggestion)

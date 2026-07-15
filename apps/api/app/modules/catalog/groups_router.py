@@ -128,6 +128,8 @@ def _suggestion(
         conflict_details=_conflict_details(evidence) if evidence else [],
         core_title_similarity=evidence.core_title_similarity if evidence else None,
         cover_hash_distance=evidence.cover_hash_distance if evidence else None,
+        cover_match_mode=evidence.cover_match_mode if evidence else None,
+        cover_legacy_distance=evidence.cover_legacy_distance if evidence else None,
         source_identity_titles=(
             sorted({edition.identity_core for edition in evidence.left.editions})
             if evidence
@@ -170,7 +172,7 @@ def _conflict_details(evidence: CandidateEvidence) -> list[str]:
         right = sorted({item.identity_core for item in evidence.right.editions})
         details.append(f"核心标题：{left} vs {right}")
     if "cover_dissimilar" in conflicts and evidence.cover_hash_distance is not None:
-        details.append(f"封面明显不同：感知哈希距离 {evidence.cover_hash_distance}")
+        details.append(f"封面明显不同：裁切感知视觉距离 {evidence.cover_hash_distance}")
     if "insufficient_evidence" in conflicts:
         details.append("缺少两个相互独立的作品身份信号")
     return details
