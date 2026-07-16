@@ -3,13 +3,14 @@ from datetime import UTC, datetime
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Job, JobStatus, NotificationOutbox
+from app.db.models import DailyDigestDelivery, Job, JobStatus, NotificationOutbox
 
 DISCOVER_AUTHOR = "discover_author"
 DOWNLOAD_CHAPTER = "download_chapter"
 AGENT_REVIEW_SUGGESTIONS = "agent_review_suggestions"
 SOCIAL_SYNC_ACCOUNT = "social_sync_account"
 DELIVER_NOTIFICATIONS = "deliver_notifications"
+BUILD_DAILY_DIGEST = "build_daily_digest"
 REFRESH_COVER_FINGERPRINTS = "refresh_cover_fingerprints"
 
 
@@ -96,6 +97,22 @@ class JobRepository:
         self.session.flush()
         return job
 
+    def enqueue_daily_digest(self, force: bool = False) -> Job:
+        active = self.session.scalar(
+            select(Job).where(
+                Job.kind == BUILD_DAILY_DIGEST,
+                Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+            )
+        )
+        if active:
+            if force:
+                active.payload = {**active.payload, "force": True}
+            return active
+        job = Job(kind=BUILD_DAILY_DIGEST, payload={"force": force})
+        self.session.add(job)
+        self.session.flush()
+        return job
+
     def enqueue_notification_delivery_if_needed(self) -> Job | None:
         pending = self.session.scalar(
             select(NotificationOutbox.id).where(
@@ -106,7 +123,16 @@ class JobRepository:
                 ),
             )
         )
-        if pending is None:
+        pending_digest = self.session.scalar(
+            select(DailyDigestDelivery.id).where(
+                DailyDigestDelivery.status == "pending",
+                or_(
+                    DailyDigestDelivery.next_attempt_at.is_(None),
+                    DailyDigestDelivery.next_attempt_at <= datetime.now(UTC),
+                ),
+            )
+        )
+        if pending is None and pending_digest is None:
             return None
         active = self.session.scalar(
             select(Job).where(

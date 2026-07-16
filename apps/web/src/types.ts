@@ -208,6 +208,9 @@ export interface SocialStatus {
   candidate_threshold: number
   pending_count: number
   unread_count: number
+  daily_digest_enabled: boolean
+  daily_digest_hour: number
+  daily_digest_timezone: string
 }
 
 export interface ActivityItem {

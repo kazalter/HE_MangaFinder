@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from app.core.config import Settings
 from app.db.session import SessionLocal
 from app.modules.jobs.repository import JobRepository
+from app.modules.social.daily_digest import DailyDigestService
 from app.modules.social.repository import SocialRepository
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class SocialScheduler:
             jobs = JobRepository(session)
             for account in SocialRepository(session).due_accounts(datetime.now(UTC)):
                 jobs.enqueue_social_sync(account.id)
+            if DailyDigestService(session, self.settings).is_due(datetime.now(UTC)):
+                jobs.enqueue_daily_digest()
             jobs.enqueue_notification_delivery_if_needed()
             session.commit()
-

@@ -9,6 +9,7 @@ from app.modules.catalog.downloads import DownloadService
 from app.modules.catalog.service import DiscoveryService
 from app.modules.jobs.repository import (
     AGENT_REVIEW_SUGGESTIONS,
+    BUILD_DAILY_DIGEST,
     DELIVER_NOTIFICATIONS,
     DISCOVER_AUTHOR,
     DOWNLOAD_CHAPTER,
@@ -16,6 +17,7 @@ from app.modules.jobs.repository import (
     SOCIAL_SYNC_ACCOUNT,
     JobRepository,
 )
+from app.modules.social.daily_digest import DailyDigestService
 from app.modules.social.notifications import NotificationService
 from app.modules.social.service import SocialSyncService
 from app.providers.registry import ProviderRegistry
@@ -81,6 +83,12 @@ class JobWorker:
                     result = await SocialSyncService(
                         session, self.settings
                     ).sync_account(int(job.payload["account_id"]))
+                    job.payload = {**job.payload, **result}
+                    jobs.enqueue_notification_delivery_if_needed()
+                elif job.kind == BUILD_DAILY_DIGEST:
+                    result = await DailyDigestService(session, self.settings).build(
+                        force=bool(job.payload.get("force", False))
+                    )
                     job.payload = {**job.payload, **result}
                     jobs.enqueue_notification_delivery_if_needed()
                 elif job.kind == DELIVER_NOTIFICATIONS:

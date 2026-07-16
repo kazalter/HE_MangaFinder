@@ -70,6 +70,7 @@ export const api = {
     request<AuthorDigest | null>(`/authors/${authorId}/social-digest`),
   refreshSocialDigest: (authorId: number) =>
     request<AuthorDigest | null>(`/authors/${authorId}/social-digest/refresh`, { method: 'POST' }),
+  sendDailyDigest: () => request<Job>('/social/daily-digest/send', { method: 'POST' }),
   socialPosts: (authorId: number, postType?: string) => {
     const params = new URLSearchParams()
     if (postType) params.set('post_type', postType)

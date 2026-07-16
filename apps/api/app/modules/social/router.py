@@ -141,6 +141,9 @@ def social_status(session: SessionDep) -> SocialStatusRead:
         candidate_threshold=settings.social_candidate_threshold,
         pending_count=repository.count_signals("pending"),
         unread_count=unread,
+        daily_digest_enabled=settings.social_daily_digest_enabled,
+        daily_digest_hour=settings.social_daily_digest_hour,
+        daily_digest_timezone=settings.social_daily_digest_timezone,
     )
 
 
@@ -298,6 +301,18 @@ async def refresh_author_digest(
     digest = await DigestService(session, get_settings()).refresh(author_id)
     session.commit()
     return _digest_read(session, digest) if digest else None
+
+
+@router.post(
+    "/social/daily-digest/send",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def send_daily_digest(session: SessionDep) -> JobRead:
+    _require_social_enabled()
+    job = JobRepository(session).enqueue_daily_digest(force=True)
+    session.commit()
+    return JobRead.model_validate(job)
 
 
 @router.get(

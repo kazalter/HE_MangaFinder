@@ -187,6 +187,9 @@ main { padding: 48px clamp(28px, 5vw, 76px) 70px; min-width: 0; }
 .digest-heading span { color: #9b6a56; font-size: 11px; font-weight: 800; letter-spacing: .12em; }
 .digest-heading h3 { margin: 4px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 25px; font-weight: 500; }
 .digest-heading button { border: 1px solid #cdbdad; padding: 8px 11px; color: #775b4e; background: #fffaf3; }
+.digest-heading small { display: block; margin-top: 7px; color: #85756c; font-size: 13px; }
+.digest-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.notice { margin: 12px 0; padding: 11px 14px; border: 1px solid #adcbb4; border-radius: 10px; background: #f0faf2; color: #356640; }
 .digest-summary { margin: 17px 0; color: #4f4942; font-size: 17px; line-height: 1.75; }
 .digest-highlights { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .digest-highlights article { border-left: 3px solid #809487; padding: 9px 11px; background: rgba(255,255,255,.72); }

@@ -174,6 +174,9 @@ class SocialStatusRead(BaseModel):
     candidate_threshold: float
     pending_count: int
     unread_count: int
+    daily_digest_enabled: bool
+    daily_digest_hour: int
+    daily_digest_timezone: str
 
 
 class SocialAgentVerdict(BaseModel):

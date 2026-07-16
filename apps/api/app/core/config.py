@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     social_ocr_enabled: bool = True
     social_ocr_max_posts_per_sync: int = 12
     social_ocr_timeout_seconds: float = 30.0
+    social_daily_digest_enabled: bool = True
+    social_daily_digest_hour: int = 20
+    social_daily_digest_timezone: str = "Asia/Shanghai"
+    social_daily_digest_initial_lookback_days: int = 7
+    social_daily_digest_min_importance: str = "normal"
+    social_daily_digest_max_authors: int = 20
+    social_daily_digest_max_items_per_author: int = 3
     public_base_url: str = "http://localhost:8000"
     qq_bot_enabled: bool = False
     qq_bot_app_id: str = ""

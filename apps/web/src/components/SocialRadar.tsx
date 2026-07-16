@@ -39,6 +39,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
   const [handle, setHandle] = useState('')
   const [finding, setFinding] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  const [localNotice, setLocalNotice] = useState<string | null>(null)
   const [links, setLinks] = useState<Record<number, number>>({})
 
   async function loadAccounts() {
@@ -67,9 +68,18 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
   }), [filter, selectedAuthorId, signals])
 
   async function act(action: () => Promise<unknown>) {
-    setLocalError(null)
+    setLocalError(null); setLocalNotice(null)
     try { await action(); await Promise.all([loadAccounts(), loadActivityData(), onChanged()]) }
     catch (error) { setLocalError(error instanceof Error ? error.message : '操作失败') }
+  }
+
+  async function sendDailyDigest() {
+    setLocalError(null); setLocalNotice(null)
+    try {
+      const job = await api.sendDailyDigest()
+      setLocalNotice(`今日作者近况日报已加入发送队列（任务 #${job.id}）`)
+      await onChanged()
+    } catch (error) { setLocalError(error instanceof Error ? error.message : '日报发送失败') }
   }
 
   async function findAccounts() {
@@ -100,6 +110,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
 
         {!status.enabled && <div className="radar-warning">请在 Dockge 中设置 MANGAFINDER_SOCIAL_ENABLED=true，并启用 social Compose profile。</div>}
         {localError && <div className="alert">{localError}</div>}
+        {localNotice && <div className="notice">{localNotice}</div>}
 
         <section className="account-panel">
           <div className="account-heading">
@@ -128,7 +139,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
 
         {view === 'overview' && <>
           <section className="digest-card">
-            <div className="digest-heading"><div><span>ROLLING 7 DAYS</span><h3>{digest ? `${digest.author_name} 最近在做什么` : '最近 7 天摘要'}</h3></div>{selectedAuthorId && <button onClick={() => void act(async () => { setDigest(await api.refreshSocialDigest(selectedAuthorId)) })}>重新总结</button>}</div>
+            <div className="digest-heading"><div><span>ROLLING 7 DAYS</span><h3>{digest ? `${digest.author_name} 最近在做什么` : '最近 7 天摘要'}</h3>{status.daily_digest_enabled && <small>QQ 日报每天 {String(status.daily_digest_hour).padStart(2, '0')}:00（{status.daily_digest_timezone}）自动发送</small>}</div><div className="digest-buttons">{status.qq_configured && status.daily_digest_enabled && <button onClick={() => void sendDailyDigest()}>立即发送今日日报</button>}{selectedAuthorId && <button onClick={() => void act(async () => { setDigest(await api.refreshSocialDigest(selectedAuthorId)) })}>重新总结</button>}</div></div>
             {digest ? <><p className="digest-summary">{digest.summary}</p><div className="digest-highlights">{digest.highlights.map((item, index) => <article className={`importance-${item.importance}`} key={`${item.text}-${index}`}><span>{activityLabels[item.category] ?? item.category} · {item.factuality === 'fact' ? '明确事实' : item.factuality === 'plan' ? '作者计划' : '推测'}</span><p>{item.text}</p><small>证据 {item.post_ids.map((id, evidenceIndex) => { const post = rawPosts.find((candidate) => candidate.id === id); return post ? <span key={id}>{evidenceIndex > 0 ? '、' : ''}<a href={post.url} target="_blank" rel="noreferrer">帖子 {id} ↗</a></span> : <span key={id}>{evidenceIndex > 0 ? '、' : ''}帖子 {id}</span> })}</small></article>)}</div>{digest.uncertainties.length > 0 && <div className="digest-uncertain"><strong>仍不确定</strong><ul>{digest.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></div>}<small className="digest-source">{digest.generated_by === 'agent' ? `Agent 总结 · ${digest.model ?? ''}` : '规则降级摘要'}{digest.error ? ` · Agent 暂不可用：${digest.error}` : ''}</small></> : <p className="review-empty">{selectedAuthorId ? '扫描到作者动态后，这里会生成最近 7 天摘要。' : '先在左侧选择作者。'}</p>}
           </section>
           <section className="activity-list">
