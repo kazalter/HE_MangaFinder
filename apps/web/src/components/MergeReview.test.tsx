@@ -13,7 +13,7 @@ function group(id: number, title: string, provider: string): WorkGroup {
     year: 2026,
     language: 'ja',
     tags: [],
-    latest_source_at: '2026-07-13T00:00:00Z',
+    first_source_at: '2025-07-13T00:00:00Z', latest_source_at: '2026-07-13T00:00:00Z',
     edition_count: 2,
     providers: [provider],
     authors: [{ id: 1, name: '测试作者' }],

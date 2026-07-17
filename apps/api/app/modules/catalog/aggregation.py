@@ -436,6 +436,7 @@ class AggregationService:
             for source in work.sources
             if source.source_updated_at
         ]
+        group.first_source_at = min(dates, default=None)
         group.latest_source_at = max(dates, default=None)
         group.updated_at = datetime.now(UTC)
 

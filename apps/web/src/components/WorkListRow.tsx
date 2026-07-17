@@ -5,7 +5,7 @@ import { statusMap, workAuthorLabel } from './WorkCard'
 function displayDate(value: string | null) {
   return value
     ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(value))
-    : '更新时间未知'
+    : '作品时间未知'
 }
 
 export function WorkListRow({
@@ -41,7 +41,7 @@ export function WorkListRow({
       </span>
       <span className="list-update">
         <strong>{work.edition_count} 个版本</strong>
-        <small>{displayDate(work.latest_source_at)}</small>
+        <small>{displayDate(work.first_source_at)}</small>
       </span>
     </button>
   )

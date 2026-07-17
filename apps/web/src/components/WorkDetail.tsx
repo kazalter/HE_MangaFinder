@@ -37,7 +37,7 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, onClose, 
             <p>{group.description?.replace(/\[[^\]]+\]\([^\)]+\)/g, '') || '暂无简介'}</p>
             <div className="source-badges large">
               {providers.map((item) => <span className={`source-badge source-${item}`} key={item}>{item}</span>)}
-              <small>{group.edition_count} 个版本 · 更新于 {displayDate(group.latest_source_at)}</small>
+              <small>{group.edition_count} 个版本 · 作品时间 {displayDate(group.first_source_at)} · 最近版本 {displayDate(group.latest_source_at)}</small>
             </div>
           </div>
         </header>

@@ -110,6 +110,7 @@ class WorkGroup(Base):
     year: Mapped[int | None]
     language: Mapped[str | None] = mapped_column(String(20))
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    first_source_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     latest_source_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

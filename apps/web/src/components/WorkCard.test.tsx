@@ -7,7 +7,7 @@ describe('WorkCard', () => {
     render(<WorkCard onOpen={() => undefined} work={{
       id: 1, title: '测试漫画', description: '简介', cover_url: null,
       status: 'ongoing', year: 2026, language: 'ja', tags: ['Drama'],
-      latest_source_at: '2026-01-01T00:00:00Z', edition_count: 3,
+      first_source_at: '2025-01-01T00:00:00Z', latest_source_at: '2026-01-01T00:00:00Z', edition_count: 3,
       providers: ['mangadex', 'wnacg'],
       authors: [{ id: 1, name: '测试作者' }],
     }} />)
@@ -22,7 +22,7 @@ describe('WorkCard', () => {
   it('shows a readable fallback when a cached cover fails', () => {
     render(<WorkCard onOpen={() => undefined} work={{
       id: 2, title: '封面测试', description: null, cover_url: '/api/works/2/cover?v=1',
-      status: null, year: null, language: null, tags: [], latest_source_at: null,
+      status: null, year: null, language: null, tags: [], first_source_at: null, latest_source_at: null,
       edition_count: 1, providers: ['nhentai'],
       authors: [],
     }} />)

@@ -1,4 +1,5 @@
 import io
+from datetime import UTC, datetime
 
 import httpx
 from PIL import Image, ImageDraw
@@ -126,6 +127,7 @@ def test_groups_versions_and_supports_reversible_manual_correction() -> None:
                 external_id="1",
                 title="[MIGNON WORKS (mignon)] ぬぎおなか [白杨汉化组]",
                 source_url="https://example.test/1",
+                source_updated_at=datetime(2023, 11, 19, tzinfo=UTC),
                 raw_metadata={"page_count": 30},
             ),
         )
@@ -137,6 +139,7 @@ def test_groups_versions_and_supports_reversible_manual_correction() -> None:
                 external_id="2",
                 title="(C106) [MIGNON WORKS (mignon)] ぬぎおなか [無修正]",
                 source_url="https://example.test/2",
+                source_updated_at=datetime(2026, 7, 16, tzinfo=UTC),
                 raw_metadata={"page_count": 30},
             ),
         )
@@ -154,6 +157,8 @@ def test_groups_versions_and_supports_reversible_manual_correction() -> None:
 
         assert first_group.id == second_group.id
         assert len(first_group.members) == 2
+        assert first_group.first_source_at == datetime(2023, 11, 19, tzinfo=UTC)
+        assert first_group.latest_source_at == datetime(2026, 7, 16, tzinfo=UTC)
         assert sequel_group.id != first_group.id
         assert len(list(session.scalars(select(WorkGroup)))) == 2
 

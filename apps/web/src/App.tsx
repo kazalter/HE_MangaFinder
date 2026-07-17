@@ -11,7 +11,7 @@ import type { AgentStatus, Author, Edition, Job, MergeSuggestion, ReleaseSignal,
 
 type ViewMode = 'cards' | 'covers' | 'list'
 type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
-type WorkSort = 'updated' | 'title' | 'year' | 'editions'
+type WorkSort = 'first' | 'updated' | 'title' | 'year' | 'editions'
 type GroupMode = 'none' | 'author'
 
 const JOB_LABELS: Record<string, string> = {
@@ -90,7 +90,7 @@ export default function App() {
   const [search, setSearch] = useState('')
   const [viewMode, setViewMode] = useState<ViewMode>(() => savedChoice('mangafinder:view', ['cards', 'covers', 'list'], 'cards'))
   const [workFilter, setWorkFilter] = useState<WorkFilter>('all')
-  const [workSort, setWorkSort] = useState<WorkSort>(() => savedChoice('mangafinder:sort', ['updated', 'title', 'year', 'editions'], 'updated'))
+  const [workSort, setWorkSort] = useState<WorkSort>(() => savedChoice('mangafinder:sort-v2', ['first', 'updated', 'title', 'year', 'editions'], 'first'))
   const [groupMode, setGroupMode] = useState<GroupMode>(() => savedChoice('mangafinder:group', ['none', 'author'], 'none'))
   const [dismissedJobThrough, setDismissedJobThrough] = useState(() => {
     try { return Number(window.sessionStorage.getItem('mangafinder:dismissed-job-through') ?? 0) || 0 }
@@ -118,7 +118,7 @@ export default function App() {
 
   useEffect(() => { void load() }, [load])
   useEffect(() => { saveChoice('mangafinder:view', viewMode) }, [viewMode])
-  useEffect(() => { saveChoice('mangafinder:sort', workSort) }, [workSort])
+  useEffect(() => { saveChoice('mangafinder:sort-v2', workSort) }, [workSort])
   useEffect(() => { saveChoice('mangafinder:group', groupMode) }, [groupMode])
   useEffect(() => {
     if (!jobs.some((job) => job.status === 'pending' || job.status === 'running')) return
@@ -148,6 +148,7 @@ export default function App() {
       if (workSort === 'title') return left.title.localeCompare(right.title, 'zh-CN')
       if (workSort === 'year') return (right.year ?? 0) - (left.year ?? 0) || left.title.localeCompare(right.title, 'zh-CN')
       if (workSort === 'editions') return right.edition_count - left.edition_count || left.title.localeCompare(right.title, 'zh-CN')
+      if (workSort === 'first') return new Date(right.first_source_at ?? 0).getTime() - new Date(left.first_source_at ?? 0).getTime()
       return new Date(right.latest_source_at ?? 0).getTime() - new Date(left.latest_source_at ?? 0).getTime()
     })
   }, [search, suggestions, workFilter, workSort, works])
@@ -310,7 +311,8 @@ export default function App() {
           </label>
           <label>排序
             <select value={workSort} onChange={(event) => setWorkSort(event.target.value as WorkSort)}>
-              <option value="updated">最近更新</option>
+              <option value="first">作品时间</option>
+              <option value="updated">最近有新版本</option>
               <option value="title">标题</option>
               <option value="year">年份</option>
               <option value="editions">版本数</option>

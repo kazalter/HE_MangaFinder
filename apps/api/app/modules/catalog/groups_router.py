@@ -81,6 +81,7 @@ def _summary(group: WorkGroup) -> WorkGroupRead:
         year=group.year,
         language=group.language,
         tags=group.tags or [],
+        first_source_at=group.first_source_at,
         latest_source_at=group.latest_source_at,
         edition_count=len(group.members),
         providers=providers,

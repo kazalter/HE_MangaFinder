@@ -70,6 +70,7 @@ class WorkGroupRead(BaseModel):
     year: int | None
     language: str | None
     tags: list[str]
+    first_source_at: datetime | None
     latest_source_at: datetime | None
     edition_count: int
     providers: list[str]

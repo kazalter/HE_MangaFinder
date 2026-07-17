@@ -13,6 +13,7 @@ const { jobsMock, works } = vi.hoisted(() => ({
     year: 2026,
     language: 'ja',
     tags: ['Drama'],
+    first_source_at: '2024-01-01T00:00:00Z',
     latest_source_at: '2026-07-15T00:00:00Z',
     edition_count: 2,
     providers: ['mangadex'],
@@ -26,6 +27,7 @@ const { jobsMock, works } = vi.hoisted(() => ({
     year: 2025,
     language: 'zh-hans',
     tags: [],
+    first_source_at: '2025-01-01T00:00:00Z',
     latest_source_at: '2026-07-14T00:00:00Z',
     edition_count: 1,
     providers: ['wnacg'],
@@ -74,6 +76,8 @@ describe('catalog views', () => {
   it('switches display mode, filters works, and groups by author', async () => {
     render(<App />)
     expect(await screen.findByText('作品甲')).toBeInTheDocument()
+    expect(screen.getByLabelText('排序')).toHaveValue('first')
+    expect(screen.getAllByRole('heading', { level: 3 })[0]).toHaveTextContent('作品乙')
 
     fireEvent.click(screen.getByRole('button', { name: '封面墙' }))
     expect(screen.getByRole('button', { name: '查看《作品甲》' })).toBeInTheDocument()

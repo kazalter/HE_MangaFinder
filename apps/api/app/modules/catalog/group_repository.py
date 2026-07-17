@@ -38,8 +38,8 @@ class WorkGroupRepository:
             )
         groups = list(self.session.scalars(statement))
         groups.sort(key=lambda group: group.title.casefold())
-        groups.sort(key=lambda group: self._timestamp(group.latest_source_at), reverse=True)
-        groups.sort(key=lambda group: group.latest_source_at is None)
+        groups.sort(key=lambda group: self._timestamp(group.first_source_at), reverse=True)
+        groups.sort(key=lambda group: group.first_source_at is None)
         return groups
 
     def get(self, group_id: int) -> WorkGroup | None:

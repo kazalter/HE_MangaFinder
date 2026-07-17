@@ -35,6 +35,7 @@ export interface WorkGroup {
   year: number | null
   language: string | null
   tags: string[]
+  first_source_at: string | null
   latest_source_at: string | null
   edition_count: number
   providers: string[]

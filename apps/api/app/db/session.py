@@ -60,6 +60,22 @@ def _apply_additive_migrations() -> None:
                 "ALTER TABLE work_fingerprints ADD COLUMN cover_fingerprint JSON"
             )
 
+    group_columns = {item["name"] for item in inspect(engine).get_columns("work_groups")}
+    if "first_source_at" not in group_columns:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE work_groups ADD COLUMN first_source_at DATETIME"
+            )
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "UPDATE work_groups SET first_source_at = ("
+            "SELECT MIN(work_sources.source_updated_at) "
+            "FROM work_group_members "
+            "JOIN work_sources ON work_sources.work_id = work_group_members.work_id "
+            "WHERE work_group_members.group_id = work_groups.id"
+            ") WHERE first_source_at IS NULL"
+        )
+
     job_columns = {item["name"] for item in inspect(engine).get_columns("jobs")}
     if "next_attempt_at" not in job_columns:
         with engine.begin() as connection:
