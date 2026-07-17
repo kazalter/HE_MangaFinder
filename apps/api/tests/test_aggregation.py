@@ -229,6 +229,41 @@ def test_numbered_works_only_group_when_the_number_signature_matches() -> None:
         assert len(list(session.scalars(select(WorkGroup)))) == 3
 
 
+def test_exact_source_alias_still_groups_translated_titles() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="作者")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+        original = catalog.upsert(
+            author.id,
+            "source-a",
+            DiscoveredWork(
+                external_id="original",
+                title="海のお腹 2",
+                source_url="https://example.test/original",
+                raw_metadata={"altTitles": ["Ocean Belly 2"]},
+            ),
+        )
+        original_group = aggregation.assign_without_cover(original, author)
+        translation = catalog.upsert(
+            author.id,
+            "source-b",
+            DiscoveredWork(
+                external_id="translation",
+                title="Ocean Belly 2",
+                source_url="https://example.test/translation",
+            ),
+        )
+        translation_group = aggregation.assign_without_cover(translation, author)
+
+        assert translation_group.id == original_group.id
+        assert len(original_group.members) == 2
+
+
 async def test_refresh_splits_an_existing_automatic_group_with_different_numbers() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

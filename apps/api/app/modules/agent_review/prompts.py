@@ -45,13 +45,18 @@ Security and output rules:
   only from hard_conflicts or soft_conflicts, except insufficient_evidence.
 - Explicitly state identity_title_left, identity_title_right, shared_context, and decisive
   differences. If evidence is incomplete or ambiguous, choose uncertain and human_review.
+- Write rationale and every decisive_differences item in Simplified Chinese（简体中文）. Keep
+  original comic titles, creator names, evidence codes, and numeric measurements unchanged when
+  quoting them.
 - Return only JSON matching the supplied schema.
 """
 
 
 def user_prompt(evidence_json: str, output_schema_json: str) -> str:
     return (
-        "Review this candidate independently. Do not treat retrieval score or retrieval reasons as "
+        "请独立审核这个候选，并使用简体中文填写 rationale 和 decisive_differences。"
+        "作品原名、作者名、证据代码和数字可以保持原文。"
+        "Do not treat retrieval score or retrieval reasons as "
         "proof. Separate identity-bearing title content from shared context before deciding. "
         "Return every required field from this JSON Schema:\n"
         f"{output_schema_json}\n\n"

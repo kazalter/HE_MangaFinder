@@ -197,9 +197,9 @@ def _contexts(group: GroupEvidence) -> set[str]:
 
 
 def _title_similarity(left: GroupEvidence, right: GroupEvidence) -> float:
-    return best_identity_similarity(
-        _all_identity_names(left), _all_identity_names(right)
-    )
+    # Fuzzy aliases are often collection or parent-work labels supplied by a source. Let exact
+    # alias matches remain evidence, but never allow one contaminated alias to dominate scoring.
+    return best_identity_similarity(_core_names(left), _core_names(right))
 
 
 def _cover_comparisons(left: WorkGroup, right: WorkGroup) -> list[CoverComparison]:

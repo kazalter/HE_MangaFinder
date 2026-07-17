@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     agent_auto_apply: bool = False
     agent_auto_apply_threshold: float = 0.98
     agent_allow_cloud_images: bool = False
-    agent_prompt_version: str = "v7"
+    agent_prompt_version: str = "v8"
     social_enabled: bool = False
     social_collector_base_url: str = "http://social-collector:8010"
     social_collector_token: str = ""

@@ -12,6 +12,7 @@ from app.db.models import AgentReview, Author, MergeSuggestion, WorkGroup
 from app.modules.agent_review.candidates import build_candidate_evidence
 from app.modules.agent_review.client import OpenAICompatibleReviewer, ReviewResponse
 from app.modules.agent_review.grounding import validate_grounding
+from app.modules.agent_review.repairs import repair_historical_rationales
 from app.modules.agent_review.schemas import AgentVerdict
 from app.modules.agent_review.service import AgentReviewService
 from app.modules.catalog.aggregation import AggregationService
@@ -86,7 +87,7 @@ async def test_agent_review_is_grounded_persisted_and_read_only() -> None:
         relation="translation",
         evidence=["core_title_match", "number_match", "page_count_match"],
         conflicts=[],
-        rationale="作者、编号和页数一致，标题可能是翻译差异。",
+        rationale="The author, number, and page count match; the titles are translations.",
         recommended_action="suggest_merge",
     )
     reviewer = FakeReviewer(verdict)
@@ -102,11 +103,82 @@ async def test_agent_review_is_grounded_persisted_and_read_only() -> None:
         assert outcome == "reviewed"
         assert review is not None and review.decision == "same_work"
         assert review.rationale.startswith("Agent 倾向同一作品")
+        assert "The author" not in review.rationale
+        assert "核心标题：左侧" in review.rationale
+        assert "模型自由文本未使用中文" in review.rationale
         assert review.raw_output["rationale"] == verdict.rationale
         assert reviewer.calls == 1
         assert suggestion.status == "pending"
         assert len(list(session.scalars(select(WorkGroup)))) == original_group_count
         assert session.scalar(select(AgentReview)).input_snapshot["left"]["editions"]
+
+        review.rationale += "；模型具体理由：Legacy English explanation."
+        session.flush()
+        assert repair_historical_rationales(session) == 1
+        assert "Legacy English" not in review.rationale
+        assert "模型具体理由" not in review.rationale
+
+
+def test_fuzzy_source_alias_cannot_inflate_core_title_similarity() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="ie")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+        anthology = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="anthology",
+                title=(
+                    "[HarmoNeaR (Various)] BluArch Fellatio Goudoushi "
+                    "Get suck,cock! Kivotos Kouin Taisai (Blue Archive) [Digital]"
+                ),
+                source_url="https://example.test/anthology",
+                raw_metadata={"page_count": 135},
+            ),
+        )
+        anthology_group = aggregation.assign_without_cover(anthology, author)
+        excerpt = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="excerpt",
+                title=(
+                    "[HarmoNeaR (ie)] Ogata Kanna (BluArch Fellatio Goudoushi "
+                    "Get suck,cock! Kivotos Kouin Taisai) (Blue Archive) [Digital]"
+                ),
+                source_url="https://example.test/excerpt",
+                raw_metadata={
+                    "page_count": 2,
+                    "altTitles": [
+                        "[HarmoNeaR (ie)] 尾刃カンナ (ブルアカフェラチオ合同誌 "
+                        "Get suck,cock! キヴォトス口淫大祭) (ブルーアーカイブ) [DL版]"
+                    ],
+                },
+            ),
+        )
+        excerpt_group = aggregation.assign_without_cover(excerpt, author)
+
+        assert excerpt_group.id != anthology_group.id
+        assert list(session.scalars(select(MergeSuggestion))) == []
+
+        suggestion = MergeSuggestion(
+            source_group_id=anthology_group.id,
+            target_group_id=excerpt_group.id,
+            confidence=0.9,
+            reasons=["旧版别名模糊相似"],
+        )
+        session.add(suggestion)
+        session.flush()
+        evidence = build_candidate_evidence(
+            suggestion, anthology_group, excerpt_group
+        )
+        assert evidence.core_title_similarity < 0.2
+        assert "core_title_similarity" not in evidence.available_evidence
 
 
 def test_common_series_suffix_does_not_become_identity_evidence() -> None:
@@ -410,5 +482,7 @@ async def test_deepseek_client_uses_json_object_mode() -> None:
     body = __import__("json").loads(requests[0].content)
     assert body["response_format"] == {"type": "json_object"}
     assert body["thinking"] == {"type": "disabled"}
+    assert "简体中文" in body["messages"][0]["content"]
+    assert "简体中文" in body["messages"][1]["content"]
     assert requests[0].url == "https://api.deepseek.com/chat/completions"
     await client.aclose()

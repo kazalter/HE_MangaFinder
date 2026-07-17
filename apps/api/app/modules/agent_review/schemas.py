@@ -110,12 +110,20 @@ class AgentVerdict(BaseModel):
     relation: Relation
     evidence: list[EvidenceCode] = Field(max_length=10)
     conflicts: list[ConflictCode] = Field(max_length=5)
-    rationale: str = Field(min_length=1, max_length=800)
+    rationale: str = Field(
+        min_length=1,
+        max_length=800,
+        description="使用简体中文说明判断依据；作品原名、证据代码和数字可以保留原文。",
+    )
     recommended_action: Literal["suggest_merge", "keep_separate", "human_review"]
     identity_title_left: str = Field(default="", max_length=500)
     identity_title_right: str = Field(default="", max_length=500)
     shared_context: list[str] = Field(default_factory=list, max_length=10)
-    decisive_differences: list[str] = Field(default_factory=list, max_length=10)
+    decisive_differences: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="使用简体中文列出关键差异；作品原名和数字可以保留原文。",
+    )
 
     model_config = ConfigDict(extra="forbid")
 

@@ -1,3 +1,5 @@
+import re
+
 from app.modules.agent_review.errors import AgentOutputError
 from app.modules.agent_review.schemas import AgentVerdict, CandidateEvidence
 
@@ -27,6 +29,7 @@ _SEVERE_DIFFERENCES = {
     "cover_dissimilar",
     "page_count_mismatch",
 }
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
 
 
 def validate_grounding(
@@ -66,13 +69,12 @@ def validate_grounding(
     if verdict.decision == "same_work" and verdict.relation in {"unrelated", "unknown"}:
         raise AgentOutputError("同一作品必须说明版本关系")
 
-    original_rationale = verdict.rationale
     calibrated, notes = _calibrate(evidence, verdict)
+    if not _CJK_RE.search(verdict.rationale):
+        notes.append("模型自由文本未使用中文，已隐藏并改用结构化证据说明")
     return calibrated.model_copy(
         update={
-            "rationale": _grounded_rationale(
-                calibrated, original_rationale, notes
-            )
+            "rationale": render_grounded_rationale(evidence, calibrated, notes)
         }
     )
 
@@ -177,8 +179,10 @@ def _calibrate(
     return verdict, notes
 
 
-def _grounded_rationale(
-    verdict: AgentVerdict, model_rationale: str, calibration_notes: list[str]
+def render_grounded_rationale(
+    evidence: CandidateEvidence,
+    verdict: AgentVerdict,
+    calibration_notes: list[str] | None = None,
 ) -> str:
     decisions = {
         "same_work": "倾向同一作品",
@@ -227,9 +231,81 @@ def _grounded_rationale(
     if verdict.evidence:
         parts.append("正向证据：" + "、".join(labels[code] for code in verdict.evidence))
     if verdict.conflicts:
-        parts.append("负向/缺失证据：" + "、".join(labels[code] for code in verdict.conflicts))
-    if model_rationale.strip():
-        parts.append("模型具体理由：" + " ".join(model_rationale.split()))
+        parts.append(
+            "负向/缺失证据：" + "、".join(labels[code] for code in verdict.conflicts)
+        )
+    left_titles = _identity_titles(evidence.left.editions)
+    right_titles = _identity_titles(evidence.right.editions)
+    if left_titles or right_titles:
+        parts.append(
+            f"核心标题：左侧{_quoted(left_titles)}，右侧{_quoted(right_titles)}"
+        )
+    if "page_count_mismatch" in verdict.conflicts:
+        left_pages = sorted(
+            {
+                item.page_count
+                for item in evidence.left.editions
+                if item.page_count is not None
+            }
+        )
+        right_pages = sorted(
+            {
+                item.page_count
+                for item in evidence.right.editions
+                if item.page_count is not None
+            }
+        )
+        if left_pages or right_pages:
+            parts.append(f"页数：左侧{_range(left_pages)}，右侧{_range(right_pages)}")
+    if "cover_dissimilar" in verdict.conflicts and evidence.cover_hash_distance is not None:
+        parts.append(f"封面视觉距离：{evidence.cover_hash_distance}（数值显示封面明显不同）")
+    if "number_mismatch" in verdict.conflicts:
+        left_numbers = sorted(
+            {
+                tuple(item.number_signature)
+                for item in evidence.left.editions
+                if item.number_signature
+            }
+        )
+        right_numbers = sorted(
+            {
+                tuple(item.number_signature)
+                for item in evidence.right.editions
+                if item.number_signature
+            }
+        )
+        parts.append(f"作品编号：左侧{left_numbers or '未知'}，右侧{right_numbers or '未知'}")
+    if evidence.shared_context:
+        parts.append(
+            "共同上下文："
+            + "、".join(evidence.shared_context[:5])
+            + "（仅作上下文，不作为同一作品的独立证据）"
+        )
+    calibration_notes = calibration_notes or []
     if calibration_notes:
         parts.append("系统校准：" + "；".join(calibration_notes))
     return "；".join(parts)[:1800] + "。"
+
+
+def _identity_titles(editions: list[object]) -> list[str]:
+    values = sorted(
+        {
+            str(getattr(item, "identity_core", "")).strip()
+            for item in editions
+            if str(getattr(item, "identity_core", "")).strip()
+        },
+        key=lambda value: (len(value), value),
+    )
+    return values[:3]
+
+
+def _quoted(values: list[str]) -> str:
+    return "、".join(f"「{value}」" for value in values) if values else "未知"
+
+
+def _range(values: list[int]) -> str:
+    if not values:
+        return "未知"
+    if len(values) == 1:
+        return f"{values[0]} 页"
+    return f"{values[0]}–{values[-1]} 页"

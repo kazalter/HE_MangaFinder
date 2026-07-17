@@ -31,7 +31,8 @@ def init_db() -> None:
     _apply_additive_migrations()
     # Additive, idempotent migration: legacy source records remain untouched.
     from app.db.models import WorkFingerprint
-    from app.modules.catalog.aggregation import backfill_work_groups
+    from app.modules.agent_review.repairs import repair_historical_rationales
+    from app.modules.catalog.aggregation import backfill_work_groups, prune_invalid_suggestions
     from app.modules.catalog.repairs import repair_wnacg_upload_years
     from app.modules.jobs.repository import JobRepository
     from app.modules.social.events import seed_event_registry
@@ -39,6 +40,9 @@ def init_db() -> None:
     with Session(engine) as session:
         repair_wnacg_upload_years(session)
         backfill_work_groups(session)
+        prune_invalid_suggestions(session)
+        if repair_historical_rationales(session):
+            session.commit()
         seed_event_registry(session)
         if session.scalar(
             select(WorkFingerprint.work_id).where(

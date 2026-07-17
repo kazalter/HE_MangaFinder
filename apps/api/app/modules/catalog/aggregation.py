@@ -515,6 +515,7 @@ class AggregationService:
         best_score = 0.0
         exact = False
         names = self._fingerprint_names(fingerprint)
+        primary_names = self._primary_fingerprint_names(fingerprint)
         for group in groups:
             if not self._group_numbering_matches(fingerprint, group):
                 continue
@@ -523,9 +524,10 @@ class AggregationService:
                 if not other:
                     continue
                 other_names = self._fingerprint_names(other)
+                other_primary_names = self._primary_fingerprint_names(other)
                 overlap = names & other_names
                 valid_exact = any(len(_compact(value)) >= 3 for value in overlap)
-                score = best_identity_similarity(names, other_names)
+                score = best_identity_similarity(primary_names, other_primary_names)
                 if valid_exact:
                     return group, 1.0, True
                 if score > best_score:
@@ -535,13 +537,13 @@ class AggregationService:
     def _best_fingerprint(
         self, fingerprint: WorkFingerprint, group: WorkGroup
     ) -> WorkFingerprint | None:
-        names = self._fingerprint_names(fingerprint)
+        names = self._primary_fingerprint_names(fingerprint)
         candidates = [member.work.fingerprint for member in group.members]
         candidates = [candidate for candidate in candidates if candidate]
         return max(
             candidates,
             key=lambda candidate: best_identity_similarity(
-                names, self._fingerprint_names(candidate)
+                names, self._primary_fingerprint_names(candidate)
             ),
             default=None,
         )
@@ -811,6 +813,17 @@ class AggregationService:
             )
         }
 
+    @staticmethod
+    def _primary_fingerprint_names(fingerprint: WorkFingerprint) -> set[str]:
+        return {
+            _canonicalize_numbers(value)
+            for value in identity_names(
+                fingerprint.work.title,
+                fingerprint.normalized_title,
+                [],
+            )
+        }
+
     @classmethod
     def _identity_length(cls, fingerprint: WorkFingerprint) -> int:
         return len(_compact(fingerprint.normalized_title))
@@ -844,6 +857,7 @@ class AggregationService:
             return [item for entry in value.values() for item in cls._strings(entry)]
         return []
 
+
 def backfill_work_groups(session: Session) -> int:
     service = AggregationService(session)
     created = 0
@@ -859,3 +873,14 @@ def backfill_work_groups(session: Session) -> int:
             created += 1
     session.commit()
     return created
+
+
+def prune_invalid_suggestions(session: Session) -> int:
+    service = AggregationService(session)
+    removed = sum(
+        service.prune_pending_suggestions(author_id)
+        for author_id in session.scalars(select(Author.id))
+    )
+    if removed:
+        session.commit()
+    return removed
