@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
-const { works } = vi.hoisted(() => ({
+const { jobsMock, works } = vi.hoisted(() => ({
+  jobsMock: vi.fn(),
   works: [{
     id: 1,
     title: '作品甲',
@@ -39,7 +40,7 @@ vi.mock('./lib/api', () => ({
       { id: 2, name: '作者乙', created_at: '', last_checked_at: null, work_count: 1 },
     ]),
     workGroups: vi.fn().mockResolvedValue(works),
-    jobs: vi.fn().mockResolvedValue([]),
+    jobs: jobsMock,
     sources: vi.fn().mockResolvedValue([]),
     mergeSuggestions: vi.fn().mockResolvedValue([]),
     agentStatus: vi.fn().mockResolvedValue(null),
@@ -61,7 +62,14 @@ vi.mock('./lib/api', () => ({
 }))
 
 describe('catalog views', () => {
-  beforeEach(() => window.localStorage.clear())
+  afterEach(cleanup)
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+    jobsMock.mockClear()
+    jobsMock.mockResolvedValue([])
+  })
 
   it('switches display mode, filters works, and groups by author', async () => {
     render(<App />)
@@ -81,5 +89,74 @@ describe('catalog views', () => {
       expect(screen.getByRole('heading', { name: '作者甲' })).toBeInTheDocument()
       expect(screen.getByRole('heading', { name: '作者乙' })).toBeInTheDocument()
     })
+  })
+
+  it('explains, timestamps, and dismisses a failed task without hiding newer failures', async () => {
+    jobsMock.mockResolvedValue([{
+      id: 58,
+      kind: 'social_sync_account',
+      payload: { account_id: 1 },
+      status: 'failed',
+      attempts: 3,
+      error: '无法连接 X 采集器：All connection attempts failed',
+      created_at: '2026-07-17T02:19:00Z',
+      started_at: '2026-07-17T02:19:19Z',
+      finished_at: '2026-07-17T02:19:20Z',
+      next_attempt_at: null,
+    }])
+    const first = render(<App />)
+
+    expect(await screen.findByText('X 动态同步失败')).toBeInTheDocument()
+    expect(screen.getByText(/采集器在服务启动时尚未就绪/)).toBeInTheDocument()
+    expect(screen.getByText(/已尝试 3 次/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭任务失败提示' }))
+    expect(screen.queryByText('X 动态同步失败')).not.toBeInTheDocument()
+    expect(window.sessionStorage.getItem('mangafinder:dismissed-job-through')).toBe('58')
+    first.unmount()
+
+    jobsMock.mockResolvedValue([{
+      id: 59,
+      kind: 'download_chapter',
+      payload: {},
+      status: 'failed',
+      attempts: 3,
+      error: '下载源暂时不可用',
+      created_at: '2026-07-17T03:00:00Z',
+      started_at: '2026-07-17T03:00:01Z',
+      finished_at: '2026-07-17T03:00:02Z',
+      next_attempt_at: null,
+    }])
+    render(<App />)
+    expect(await screen.findByText('章节下载失败')).toBeInTheDocument()
+  })
+
+  it('stops showing an old failure after the same task subject recovers', async () => {
+    jobsMock.mockResolvedValue([{
+      id: 60,
+      kind: 'social_sync_account',
+      payload: { account_id: 1 },
+      status: 'succeeded',
+      attempts: 1,
+      error: null,
+      created_at: '2026-07-17T03:00:00Z',
+      started_at: '2026-07-17T03:00:01Z',
+      finished_at: '2026-07-17T03:00:02Z',
+      next_attempt_at: null,
+    }, {
+      id: 58,
+      kind: 'social_sync_account',
+      payload: { account_id: 1 },
+      status: 'failed',
+      attempts: 3,
+      error: '无法连接 X 采集器：All connection attempts failed',
+      created_at: '2026-07-17T02:19:00Z',
+      started_at: '2026-07-17T02:19:19Z',
+      finished_at: '2026-07-17T02:19:20Z',
+      next_attempt_at: null,
+    }])
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: '作品总览' })).toBeInTheDocument()
+    expect(screen.queryByText('X 动态同步失败')).not.toBeInTheDocument()
   })
 })

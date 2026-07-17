@@ -14,6 +14,16 @@ type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
 type WorkSort = 'updated' | 'title' | 'year' | 'editions'
 type GroupMode = 'none' | 'author'
 
+const JOB_LABELS: Record<string, string> = {
+  discover_author: '作品发现',
+  download_chapter: '章节下载',
+  agent_review_suggestions: '智能聚合审核',
+  social_sync_account: 'X 动态同步',
+  deliver_notifications: '消息通知',
+  build_daily_digest: '每日动态摘要',
+  refresh_cover_fingerprints: '封面索引更新',
+}
+
 function savedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
   try {
     const value = window.localStorage.getItem(key) as T | null
@@ -29,6 +39,33 @@ function saveChoice(key: string, value: string) {
   } catch {
     // Browsing still works when storage is disabled; only preference persistence is lost.
   }
+}
+
+function formatJobTime(value: string | null): string {
+  if (!value) return '时间未知'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '时间未知'
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  }).format(date)
+}
+
+function friendlyJobError(message: string | null): string {
+  if (!message) return '任务未返回具体原因'
+  if (message.includes('All connection attempts failed')) {
+    return 'X 采集器在服务启动时尚未就绪，或当时容器网络暂时不可达。'
+  }
+  return message
+}
+
+function jobSubject(job: Job): string {
+  if (job.kind === 'social_sync_account') return `${job.kind}:${String(job.payload.account_id ?? '')}`
+  if (job.kind === 'discover_author') return `${job.kind}:${String(job.payload.author_id ?? '')}`
+  if (job.kind === 'download_chapter') {
+    return [job.kind, job.payload.work_id, job.payload.provider, job.payload.chapter_id].map(String).join(':')
+  }
+  return job.kind
 }
 
 export default function App() {
@@ -55,6 +92,10 @@ export default function App() {
   const [workFilter, setWorkFilter] = useState<WorkFilter>('all')
   const [workSort, setWorkSort] = useState<WorkSort>(() => savedChoice('mangafinder:sort', ['updated', 'title', 'year', 'editions'], 'updated'))
   const [groupMode, setGroupMode] = useState<GroupMode>(() => savedChoice('mangafinder:group', ['none', 'author'], 'none'))
+  const [dismissedJobThrough, setDismissedJobThrough] = useState(() => {
+    try { return Number(window.sessionStorage.getItem('mangafinder:dismissed-job-through') ?? 0) || 0 }
+    catch { return 0 }
+  })
 
   const load = useCallback(async () => {
     try {
@@ -125,7 +166,17 @@ export default function App() {
     return [...grouped.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
   }, [groupMode, selectedId, visibleWorks])
   const activeJobs = jobs.filter((job) => job.status === 'pending' || job.status === 'running')
-  const failedJob = jobs.find((job) => job.status === 'failed')
+  const failedJob = jobs.find((job) => (
+    job.status === 'failed'
+    && job.id > dismissedJobThrough
+    && !jobs.some((newer) => newer.id > job.id && newer.status === 'succeeded' && jobSubject(newer) === jobSubject(job))
+  ))
+
+  function dismissFailedJob(id: number) {
+    setDismissedJobThrough(id)
+    try { window.sessionStorage.setItem('mangafinder:dismissed-job-through', String(id)) }
+    catch { /* The banner can still be dismissed until the next page load. */ }
+  }
 
   async function act(action: () => Promise<unknown>) {
     setBusy(true)
@@ -219,7 +270,18 @@ export default function App() {
           </div>
         </header>
 
-        {(error || failedJob) && <div className="alert">{error ?? `最近任务失败：${failedJob?.error}`}</div>}
+        {error && <div className="alert" role="alert">
+          <div className="alert-copy"><strong>操作失败</strong><span>{error}</span></div>
+          <button className="alert-close" onClick={() => setError(null)} aria-label="关闭错误提示">×</button>
+        </div>}
+        {failedJob && <div className="alert" role="alert">
+          <div className="alert-copy">
+            <strong>{JOB_LABELS[failedJob.kind] ?? '后台任务'}失败</strong>
+            <span>{friendlyJobError(failedJob.error)}</span>
+            <small>{formatJobTime(failedJob.finished_at ?? failedJob.started_at ?? failedJob.created_at)} · 已尝试 {failedJob.attempts} 次</small>
+          </div>
+          <button className="alert-close" onClick={() => dismissFailedJob(failedJob.id)} aria-label="关闭任务失败提示">×</button>
+        </div>}
         {activeJobs.length > 0 && <div className="sync-banner"><span className="spinner" /> 正在向来源查询，作品会自动出现…</div>}
         {suggestions.length > 0 && <button className="review-banner" onClick={() => setReviewOpen(true)}>有 {suggestions.length} 个相似作品等待确认聚合 <span>去审核 →</span></button>}
         {jobs.filter((job) => job.kind === 'download_chapter' && job.status === 'succeeded' && job.payload.output_path).slice(0, 1).map((job) => (

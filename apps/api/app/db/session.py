@@ -51,13 +51,24 @@ def init_db() -> None:
 
 def _apply_additive_migrations() -> None:
     """Keep existing SQLite installations compatible without destructive migrations."""
-    columns = {
+    fingerprint_columns = {
         item["name"] for item in inspect(engine).get_columns("work_fingerprints")
     }
-    if "cover_fingerprint" not in columns:
+    if "cover_fingerprint" not in fingerprint_columns:
         with engine.begin() as connection:
             connection.exec_driver_sql(
                 "ALTER TABLE work_fingerprints ADD COLUMN cover_fingerprint JSON"
+            )
+
+    job_columns = {item["name"] for item in inspect(engine).get_columns("jobs")}
+    if "next_attempt_at" not in job_columns:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE jobs ADD COLUMN next_attempt_at DATETIME"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_jobs_next_attempt_at "
+                "ON jobs (next_attempt_at)"
             )
 
 

@@ -58,8 +58,14 @@ class XBrowserCollector:
         except httpx.HTTPStatusError as exc:
             detail = self._response_error_detail(exc.response)
             raise RuntimeError(f"X 采集器暂时不可用：{detail}") from exc
+        except httpx.ConnectError as exc:
+            raise RuntimeError(
+                "无法连接 X 采集器：采集器尚未启动、正在重启，或容器网络不可达"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise RuntimeError("连接 X 采集器超时，请检查采集器运行状态和网络") from exc
         except httpx.HTTPError as exc:
-            raise RuntimeError(f"无法连接 X 采集器：{exc}") from exc
+            raise RuntimeError(f"X 采集器网络请求失败：{exc}") from exc
         finally:
             if owns_client:
                 await client.aclose()

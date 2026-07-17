@@ -50,7 +50,13 @@ main { padding: 48px clamp(28px, 5vw, 76px) 70px; min-width: 0; }
 .radar-button { position: relative; border: 1px solid #a8583c; padding: 9px 12px; color: #8d432c; background: #f7eee5; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .radar-button span { position: absolute; top: -9px; right: -9px; min-width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; color: white; background: #ba4e35; font-size: 9px; }
 .alert, .sync-banner, .download-ready { margin-top: 22px; padding: 13px 16px; font-size: 13px; border-radius: 3px; }
-.alert { color: #7b2d20; background: #f2d8ce; border-left: 3px solid #c35639; }
+.alert { display: flex; align-items: flex-start; gap: 16px; color: #7b2d20; background: #f2d8ce; border-left: 3px solid #c35639; }
+.alert-copy { min-width: 0; display: grid; gap: 4px; }
+.alert-copy strong { font-size: 13px; }
+.alert-copy span { line-height: 1.5; overflow-wrap: anywhere; }
+.alert-copy small { color: #946052; font-size: 11px; }
+.alert-close { width: 28px; height: 28px; flex: 0 0 auto; margin: -5px -7px -5px auto; border: 0; border-radius: 50%; color: #7b2d20; background: transparent; font-size: 21px; line-height: 1; }
+.alert-close:hover, .alert-close:focus-visible { background: rgba(123, 45, 32, .1); outline: none; }
 .sync-banner { color: #34463d; background: #dfe7de; display: flex; align-items: center; gap: 10px; }
 .download-ready { display: flex; justify-content: space-between; color: #493f2b; background: #eee2c4; }
 .download-ready a { color: #8d432c; font-weight: 700; text-decoration: none; }

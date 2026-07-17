@@ -38,6 +38,29 @@ def test_running_jobs_are_requeued_after_restart() -> None:
         assert succeeded.status == JobStatus.SUCCEEDED
 
 
+def test_failed_job_is_retried_after_backoff() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        repository = JobRepository(session)
+        job = repository.enqueue_discovery(1)
+        session.commit()
+
+        claimed = repository.claim_next()
+        assert claimed is not None
+        repository.fail(claimed, "临时连接失败", max_attempts=3)
+
+        session.refresh(job)
+        assert job.status == JobStatus.PENDING
+        assert job.next_attempt_at is not None
+        assert job.next_attempt_at > datetime.now(UTC)
+        assert repository.claim_next() is None
+
+        job.next_attempt_at = datetime.now(UTC)
+        session.commit()
+        assert repository.claim_next() is not None
+
+
 @pytest.mark.asyncio
 async def test_failed_job_rolls_back_uncommitted_business_writes(
     monkeypatch: pytest.MonkeyPatch,

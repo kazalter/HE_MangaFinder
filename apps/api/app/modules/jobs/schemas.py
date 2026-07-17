@@ -16,5 +16,6 @@ class JobRead(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    next_attempt_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)

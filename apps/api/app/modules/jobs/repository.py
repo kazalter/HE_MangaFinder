@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -148,16 +148,21 @@ class JobRepository:
         return job
 
     def claim_next(self) -> Job | None:
+        now = datetime.now(UTC)
         job = self.session.scalar(
             select(Job)
-            .where(Job.status == JobStatus.PENDING)
+            .where(
+                Job.status == JobStatus.PENDING,
+                or_(Job.next_attempt_at.is_(None), Job.next_attempt_at <= now),
+            )
             .order_by(Job.created_at, Job.id)
             .limit(1)
         )
         if job:
             job.status = JobStatus.RUNNING
             job.attempts += 1
-            job.started_at = datetime.now(UTC)
+            job.started_at = now
+            job.next_attempt_at = None
             job.error = None
             self.session.commit()
         return job
@@ -170,6 +175,7 @@ class JobRepository:
         for job in interrupted:
             job.status = JobStatus.PENDING
             job.started_at = None
+            job.next_attempt_at = None
             job.error = "上次运行被服务重启中断，已自动重新排队"
         if interrupted:
             self.session.commit()
@@ -178,15 +184,19 @@ class JobRepository:
     def succeed(self, job: Job) -> None:
         job.status = JobStatus.SUCCEEDED
         job.finished_at = datetime.now(UTC)
+        job.next_attempt_at = None
         self.session.commit()
 
     def fail(self, job: Job, error: str, max_attempts: int) -> None:
         job.error = error[:4000]
         if job.attempts < max_attempts:
             job.status = JobStatus.PENDING
+            delay_seconds = min(10 * (2 ** max(job.attempts - 1, 0)), 300)
+            job.next_attempt_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
         else:
             job.status = JobStatus.FAILED
             job.finished_at = datetime.now(UTC)
+            job.next_attempt_at = None
         self.session.commit()
 
     def list_recent(self, limit: int = 20) -> list[Job]:

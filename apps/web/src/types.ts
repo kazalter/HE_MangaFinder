@@ -122,6 +122,10 @@ export interface Job {
   status: 'pending' | 'running' | 'succeeded' | 'failed'
   attempts: number
   error: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  next_attempt_at: string | null
 }
 
 export interface Chapter {
