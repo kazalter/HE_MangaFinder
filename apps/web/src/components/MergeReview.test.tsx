@@ -16,6 +16,7 @@ function group(id: number, title: string, provider: string): WorkGroup {
     latest_source_at: '2026-07-13T00:00:00Z',
     edition_count: 2,
     providers: [provider],
+    authors: [{ id: 1, name: '测试作者' }],
   }
 }
 

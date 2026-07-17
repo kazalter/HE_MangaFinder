@@ -1,10 +1,10 @@
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from hashlib import sha256
 
 from sqlalchemy.orm import Session
 
+from app.core.time import as_utc
 from app.db.models import ActivityItem, SocialAccount, SocialPost
 from app.modules.social.repository import SocialRepository
 
@@ -33,13 +33,6 @@ class ActivityAssessment:
 def _contains(text: str, words: tuple[str, ...]) -> bool:
     folded = text.casefold()
     return any(word.casefold() in folded for word in words)
-
-
-def _utc(value: datetime) -> datetime:
-    """Normalize SQLite's timezone-naive timestamps before comparing them."""
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 def assess_activity(post: SocialPost) -> ActivityAssessment | None:
@@ -111,7 +104,7 @@ class ActivityService:
             self.session.add(activity)
             self.session.flush()
         else:
-            is_latest = _utc(post.posted_at) >= _utc(activity.ended_at)
+            is_latest = as_utc(post.posted_at) >= as_utc(activity.ended_at)
             if is_latest:
                 activity.ended_at = post.posted_at
                 activity.summary = assessment.summary or activity.summary

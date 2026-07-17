@@ -9,12 +9,15 @@ from app.db.base import Base
 from app.db.models import (
     Author,
     DailyDigestDelivery,
+    NotificationOutbox,
+    ReleaseSignal,
     SocialAccount,
     SocialPost,
 )
 from app.modules.social.activity import ActivityService
 from app.modules.social.daily_digest import DailyDigestService
 from app.modules.social.notifications import NotificationService, QqBotClient
+from app.modules.social.service import SocialSyncService
 
 
 @pytest.fixture
@@ -179,3 +182,66 @@ async def test_notification_service_delivers_daily_digest(
     assert result["delivered"] == 1
     assert sent == ["【MangaFinder · 作者近况日报】"]
     assert delivery is not None and delivery.status == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_signal_is_marked_notified_only_after_delivery(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[str] = []
+
+    async def fake_send(_: QqBotClient, content: str) -> None:
+        sent.append(content)
+
+    monkeypatch.setattr(QqBotClient, "send_text", fake_send)
+    author = Author(name="作者甲")
+    session.add(author)
+    session.flush()
+    account = SocialAccount(author_id=author.id, handle="creator", status="confirmed")
+    session.add(account)
+    session.flush()
+    post = SocialPost(
+        account_id=account.id,
+        platform_post_id="notification-1",
+        post_type="original",
+        text="新刊予約開始",
+        url="https://x.com/creator/status/notification-1",
+        conversation_id="notification-1",
+        media=[],
+        links=[],
+        raw_metadata={},
+        content_hash="notification-1",
+        posted_at=datetime.now(UTC),
+    )
+    session.add(post)
+    session.flush()
+    signal = ReleaseSignal(
+        author_id=author.id,
+        primary_post_id=post.id,
+        cluster_key="notification-1",
+        kind="new_release",
+        confidence=0.95,
+        status="confirmed",
+        evidence=["新刊"],
+        counter_evidence=[],
+        missing_information=[],
+    )
+    session.add(signal)
+    session.flush()
+    settings = Settings(
+        qq_bot_enabled=True,
+        qq_bot_app_id="app",
+        qq_bot_client_secret="secret",
+        qq_bot_user_openid="openid",
+    )
+    SocialSyncService(session, settings).queue_notification(signal, account, post)
+    session.commit()
+
+    assert signal.notified_at is None
+    assert session.scalar(select(NotificationOutbox)) is not None
+
+    result = await NotificationService(session, settings).deliver_pending()
+
+    assert result["delivered"] == 1
+    assert sent
+    assert signal.notified_at is not None

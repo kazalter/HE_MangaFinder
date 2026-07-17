@@ -5,7 +5,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.db.models import DailyDigestDelivery, NotificationOutbox
+from app.db.models import DailyDigestDelivery, NotificationOutbox, ReleaseSignal
 
 
 class QqBotClient:
@@ -89,6 +89,9 @@ class NotificationService:
                 item.status = "delivered"
                 item.delivered_at = now
                 item.error = None
+                signal = self.session.get(ReleaseSignal, item.signal_id)
+                if signal is not None:
+                    signal.notified_at = now
                 delivered += 1
             except Exception as exc:
                 item.error = str(exc)[:2000]

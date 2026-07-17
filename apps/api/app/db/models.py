@@ -5,7 +5,6 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
-    DateTime,
     Enum,
     Float,
     ForeignKey,
@@ -16,6 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.types import UTCDateTime
 
 
 def utcnow() -> datetime:
@@ -34,8 +34,8 @@ class Author(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     works: Mapped[list["Work"]] = relationship(
         secondary="author_works", back_populates="authors", viewonly=True
@@ -53,9 +53,9 @@ class Work(Base):
     year: Mapped[int | None]
     language: Mapped[str | None] = mapped_column(String(20))
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
     authors: Mapped[list[Author]] = relationship(
@@ -82,7 +82,7 @@ class WorkSource(Base):
     external_id: Mapped[str] = mapped_column(String(300))
     source_url: Mapped[str] = mapped_column(Text)
     raw_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     work: Mapped[Work] = relationship(back_populates="sources")
 
@@ -96,7 +96,7 @@ class AuthorWork(Base):
     work_id: Mapped[int] = mapped_column(
         ForeignKey("works.id", ondelete="CASCADE"), primary_key=True
     )
-    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    discovered_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class WorkGroup(Base):
@@ -110,10 +110,10 @@ class WorkGroup(Base):
     year: Mapped[int | None]
     language: Mapped[str | None] = mapped_column(String(20))
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
-    latest_source_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    latest_source_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
     members: Mapped[list["WorkGroupMember"]] = relationship(
@@ -134,7 +134,7 @@ class WorkGroupMember(Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     match_method: Mapped[str] = mapped_column(String(50), default="new")
     is_manual: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     group: Mapped[WorkGroup] = relationship(back_populates="members")
     work: Mapped[Work] = relationship(back_populates="group_membership", lazy="selectin")
@@ -153,7 +153,7 @@ class WorkFingerprint(Base):
     cover_hash: Mapped[str | None] = mapped_column(String(16), index=True)
     cover_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
     work: Mapped[Work] = relationship(back_populates="fingerprint")
@@ -173,7 +173,7 @@ class MergeSuggestion(Base):
     confidence: Mapped[float] = mapped_column(Float)
     reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class AgentReview(Base):
@@ -201,7 +201,7 @@ class AgentReview(Base):
     input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     raw_output: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class PairConstraint(Base):
@@ -217,9 +217,9 @@ class PairConstraint(Base):
         ForeignKey("agent_reviews.id", ondelete="SET NULL")
     )
     note: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
 
@@ -234,9 +234,9 @@ class Job(Base):
     )
     attempts: Mapped[int] = mapped_column(default=0)
     error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class SocialAccount(Base):
@@ -258,12 +258,12 @@ class SocialAccount(Base):
     match_score: Mapped[float | None] = mapped_column(Float)
     evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
     last_post_id: Mapped[str | None] = mapped_column(String(100))
-    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    next_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    next_sync_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
     sync_error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
 
@@ -287,11 +287,11 @@ class SocialPost(Base):
     ocr_text: Mapped[str | None] = mapped_column(Text)
     raw_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
-    posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    posted_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    edited_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    ingested_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
 
@@ -315,11 +315,11 @@ class ActivityItem(Base):
     importance: Mapped[str] = mapped_column(String(20), default="normal", index=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    ended_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
 
@@ -333,7 +333,7 @@ class ActivityItemPost(Base):
         ForeignKey("social_posts.id", ondelete="CASCADE"), primary_key=True, unique=True
     )
     relation: Mapped[str] = mapped_column(String(30), default="evidence")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class AuthorDigest(Base):
@@ -345,8 +345,8 @@ class AuthorDigest(Base):
         ForeignKey("authors.id", ondelete="CASCADE"), index=True
     )
     period_type: Mapped[str] = mapped_column(String(30), default="rolling_7d", index=True)
-    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    period_start: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    period_end: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
     summary: Mapped[str] = mapped_column(Text, default="")
     highlights: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     uncertainties: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -356,9 +356,9 @@ class AuthorDigest(Base):
     model: Mapped[str | None] = mapped_column(String(200))
     prompt_version: Mapped[str | None] = mapped_column(String(50))
     error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
 
@@ -368,13 +368,13 @@ class EventRegistry(Base):
     code: Mapped[str] = mapped_column(String(30), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
-    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    starts_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    ends_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     venue: Mapped[str | None] = mapped_column(String(300))
     timezone: Mapped[str] = mapped_column(String(50), default="Asia/Tokyo")
     source_url: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
 
@@ -393,7 +393,7 @@ class ReleaseSignal(Base):
     title: Mapped[str | None] = mapped_column(String(500), index=True)
     event_code: Mapped[str | None] = mapped_column(String(30), index=True)
     booth: Mapped[str | None] = mapped_column(String(100))
-    release_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    release_date: Mapped[datetime | None] = mapped_column(UTCDateTime())
     store_urls: Mapped[list[str]] = mapped_column(JSON, default=list)
     confidence: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
@@ -405,11 +405,11 @@ class ReleaseSignal(Base):
         ForeignKey("work_groups.id", ondelete="SET NULL"), index=True
     )
     reviewed_by: Mapped[str | None] = mapped_column(String(30))
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    notified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
 
@@ -423,7 +423,7 @@ class ReleaseSignalPost(Base):
         ForeignKey("social_posts.id", ondelete="CASCADE"), primary_key=True, unique=True
     )
     relation: Mapped[str] = mapped_column(String(30), default="evidence")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class SocialAgentReview(Base):
@@ -443,7 +443,7 @@ class SocialAgentReview(Base):
     verdict: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class NotificationOutbox(Base):
@@ -459,10 +459,10 @@ class NotificationOutbox(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(default=0)
-    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
     error: Mapped[str | None] = mapped_column(Text)
-    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class DailyDigestDelivery(Base):
@@ -473,16 +473,16 @@ class DailyDigestDelivery(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     local_date: Mapped[str] = mapped_column(String(10), unique=True, index=True)
     timezone: Mapped[str] = mapped_column(String(50))
-    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    period_start: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    period_end: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
     author_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), index=True
+        UTCDateTime(), index=True
     )
     error: Mapped[str | None] = mapped_column(Text)
-    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

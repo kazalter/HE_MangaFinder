@@ -1,9 +1,10 @@
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.time import utc_timestamp
 from app.db.models import AuthorWork, Work, WorkSource
 from app.providers.base import DiscoveredWork
 
@@ -127,9 +128,7 @@ class CatalogRepository:
 
     @staticmethod
     def _timestamp(value: datetime) -> float:
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        return value.timestamp()
+        return utc_timestamp(value)
 
     def get_source(self, work_id: int, provider: str) -> WorkSource | None:
         return self.session.scalar(

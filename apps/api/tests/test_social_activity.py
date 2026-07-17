@@ -32,6 +32,7 @@ def make_post(
     *,
     post_type: str = "original",
     conversation_id: str | None = None,
+    posted_at: datetime | None = None,
 ) -> SocialPost:
     post = SocialPost(
         account_id=account_id,
@@ -44,7 +45,7 @@ def make_post(
         links=[],
         raw_metadata={},
         content_hash=post_id,
-        posted_at=datetime.now(UTC) - timedelta(hours=1),
+        posted_at=posted_at or datetime.now(UTC) - timedelta(hours=1),
     )
     session.add(post)
     session.flush()
@@ -110,6 +111,52 @@ async def test_fallback_digest_is_grounded_in_non_retweets(session: Session) -> 
     assert digest.generated_by == "rules"
     assert digest.evidence_post_ids == [original.id]
     assert all(original.id in item["post_ids"] for item in digest.highlights)
+
+
+@pytest.mark.asyncio
+async def test_fallback_digest_sorts_mixed_sqlite_and_new_utc_datetimes(
+    session: Session,
+) -> None:
+    author = Author(name="作家")
+    session.add(author)
+    session.flush()
+    author_id = author.id
+    account = SocialAccount(author_id=author_id, handle="creator", status="confirmed")
+    session.add(account)
+    session.flush()
+    account_id = account.id
+    old = make_post(
+        session,
+        account_id,
+        "22",
+        "原稿作業中です",
+        posted_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+    old_id = old.id
+    session.commit()
+    session.expunge_all()
+
+    account = session.get(SocialAccount, account_id)
+    assert account is not None
+    old = session.get(SocialPost, old_id)
+    assert old is not None
+    assert old.posted_at.utcoffset() == timedelta(0)
+    old.posted_at = old.posted_at.replace(tzinfo=None)
+    new = make_post(
+        session,
+        account_id,
+        "23",
+        "原稿の彩色まで進みました",
+        posted_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+
+    digest = await DigestService(
+        session, Settings(social_agent_enabled=False)
+    ).refresh(author_id)
+
+    assert digest is not None
+    assert digest.highlights[0]["post_ids"] == [new.id]
+    assert any(item["post_ids"] == [old_id] for item in digest.highlights)
 
 
 def test_translation_hints_and_fallback_terms_are_readable_chinese(session: Session) -> None:

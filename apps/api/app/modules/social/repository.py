@@ -52,6 +52,21 @@ class SocialRepository:
             )
         )
         if existing:
+            if confirmed and existing.status != "confirmed":
+                existing.status = "confirmed"
+                existing.next_sync_at = datetime.now(UTC)
+            existing.account_type = account_type
+            if display_name is not None:
+                existing.display_name = display_name
+            if profile_url is not None:
+                existing.profile_url = profile_url
+            if avatar_url is not None:
+                existing.avatar_url = avatar_url
+            if match_score is not None:
+                existing.match_score = match_score
+            if evidence is not None:
+                existing.evidence = evidence
+            self.session.flush()
             return existing
         account = SocialAccount(
             author_id=author_id,

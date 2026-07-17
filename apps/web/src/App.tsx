@@ -3,9 +3,33 @@ import { AuthorSidebar } from './components/AuthorSidebar'
 import { MergeReview } from './components/MergeReview'
 import { SocialRadar } from './components/SocialRadar'
 import { WorkCard } from './components/WorkCard'
+import { WorkCoverTile } from './components/WorkCoverTile'
 import { WorkDetail } from './components/WorkDetail'
+import { WorkListRow } from './components/WorkListRow'
 import { api } from './lib/api'
 import type { AgentStatus, Author, Edition, Job, MergeSuggestion, ReleaseSignal, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkSource } from './types'
+
+type ViewMode = 'cards' | 'covers' | 'list'
+type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
+type WorkSort = 'updated' | 'title' | 'year' | 'editions'
+type GroupMode = 'none' | 'author'
+
+function savedChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
+  try {
+    const value = window.localStorage.getItem(key) as T | null
+    return value && choices.includes(value) ? value : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function saveChoice(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    // Browsing still works when storage is disabled; only preference persistence is lost.
+  }
+}
 
 export default function App() {
   const [authors, setAuthors] = useState<Author[]>([])
@@ -27,6 +51,10 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const [viewMode, setViewMode] = useState<ViewMode>(() => savedChoice('mangafinder:view', ['cards', 'covers', 'list'], 'cards'))
+  const [workFilter, setWorkFilter] = useState<WorkFilter>('all')
+  const [workSort, setWorkSort] = useState<WorkSort>(() => savedChoice('mangafinder:sort', ['updated', 'title', 'year', 'editions'], 'updated'))
+  const [groupMode, setGroupMode] = useState<GroupMode>(() => savedChoice('mangafinder:group', ['none', 'author'], 'none'))
 
   const load = useCallback(async () => {
     try {
@@ -48,6 +76,9 @@ export default function App() {
   }, [selectedId])
 
   useEffect(() => { void load() }, [load])
+  useEffect(() => { saveChoice('mangafinder:view', viewMode) }, [viewMode])
+  useEffect(() => { saveChoice('mangafinder:sort', workSort) }, [workSort])
+  useEffect(() => { saveChoice('mangafinder:group', groupMode) }, [groupMode])
   useEffect(() => {
     if (!jobs.some((job) => job.status === 'pending' || job.status === 'running')) return
     const timer = window.setInterval(() => void load(), 2000)
@@ -57,8 +88,42 @@ export default function App() {
   const selectedAuthor = authors.find((author) => author.id === selectedId)
   const visibleWorks = useMemo(() => {
     const term = search.trim().toLocaleLowerCase()
-    return term ? works.filter((work) => work.title.toLocaleLowerCase().includes(term)) : works
-  }, [search, works])
+    const reviewIds = new Set(suggestions.flatMap((item) => [item.source_group_id, item.target_group_id]))
+    const filtered = works.filter((work) => {
+      const matchesSearch = !term || [
+        work.title,
+        ...work.authors.map((author) => author.name),
+        ...work.tags,
+        ...work.providers,
+      ].some((value) => value.toLocaleLowerCase().includes(term))
+      if (!matchesSearch) return false
+      if (workFilter === 'ongoing') return work.status === 'ongoing'
+      if (workFilter === 'completed') return work.status === 'completed'
+      if (workFilter === 'multi') return work.edition_count > 1
+      if (workFilter === 'review') return reviewIds.has(work.id)
+      return true
+    })
+    return [...filtered].sort((left, right) => {
+      if (workSort === 'title') return left.title.localeCompare(right.title, 'zh-CN')
+      if (workSort === 'year') return (right.year ?? 0) - (left.year ?? 0) || left.title.localeCompare(right.title, 'zh-CN')
+      if (workSort === 'editions') return right.edition_count - left.edition_count || left.title.localeCompare(right.title, 'zh-CN')
+      return new Date(right.latest_source_at ?? 0).getTime() - new Date(left.latest_source_at ?? 0).getTime()
+    })
+  }, [search, suggestions, workFilter, workSort, works])
+  const authorSections = useMemo(() => {
+    if (groupMode !== 'author' || selectedId !== null) return []
+    const grouped = new Map<string, { id: number, name: string, works: WorkGroup[] }>()
+    for (const work of visibleWorks) {
+      const workAuthors = work.authors.length ? work.authors : [{ id: 0, name: '未关联作者' }]
+      for (const author of workAuthors) {
+        const key = `${author.id}:${author.name}`
+        const section = grouped.get(key) ?? { ...author, works: [] }
+        section.works.push(work)
+        grouped.set(key, section)
+      }
+    }
+    return [...grouped.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  }, [groupMode, selectedId, visibleWorks])
   const activeJobs = jobs.filter((job) => job.status === 'pending' || job.status === 'running')
   const failedJob = jobs.find((job) => job.status === 'failed')
 
@@ -111,6 +176,16 @@ export default function App() {
     await act(() => accept ? api.acceptSuggestion(id) : api.rejectSuggestion(id))
   }
 
+  function renderWorks(items: WorkGroup[]) {
+    if (viewMode === 'covers') {
+      return <section className="cover-wall">{items.map((work) => <WorkCoverTile work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
+    }
+    if (viewMode === 'list') {
+      return <section className="work-list">{items.map((work) => <WorkListRow work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
+    }
+    return <section className="work-grid">{items.map((work) => <WorkCard work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
+  }
+
   return (
     <div className="shell">
       <AuthorSidebar
@@ -156,13 +231,51 @@ export default function App() {
           <button onClick={() => void load()} disabled={busy}>刷新视图</button>
         </section>
 
+        {works.length > 0 && <section className="catalog-toolbar" aria-label="作品显示设置">
+          <div className="view-switch" role="group" aria-label="显示方式">
+            {([['cards', '信息卡'], ['covers', '封面墙'], ['list', '紧凑列表']] as const).map(([value, label]) => (
+              <button className={viewMode === value ? 'active' : ''} onClick={() => setViewMode(value)} aria-pressed={viewMode === value} key={value}>{label}</button>
+            ))}
+          </div>
+          <label>筛选
+            <select value={workFilter} onChange={(event) => setWorkFilter(event.target.value as WorkFilter)}>
+              <option value="all">全部作品</option>
+              <option value="ongoing">连载中</option>
+              <option value="completed">已完结</option>
+              <option value="multi">多版本</option>
+              <option value="review">待整理</option>
+            </select>
+          </label>
+          <label>排序
+            <select value={workSort} onChange={(event) => setWorkSort(event.target.value as WorkSort)}>
+              <option value="updated">最近更新</option>
+              <option value="title">标题</option>
+              <option value="year">年份</option>
+              <option value="editions">版本数</option>
+            </select>
+          </label>
+          {!selectedAuthor && <label>分组
+            <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as GroupMode)}>
+              <option value="none">不分组</option>
+              <option value="author">按作者</option>
+            </select>
+          </label>}
+        </section>}
+
         {visibleWorks.length > 0 ? (
-          <section className="work-grid">{visibleWorks.map((work) => <WorkCard work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
+          authorSections.length > 0 ? (
+            <div className="author-shelves">
+              {authorSections.map((section) => <section className="author-shelf" key={section.id}>
+                <header><div><span>{section.name.slice(0, 1).toLocaleUpperCase()}</span><h3>{section.name}</h3></div><small>{section.works.length} 部作品</small></header>
+                {renderWorks(section.works)}
+              </section>)}
+            </div>
+          ) : renderWorks(visibleWorks)
         ) : (
           <section className="empty-state">
             <div className="empty-symbol">冊</div>
-            <h2>{authors.length ? '还没有发现作品' : '从一位作者开始'}</h2>
-            <p>{authors.length ? '来源查询可能仍在进行，也可以点击作者旁的刷新按钮重试。' : '在左侧输入作者名，我们会在已启用来源中建立他的作品档案。'}</p>
+            <h2>{works.length ? '当前条件下没有作品' : authors.length ? '还没有发现作品' : '从一位作者开始'}</h2>
+            <p>{works.length ? '可以清除搜索词或切换筛选条件。' : authors.length ? '来源查询可能仍在进行，也可以点击作者旁的刷新按钮重试。' : '在左侧输入作者名，我们会在已启用来源中建立他的作品档案。'}</p>
           </section>
         )}
       </main>

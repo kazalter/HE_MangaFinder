@@ -108,5 +108,10 @@ class JobWorker:
                         session.commit()
             except Exception as exc:
                 logger.warning("Job %s failed: %s", job.id, exc)
+                job_id = job.id
+                session.rollback()
+                job = session.get(type(job), job_id)
+                if job is None:
+                    raise RuntimeError(f"任务 {job_id} 在失败处理期间被删除") from exc
                 jobs.fail(job, str(exc), self.settings.max_job_attempts)
             return True

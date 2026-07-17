@@ -1,8 +1,9 @@
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.time import utc_timestamp
 from app.db.models import (
     AuthorWork,
     MergeSuggestion,
@@ -24,6 +25,9 @@ class WorkGroupRepository:
             selectinload(WorkGroup.members)
             .selectinload(WorkGroupMember.work)
             .selectinload(Work.fingerprint),
+            selectinload(WorkGroup.members)
+            .selectinload(WorkGroupMember.work)
+            .selectinload(Work.authors),
         )
         if author_id is not None:
             statement = (
@@ -48,6 +52,9 @@ class WorkGroupRepository:
                 selectinload(WorkGroup.members)
                 .selectinload(WorkGroupMember.work)
                 .selectinload(Work.fingerprint),
+                selectinload(WorkGroup.members)
+                .selectinload(WorkGroupMember.work)
+                .selectinload(Work.authors),
             )
             .where(WorkGroup.id == group_id)
         )
@@ -68,6 +75,4 @@ class WorkGroupRepository:
     def _timestamp(value: datetime | None) -> float:
         if value is None:
             return 0.0
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        return value.timestamp()
+        return utc_timestamp(value)

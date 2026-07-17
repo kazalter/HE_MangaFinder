@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.time import utc_timestamp
 from app.db.models import AuthorDigest, SocialPost
 from app.modules.social.activity import assess_activity
 from app.modules.social.repository import SocialRepository
@@ -282,7 +283,9 @@ class DigestService:
         for post in posts:
             assessment = assess_activity(post)
             if assessment:
-                ranked.append((rank[assessment.importance], post.posted_at, post, assessment))
+                ranked.append(
+                    (rank[assessment.importance], utc_timestamp(post.posted_at), post, assessment)
+                )
         ranked.sort(reverse=True, key=lambda item: (item[0], item[1]))
         highlights = [
             {

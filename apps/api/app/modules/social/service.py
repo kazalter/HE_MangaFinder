@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.time import as_utc, utc_timestamp
 from app.db.models import (
     AuthorWork,
     ReleaseSignal,
@@ -48,7 +49,7 @@ class SocialSyncService:
             account.last_synced_at = now
             account.sync_error = None
             if incoming:
-                newest = max(incoming, key=lambda item: item.posted_at)
+                newest = max(incoming, key=lambda item: utc_timestamp(item.posted_at))
                 account.last_post_id = newest.id
             interval = self._next_interval(account.author_id)
             jitter = random.uniform(-0.08, 0.08)  # noqa: S311 - scheduling jitter only
@@ -56,6 +57,10 @@ class SocialSyncService:
             self.session.commit()
             return result
         except Exception as exc:
+            self.session.rollback()
+            account = self.repository.get_account(account_id)
+            if account is None:
+                raise
             account.sync_error = str(exc)[:2000]
             account.next_sync_at = datetime.now(UTC) + timedelta(hours=6)
             self.session.commit()
@@ -74,16 +79,16 @@ class SocialSyncService:
         # OCR time on the newest items; later incremental runs naturally process all new media.
         newest_media_post_ids = [
             item.id
-            for item in sorted(incoming, key=lambda value: value.posted_at, reverse=True)
+            for item in sorted(
+                incoming, key=lambda value: utc_timestamp(value.posted_at), reverse=True
+            )
             if item.media
         ]
         ocr_post_ids = set(
             newest_media_post_ids[: max(0, self.settings.social_ocr_max_posts_per_sync)]
         )
-        for item in sorted(incoming, key=lambda value: value.posted_at):
-            posted_at = item.posted_at
-            if posted_at.tzinfo is None:
-                posted_at = posted_at.replace(tzinfo=UTC)
+        for item in sorted(incoming, key=lambda value: utc_timestamp(value.posted_at)):
+            posted_at = as_utc(item.posted_at)
             if first_sync and posted_at < cutoff:
                 continue
             content_hash = sha256(
@@ -353,7 +358,6 @@ class SocialSyncService:
             f"审核：{self.settings.public_base_url.rstrip('/')}/?radar={signal.id}"
         )
         self.repository.enqueue_notification(signal, {"text": text})
-        signal.notified_at = datetime.now(UTC)
 
     def _next_interval(self, author_id: int) -> int:
         recent = datetime.now(UTC) - timedelta(days=45)

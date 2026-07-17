@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.db.base import Base
-from app.db.models import Author, ReleaseSignal, SocialAccount
+from app.db.models import Author, ReleaseSignal, SocialAccount, SocialPost
 from app.modules.social.collector import CollectorPost
+from app.modules.social.repository import SocialRepository
+from app.modules.social.schemas import SocialAccountCreate
 from app.modules.social.service import SocialSyncService
 
 
@@ -83,3 +85,85 @@ async def test_ingest_auto_confirms_strong_new_release_without_catalog_write(
     assert signal is not None
     assert signal.status == "confirmed"
     assert signal.linked_group_id is None
+
+
+@pytest.mark.asyncio
+async def test_sync_failure_rolls_back_partial_writes_and_keeps_error_status(
+    session: Session, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    author = Author(name="テスト作家")
+    session.add(author)
+    session.flush()
+    account = SocialAccount(
+        author_id=author.id, platform="x", handle="creator", status="confirmed"
+    )
+    session.add(account)
+    session.commit()
+    account_id = account.id
+
+    async def fake_posts(*args, **kwargs):
+        return []
+
+    async def failing_ingest(service, current_account, incoming):
+        service.session.add(
+            SocialPost(
+                account_id=current_account.id,
+                platform_post_id="partial",
+                post_type="original",
+                text="不应提交",
+                url="https://x.com/creator/status/partial",
+                media=[],
+                links=[],
+                raw_metadata={},
+                content_hash="partial",
+                posted_at=datetime.now(UTC),
+            )
+        )
+        service.session.flush()
+        raise RuntimeError("摘要生成失败")
+
+    monkeypatch.setattr("app.modules.social.service.XBrowserCollector.posts", fake_posts)
+    monkeypatch.setattr(SocialSyncService, "ingest", failing_ingest)
+    settings = Settings(
+        social_agent_enabled=False,
+        social_ocr_enabled=False,
+        social_media_dir=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="摘要生成失败"):
+        await SocialSyncService(session, settings).sync_account(account_id)
+
+    partial = session.scalar(
+        select(SocialPost).where(SocialPost.platform_post_id == "partial")
+    )
+    assert partial is None
+    saved = session.get(SocialAccount, account_id)
+    assert saved is not None
+    assert saved.sync_error == "摘要生成失败"
+    assert saved.next_sync_at is not None
+
+
+def test_adding_an_existing_suggestion_can_confirm_it(session: Session) -> None:
+    author = Author(name="テスト作家")
+    session.add(author)
+    session.flush()
+    repository = SocialRepository(session)
+    suggested = repository.add_account(
+        author.id, "Creator", "personal", False, display_name="旧名称"
+    )
+
+    confirmed = repository.add_account(
+        author.id, "creator", "circle", True, display_name="新名称"
+    )
+
+    assert confirmed.id == suggested.id
+    assert confirmed.status == "confirmed"
+    assert confirmed.account_type == "circle"
+    assert confirmed.display_name == "新名称"
+    assert confirmed.next_sync_at is not None
+
+
+@pytest.mark.parametrize("handle", ["creator/name", "creator name", "x" * 16, "💥"])
+def test_social_account_rejects_invalid_x_handles(handle: str) -> None:
+    with pytest.raises(ValueError, match="X 账号格式不正确"):
+        SocialAccountCreate(handle=handle)

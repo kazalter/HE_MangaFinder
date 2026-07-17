@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -27,7 +28,7 @@ class SocialAccountCreate(BaseModel):
     @classmethod
     def normalize_handle(cls, value: str) -> str:
         handle = value.strip().removeprefix("@").strip("/")
-        if not handle or any(char.isspace() for char in handle):
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
             raise ValueError("X 账号格式不正确")
         return handle.casefold()
 

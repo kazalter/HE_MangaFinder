@@ -38,6 +38,7 @@ export interface WorkGroup {
   latest_source_at: string | null
   edition_count: number
   providers: string[]
+  authors: Pick<Author, 'id' | 'name'>[]
 }
 
 export interface Edition {

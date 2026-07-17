@@ -10,6 +10,7 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.time import as_utc
 from app.db.models import (
     Author,
     AuthorWork,
@@ -430,7 +431,7 @@ class AggregationService:
         group.language = next((work.language for work in preferred_works if work.language), None)
         group.tags = sorted({tag for work in works for tag in (work.tags or [])})
         dates = [
-            self._aware(source.source_updated_at)
+            as_utc(source.source_updated_at)
             for work in works
             for source in work.sources
             if source.source_updated_at
@@ -841,11 +842,6 @@ class AggregationService:
         if isinstance(value, dict):
             return [item for entry in value.values() for item in cls._strings(entry)]
         return []
-
-    @staticmethod
-    def _aware(value: datetime) -> datetime:
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
-
 
 def backfill_work_groups(session: Session) -> int:
     service = AggregationService(session)

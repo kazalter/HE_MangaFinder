@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.time import as_utc
 from app.db.models import (
     ActivityItem,
     Author,
@@ -18,12 +19,6 @@ from app.db.models import (
 from app.modules.social.digest import DigestService, localize_known_terms
 
 IMPORTANCE_RANK = {"low": 0, "normal": 1, "high": 2, "critical": 3}
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 class DailyDigestService:
@@ -39,12 +34,12 @@ class DailyDigestService:
             return ZoneInfo("Asia/Shanghai")
 
     def local_date(self, now: datetime) -> str:
-        return _as_utc(now).astimezone(self.timezone).date().isoformat()
+        return as_utc(now).astimezone(self.timezone).date().isoformat()
 
     def is_due(self, now: datetime) -> bool:
         if not self.settings.social_daily_digest_enabled:
             return False
-        local_now = _as_utc(now).astimezone(self.timezone)
+        local_now = as_utc(now).astimezone(self.timezone)
         hour = min(23, max(0, self.settings.social_daily_digest_hour))
         if local_now.hour < hour:
             return False
@@ -58,7 +53,7 @@ class DailyDigestService:
         )
 
     async def build(self, *, force: bool = False, now: datetime | None = None) -> dict[str, object]:
-        period_end = _as_utc(now or datetime.now(UTC))
+        period_end = as_utc(now or datetime.now(UTC))
         local_date = self.local_date(period_end)
         existing = self.session.scalar(
             select(DailyDigestDelivery).where(
@@ -83,7 +78,7 @@ class DailyDigestService:
             .limit(1)
         )
         if previous:
-            period_start = _as_utc(previous.period_end)
+            period_start = as_utc(previous.period_end)
         else:
             # The first delivery establishes a useful baseline instead of silently
             # ignoring activities that predate the day the feature was enabled.

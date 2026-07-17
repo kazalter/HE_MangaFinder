@@ -56,6 +56,11 @@ class EditionRead(BaseModel):
     sources: list[WorkSourceRead]
 
 
+class WorkGroupAuthorRead(BaseModel):
+    id: int
+    name: str
+
+
 class WorkGroupRead(BaseModel):
     id: int
     title: str
@@ -68,6 +73,7 @@ class WorkGroupRead(BaseModel):
     latest_source_at: datetime | None
     edition_count: int
     providers: list[str]
+    authors: list[WorkGroupAuthorRead]
 
 
 class WorkGroupDetail(WorkGroupRead):

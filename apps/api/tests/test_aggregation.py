@@ -18,6 +18,8 @@ from app.modules.catalog.cover_fingerprint import (
     compare_fingerprints,
     fingerprint_image,
 )
+from app.modules.catalog.group_repository import WorkGroupRepository
+from app.modules.catalog.groups_router import _summary
 from app.modules.catalog.repository import CatalogRepository
 from app.providers.base import DiscoveredWork
 
@@ -75,6 +77,35 @@ def test_common_franchise_suffix_does_not_create_merge_candidate() -> None:
     assert "无码/无修正" in labels
     assert "AI 处理" in labels
     assert "简体中文" in labels
+
+
+def test_group_summary_includes_subscribed_authors() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="测试作者")
+        session.add(author)
+        session.flush()
+        author_id = author.id
+        work = CatalogRepository(session).upsert(
+            author.id,
+            "test",
+            DiscoveredWork(
+                external_id="author-summary",
+                title="测试作品",
+                source_url="https://example.test/author-summary",
+            ),
+        )
+        AggregationService(session).assign_without_cover(work, author)
+        session.commit()
+        session.expunge_all()
+
+        group = WorkGroupRepository(session).list_groups()[0]
+        summary = _summary(group)
+
+        assert [(item.id, item.name) for item in summary.authors] == [
+            (author_id, "测试作者")
+        ]
 
 
 def test_groups_versions_and_supports_reversible_manual_correction() -> None:

@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
+
+from app.core.time import utc_timestamp
 
 
 class ProviderCapability(StrEnum):
@@ -32,9 +34,7 @@ def sort_discovered_works(works: list[DiscoveredWork]) -> list[DiscoveredWork]:
         updated_at = work.source_updated_at
         if updated_at is None:
             return (1, 0.0, work.title.casefold())
-        if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=UTC)
-        return (0, -updated_at.timestamp(), work.title.casefold())
+        return (0, -utc_timestamp(updated_at), work.title.casefold())
 
     return sorted(works, key=key)
 

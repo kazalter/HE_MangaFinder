@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.core.time import utc_timestamp
 from app.db.models import MergeSuggestion, WorkGroup
 from app.db.session import get_session
 from app.modules.agent_review.candidates import build_candidate_evidence, evidence_hash
@@ -63,6 +64,14 @@ def _summary(group: WorkGroup) -> WorkGroupRead:
             for source in member.work.sources
         }
     )
+    authors = sorted(
+        {
+            (author.id, author.name)
+            for member in group.members
+            for author in member.work.authors
+        },
+        key=lambda item: item[1].casefold(),
+    )
     return WorkGroupRead(
         id=group.id,
         title=group.title,
@@ -75,6 +84,7 @@ def _summary(group: WorkGroup) -> WorkGroupRead:
         latest_source_at=group.latest_source_at,
         edition_count=len(group.members),
         providers=providers,
+        authors=[{"id": author_id, "name": name} for author_id, name in authors],
     )
 
 
@@ -83,7 +93,7 @@ def _detail(group: WorkGroup) -> WorkGroupDetail:
     editions = [_edition(member) for member in group.members]
     editions.sort(key=lambda item: item.title.casefold())
     editions.sort(
-        key=lambda item: item.latest_source_at.timestamp()
+        key=lambda item: utc_timestamp(item.latest_source_at)
         if item.latest_source_at
         else 0.0,
         reverse=True,
