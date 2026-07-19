@@ -104,6 +104,9 @@ async def test_sync_failure_rolls_back_partial_writes_and_keeps_error_status(
     async def fake_posts(*args, **kwargs):
         return []
 
+    async def fake_profile(*args, **kwargs):
+        return None
+
     async def failing_ingest(service, current_account, incoming):
         service.session.add(
             SocialPost(
@@ -123,6 +126,7 @@ async def test_sync_failure_rolls_back_partial_writes_and_keeps_error_status(
         raise RuntimeError("摘要生成失败")
 
     monkeypatch.setattr("app.modules.social.service.XBrowserCollector.posts", fake_posts)
+    monkeypatch.setattr("app.modules.social.service.XBrowserCollector.profile", fake_profile)
     monkeypatch.setattr(SocialSyncService, "ingest", failing_ingest)
     settings = Settings(
         social_agent_enabled=False,

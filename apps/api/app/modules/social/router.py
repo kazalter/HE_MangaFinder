@@ -164,19 +164,28 @@ def list_social_accounts(author_id: int, session: SessionDep) -> list[SocialAcco
     response_model=SocialAccountRead,
     status_code=status.HTTP_201_CREATED,
 )
-def add_social_account(
+async def add_social_account(
     author_id: int, payload: SocialAccountCreate, session: SessionDep
 ) -> SocialAccountRead:
     _require_social_enabled()
     if not AuthorRepository(session).get(author_id):
         raise HTTPException(status_code=404, detail="作者不存在")
+    profile = None
+    try:
+        profile = await XBrowserCollector(get_settings()).profile(payload.handle)
+    except RuntimeError:
+        # Binding should remain available during a temporary X/proxy outage. The next
+        # successful account sync gets another chance to fill the profile metadata.
+        pass
     try:
         account = SocialRepository(session).add_account(
             author_id,
             payload.handle,
             payload.account_type,
             payload.confirmed,
-            payload.display_name,
+            profile.display_name if profile else payload.display_name,
+            profile.profile_url if profile else None,
+            profile.avatar_url if profile else None,
         )
         if payload.confirmed:
             JobRepository(session).enqueue_social_sync(account.id)

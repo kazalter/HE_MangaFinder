@@ -33,3 +33,29 @@ async def test_collector_handles_non_json_error_response() -> None:
         )
         with pytest.raises(RuntimeError, match="Internal Server Error"):
             await collector.suggestions("作者")
+
+
+@pytest.mark.asyncio
+async def test_collector_reads_account_profile() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/accounts/creator"
+        return httpx.Response(
+            200,
+            json={
+                "id": "42",
+                "handle": "creator",
+                "display_name": "Creator",
+                "profile_url": "https://x.com/creator",
+                "avatar_url": "https://pbs.twimg.com/profile_images/42/avatar.jpg",
+            },
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        profile = await XBrowserCollector(
+            Settings(social_collector_base_url="http://collector:8010"), client
+        ).profile("creator")
+
+    assert profile is not None
+    assert profile.id == "42"
+    assert profile.avatar_url == "https://pbs.twimg.com/profile_images/42/avatar.jpg"

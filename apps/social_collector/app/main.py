@@ -47,6 +47,11 @@ class BrowserCollector:
         if PROXY_URL:
             launch_options["proxy"] = {"server": PROXY_URL}
         self.browser = await self.playwright.chromium.launch(**launch_options)
+        self.context = await self._new_context()
+
+    async def _new_context(self) -> BrowserContext:
+        if not self.browser:
+            raise RuntimeError("浏览器尚未启动")
         state = STATE_RUNTIME if STATE_RUNTIME.exists() else STATE_SOURCE
         context_options: dict[str, Any] = {
             "locale": "ja-JP",
@@ -60,7 +65,25 @@ class BrowserCollector:
         }
         if state.exists():
             context_options["storage_state"] = str(state)
-        self.context = await self.browser.new_context(**context_options)
+        return await self.browser.new_context(**context_options)
+
+    async def reload_session(self) -> None:
+        async with self.lock:
+            if self.context:
+                await self.context.close()
+            STATE_RUNTIME.unlink(missing_ok=True)
+            self.context = await self._new_context()
+
+    async def check_session(self) -> bool:
+        async with self.lock:
+            page = await self.page()
+            try:
+                await self.navigate(page, "https://x.com/home")
+                await page.wait_for_timeout(1200)
+                await self.ensure_access(page)
+                return "/home" in page.url
+            finally:
+                await page.close()
 
     async def close(self) -> None:
         if self.context:
@@ -303,7 +326,33 @@ def health(_: Annotated[None, Depends(authorize)]) -> dict[str, object]:
         "session_present": STATE_SOURCE.exists() or STATE_RUNTIME.exists(),
         "graphql_session_present": graphql_collector.available,
         "primary_provider": "x_web_graphql" if graphql_collector.available else "browser",
+        "session_valid": None,
         "headless": HEADLESS,
+    }
+
+
+@app.post("/session/reload", dependencies=[Depends(authorize)])
+async def reload_session() -> dict[str, bool]:
+    await collector.reload_session()
+    return {"reloaded": True}
+
+
+@app.get("/session/check", dependencies=[Depends(authorize)])
+async def check_session() -> dict[str, object]:
+    if graphql_collector.available:
+        try:
+            user = await asyncio.to_thread(graphql_collector.lookup_user, "X")
+            if user:
+                return {"valid": True, "provider": "x_web_graphql"}
+        except GraphQLTransientError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except GraphQLUnavailable:
+            pass
+    valid = await collector.check_session()
+    return {
+        "valid": valid,
+        "provider": "browser",
+        "detail": None if valid else "X 登录会话无效",
     }
 
 
@@ -317,6 +366,35 @@ async def suggest(q: Annotated[str, Query(min_length=1, max_length=200)]) -> lis
         except (GraphQLUnavailable, GraphQLTransientError):
             pass
     return await collector.suggest(q)
+
+
+@app.get("/accounts/{handle}", dependencies=[Depends(authorize)])
+async def account_profile(handle: str) -> dict[str, Any] | None:
+    clean = handle.removeprefix("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", clean):
+        raise HTTPException(status_code=422, detail="X 账号格式无效")
+    if graphql_collector.available:
+        try:
+            user = await asyncio.to_thread(graphql_collector.lookup_user, clean)
+            if not user:
+                return None
+            return {
+                **user,
+                "profile_url": f"https://x.com/{user['handle']}",
+            }
+        except GraphQLUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except GraphQLTransientError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    suggestions = await collector.suggest(clean)
+    return next(
+        (
+            item
+            for item in suggestions
+            if str(item.get("handle", "")).casefold() == clean.casefold()
+        ),
+        None,
+    )
 
 
 @app.get("/accounts/{handle}/posts", dependencies=[Depends(authorize)])

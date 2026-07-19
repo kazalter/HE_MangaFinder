@@ -17,8 +17,25 @@ SessionDep = Annotated[Session, Depends(get_session)]
 def list_authors(session: SessionDep) -> list[AuthorRead]:
     rows = AuthorRepository(session).list_with_counts()
     return [
-        AuthorRead.model_validate(author).model_copy(update={"work_count": count})
-        for author, count in rows
+        AuthorRead.model_validate(author).model_copy(
+            update={
+                "work_count": count,
+                "avatar_url": avatar_url,
+                "x_handle": x_handle,
+                "x_display_name": x_display_name,
+                "x_last_synced_at": x_last_synced_at,
+                "x_sync_error": x_sync_error,
+            }
+        )
+        for (
+            author,
+            count,
+            avatar_url,
+            x_handle,
+            x_display_name,
+            x_last_synced_at,
+            x_sync_error,
+        ) in rows
     ]
 
 

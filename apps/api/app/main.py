@@ -21,6 +21,8 @@ from app.modules.media.service import CoverCacheService
 from app.modules.social.router import router as social_router
 from app.modules.social.scheduler import SocialScheduler
 from app.modules.sources.router import router as sources_router
+from app.modules.system_config.repository import apply_runtime_overrides
+from app.modules.system_config.router import router as system_config_router
 from app.providers.registry import build_registry
 
 settings = get_settings()
@@ -30,6 +32,7 @@ settings = get_settings()
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
     with SessionLocal() as session:
+        apply_runtime_overrides(session, settings)
         JobRepository(session).recover_interrupted()
     providers = build_registry(settings)
     app.state.providers = providers
@@ -72,6 +75,7 @@ app.include_router(jobs_router, prefix="/api")
 app.include_router(media_router, prefix="/api")
 app.include_router(sources_router, prefix="/api")
 app.include_router(social_router, prefix="/api")
+app.include_router(system_config_router, prefix="/api")
 
 if settings.static_dir.exists():
     assets_dir = settings.static_dir / "assets"

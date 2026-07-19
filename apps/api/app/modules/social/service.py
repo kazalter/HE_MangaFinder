@@ -39,7 +39,21 @@ class SocialSyncService:
         if account.status != "confirmed":
             raise ValueError("必须先人工确认账号才能同步")
         try:
-            incoming = await XBrowserCollector(self.settings).posts(
+            collector = XBrowserCollector(self.settings)
+            profile = None
+            if not account.avatar_url:
+                try:
+                    profile = await collector.profile(account.handle)
+                except RuntimeError:
+                    # A missing avatar must not prevent post collection. Profile metadata
+                    # will be retried on the next sync while the account has no avatar.
+                    pass
+            if profile:
+                account.platform_user_id = profile.id or account.platform_user_id
+                account.display_name = profile.display_name or account.display_name
+                account.profile_url = profile.profile_url or account.profile_url
+                account.avatar_url = profile.avatar_url or account.avatar_url
+            incoming = await collector.posts(
                 account.handle,
                 account.last_post_id,
                 self.settings.social_max_posts_per_sync,

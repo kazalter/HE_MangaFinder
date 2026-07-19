@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>方案二设计对照</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; color: #f4f1ea; background: #101713; font-family: sans-serif; }
+      main { width: 3104px; display: grid; grid-template-columns: repeat(2, 1536px); gap: 32px; padding-top: 36px; }
+      figure { margin: 0; position: relative; }
+      figcaption { position: absolute; z-index: 2; top: -36px; left: 0; height: 36px; padding: 8px 12px; font-size: 14px; font-weight: 700; }
+      img { width: 1536px; height: 1000px; display: block; object-fit: cover; object-position: top left; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <figure><figcaption>设计参考</figcaption><img src="../sidebar-option-2.png" alt="设计参考" /></figure>
+      <figure><figcaption>当前实现</figcaption><img src="sidebar-option-2-desktop.png" alt="当前实现" /></figure>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>作者目录视觉对照</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 2974px; height: 1058px; margin: 0; overflow: hidden; background: #181818; }
+      main { display: grid; grid-template-columns: repeat(2, 1487px); }
+      figure { position: relative; width: 1487px; height: 1058px; margin: 0; }
+      img { width: 1487px; height: 1058px; display: block; object-fit: cover; }
+      figcaption { position: absolute; z-index: 2; right: 12px; top: 12px; padding: 6px 9px; color: white; background: rgba(0, 0, 0, .72); font: 12px sans-serif; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <figure><img src="../author-directory-option-2.png" alt="参考设计" /><figcaption>REFERENCE</figcaption></figure>
+      <figure><img src="implementation-v2.png" alt="实现结果" /><figcaption>IMPLEMENTATION</figcaption></figure>
+    </main>
+  </body>
+</html>

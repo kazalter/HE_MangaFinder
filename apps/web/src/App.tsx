@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AuthorDirectory } from './components/AuthorDirectory'
 import { AuthorSidebar } from './components/AuthorSidebar'
 import { MergeReview } from './components/MergeReview'
 import { SocialRadar } from './components/SocialRadar'
+import { SystemSettings } from './components/SystemSettings'
 import { WorkCard } from './components/WorkCard'
 import { WorkCoverTile } from './components/WorkCoverTile'
 import { WorkDetail } from './components/WorkDetail'
@@ -13,6 +15,7 @@ type ViewMode = 'cards' | 'covers' | 'list'
 type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
 type WorkSort = 'first' | 'updated' | 'title' | 'year' | 'editions'
 type GroupMode = 'none' | 'author'
+export type LibraryMode = 'works' | 'authors'
 
 const JOB_LABELS: Record<string, string> = {
   discover_author: '作品发现',
@@ -38,6 +41,29 @@ function saveChoice(key: string, value: string) {
     window.localStorage.setItem(key, value)
   } catch {
     // Browsing still works when storage is disabled; only preference persistence is lost.
+  }
+}
+
+const selectedAuthorKey = 'mangafinder:selected-author'
+
+function savedAuthorId(): number | null {
+  try {
+    const urlValue = new URLSearchParams(window.location.search).get('author')
+    const value = urlValue ?? window.localStorage.getItem(selectedAuthorKey)
+    if (!value || !/^\d+$/.test(value)) return null
+    const id = Number(value)
+    return Number.isSafeInteger(id) && id > 0 ? id : null
+  } catch {
+    return null
+  }
+}
+
+function saveAuthorId(id: number | null) {
+  try {
+    if (id === null) window.localStorage.removeItem(selectedAuthorKey)
+    else window.localStorage.setItem(selectedAuthorKey, String(id))
+  } catch {
+    // Author selection remains usable for this page when storage is disabled.
   }
 }
 
@@ -78,13 +104,20 @@ export default function App() {
   const [openedWork, setOpenedWork] = useState<WorkGroupDetail | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
   const [radarOpen, setRadarOpen] = useState(() => new URLSearchParams(window.location.search).has('radar'))
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [focusSignalId] = useState<number | null>(() => {
     const value = new URLSearchParams(window.location.search).get('radar')
     return value && /^\d+$/.test(value) ? Number(value) : null
   })
   const [socialStatus, setSocialStatus] = useState<SocialStatus | null>(null)
   const [socialSignals, setSocialSignals] = useState<ReleaseSignal[]>([])
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [selectedId, setSelectedId] = useState<number | null>(savedAuthorId)
+  const [previewAuthorId, setPreviewAuthorId] = useState<number | null>(savedAuthorId)
+  const [libraryMode, setLibraryMode] = useState<LibraryMode>(() => (
+    new URLSearchParams(window.location.search).get('view') === 'authors'
+      ? 'authors'
+      : savedChoice('mangafinder:library-mode', ['works', 'authors'], 'works')
+  ))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -99,8 +132,9 @@ export default function App() {
 
   const load = useCallback(async () => {
     try {
+      const activeAuthorId = libraryMode === 'works' ? selectedId : null
       const [nextAuthors, nextWorks, nextJobs, nextSources, nextSuggestions, nextAgentStatus, nextSocialStatus, nextSocialSignals] = await Promise.all([
-        api.authors(), api.workGroups(selectedId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.agentStatus(), api.socialStatus(), api.socialRadar(selectedId ?? undefined),
+        api.authors(), api.workGroups(activeAuthorId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.agentStatus(), api.socialStatus(), api.socialRadar(activeAuthorId ?? undefined),
       ])
       setAuthors(nextAuthors)
       setWorks(nextWorks)
@@ -110,23 +144,43 @@ export default function App() {
       setAgentStatus(nextAgentStatus)
       setSocialStatus(nextSocialStatus)
       setSocialSignals(nextSocialSignals)
+      if (selectedId !== null && !nextAuthors.some((author) => author.id === selectedId)) {
+        setSelectedId(null)
+      }
+      setPreviewAuthorId((current) => (
+        current !== null && nextAuthors.some((author) => author.id === current)
+          ? current
+          : nextAuthors[0]?.id ?? null
+      ))
       setError(null)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '加载失败')
     }
-  }, [selectedId])
+  }, [libraryMode, selectedId])
 
   useEffect(() => { void load() }, [load])
   useEffect(() => { saveChoice('mangafinder:view', viewMode) }, [viewMode])
   useEffect(() => { saveChoice('mangafinder:sort-v2', workSort) }, [workSort])
   useEffect(() => { saveChoice('mangafinder:group', groupMode) }, [groupMode])
+  useEffect(() => { saveChoice('mangafinder:library-mode', libraryMode) }, [libraryMode])
+  useEffect(() => { saveAuthorId(selectedId) }, [selectedId])
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (libraryMode === 'authors') url.searchParams.set('view', 'authors')
+    else url.searchParams.delete('view')
+    if (libraryMode === 'works' && selectedId !== null) url.searchParams.set('author', String(selectedId))
+    else url.searchParams.delete('author')
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+  }, [libraryMode, selectedId])
   useEffect(() => {
     if (!jobs.some((job) => job.status === 'pending' || job.status === 'running')) return
     const timer = window.setInterval(() => void load(), 2000)
     return () => window.clearInterval(timer)
   }, [jobs, load])
 
-  const selectedAuthor = authors.find((author) => author.id === selectedId)
+  const selectedAuthor = libraryMode === 'works'
+    ? authors.find((author) => author.id === selectedId)
+    : undefined
   const visibleWorks = useMemo(() => {
     const term = search.trim().toLocaleLowerCase()
     const reviewIds = new Set(suggestions.flatMap((item) => [item.source_group_id, item.target_group_id]))
@@ -228,6 +282,26 @@ export default function App() {
     await act(() => accept ? api.acceptSuggestion(id) : api.rejectSuggestion(id))
   }
 
+  function showAllWorks() {
+    setSettingsOpen(false)
+    setLibraryMode('works')
+    setSelectedId(null)
+  }
+
+  function showAuthorDirectory() {
+    setSettingsOpen(false)
+    setLibraryMode('authors')
+    setSelectedId(null)
+  }
+
+  function openAuthorWorks(authorId: number) {
+    setSettingsOpen(false)
+    setPreviewAuthorId(authorId)
+    setLibraryMode('works')
+    setSelectedId(authorId)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   function renderWorks(items: WorkGroup[]) {
     if (viewMode === 'covers') {
       return <section className="cover-wall">{items.map((work) => <WorkCoverTile work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
@@ -243,9 +317,11 @@ export default function App() {
       <AuthorSidebar
         authors={authors}
         sources={sources}
-        selectedId={selectedId}
+        selectedId={settingsOpen ? -1 : selectedId}
+        libraryMode={libraryMode}
         busy={busy}
-        onSelect={setSelectedId}
+        onSelect={(id) => id === null ? showAllWorks() : openAuthorWorks(id)}
+        onModeChange={(mode) => mode === 'authors' ? showAuthorDirectory() : showAllWorks()}
         onAdd={(name) => act(() => api.createAuthor(name))}
         onRefresh={(id) => act(() => api.refreshAuthor(id))}
         onDelete={async (id) => {
@@ -253,9 +329,23 @@ export default function App() {
           if (selectedId === id) setSelectedId(null)
           await act(() => api.deleteAuthor(id))
         }}
+        settingsActive={settingsOpen}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenRadar={() => setRadarOpen(true)}
       />
 
-      <main>
+      <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : ''}>
+        {settingsOpen
+          ? <SystemSettings onClose={() => setSettingsOpen(false)} />
+          : libraryMode === 'authors'
+            ? <AuthorDirectory
+                authors={authors}
+                works={works}
+                previewAuthorId={previewAuthorId}
+                onPreviewAuthor={setPreviewAuthorId}
+                onOpenAuthor={openAuthorWorks}
+              />
+            : <>
         <header className="topbar">
           <div>
             <p className="eyebrow">LIBRARY / DISCOVERY</p>
@@ -266,7 +356,7 @@ export default function App() {
             <button className="radar-button" onClick={() => setRadarOpen(true)}>动态雷达{socialStatus?.unread_count ? <span>{socialStatus.unread_count}</span> : null}</button>
             <div className="search-box">
               <span aria-hidden="true">⌕</span>
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索已发现作品" aria-label="搜索作品" />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索作品、作者或标签" aria-label="搜索作品" />
             </div>
           </div>
         </header>
@@ -342,10 +432,11 @@ export default function App() {
             <p>{works.length ? '可以清除搜索词或切换筛选条件。' : authors.length ? '来源查询可能仍在进行，也可以点击作者旁的刷新按钮重试。' : '在左侧输入作者名，我们会在已启用来源中建立他的作品档案。'}</p>
           </section>
         )}
+            </>}
       </main>
-      {openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} />}
-      {reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
-      {radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
+      {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} />}
+      {!settingsOpen && reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
+      {!settingsOpen && radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
     </div>
   )
 }

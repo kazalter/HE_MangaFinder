@@ -1,9 +1,19 @@
-import type { ActivityItem, AgentStatus, Author, AuthorDigest, Chapter, Job, MergeSuggestion, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, Work, WorkGroup, WorkGroupDetail } from '../types'
+import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, Chapter, ConfigAuthStatus, ConnectionTestResult, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail } from '../types'
+
+function cookie(name: string): string | undefined {
+  return document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1)
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options?.method && options.method !== 'GET' && cookie('mangafinder_csrf')
+        ? { 'X-CSRF-Token': decodeURIComponent(cookie('mangafinder_csrf') ?? '') }
+        : {}),
+      ...options?.headers,
+    },
   })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
@@ -97,4 +107,27 @@ export const api = {
     }),
   markSocialSignalRead: (signalId: number) =>
     request<void>(`/social/signals/${signalId}/read`, { method: 'POST' }),
+  configAuth: () => request<ConfigAuthStatus>('/system-config/auth'),
+  bootstrapConfigAdmin: (password: string) =>
+    request<ConfigAuthStatus>('/system-config/auth/bootstrap', { method: 'POST', body: JSON.stringify({ password }) }),
+  loginConfigAdmin: (password: string) =>
+    request<ConfigAuthStatus>('/system-config/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
+  logoutConfigAdmin: () => request<void>('/system-config/auth/logout', { method: 'POST' }),
+  systemConfig: () => request<SystemConfig>('/system-config'),
+  saveSystemConfig: (config: Pick<SystemConfig, 'ai' | 'radar' | 'notifications'>) =>
+    request<{ config: SystemConfig, changed_keys: string[], restart_required_fields: string[] }>('/system-config', {
+      method: 'PUT', body: JSON.stringify(config),
+    }),
+  testAgentConfig: (ai: AiConfig) => request<ConnectionTestResult>('/system-config/test/agent', {
+    method: 'POST', body: JSON.stringify({ provider: ai.provider, base_url: ai.base_url, model: ai.model, api_key: ai.api_key }),
+  }),
+  testXConfig: () => request<ConnectionTestResult>('/system-config/test/x', { method: 'POST' }),
+  testQqConfig: (notifications: NotificationConfig) => request<ConnectionTestResult>('/system-config/test/qq', {
+    method: 'POST', body: JSON.stringify({ app_id: notifications.qq_app_id, client_secret: notifications.qq_client_secret, user_openid: notifications.qq_user_openid }),
+  }),
+  importXCookie: (cookieHeader: string) =>
+    request<ConnectionTestResult>('/system-config/x-session', { method: 'PUT', body: JSON.stringify({ cookie_header: cookieHeader }) }),
+  importXStorageState: (storageState: Record<string, unknown>) =>
+    request<ConnectionTestResult>('/system-config/x-session', { method: 'PUT', body: JSON.stringify({ storage_state: storageState }) }),
+  clearXSession: () => request<ConnectionTestResult>('/system-config/x-session', { method: 'DELETE' }),
 }

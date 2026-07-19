@@ -2,8 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
-const { jobsMock, works } = vi.hoisted(() => ({
+const { jobsMock, workGroupsMock, works } = vi.hoisted(() => ({
   jobsMock: vi.fn(),
+  workGroupsMock: vi.fn(),
   works: [{
     id: 1,
     title: '作品甲',
@@ -41,7 +42,7 @@ vi.mock('./lib/api', () => ({
       { id: 1, name: '作者甲', created_at: '', last_checked_at: null, work_count: 1 },
       { id: 2, name: '作者乙', created_at: '', last_checked_at: null, work_count: 1 },
     ]),
-    workGroups: vi.fn().mockResolvedValue(works),
+    workGroups: workGroupsMock,
     jobs: jobsMock,
     sources: vi.fn().mockResolvedValue([]),
     mergeSuggestions: vi.fn().mockResolvedValue([]),
@@ -71,13 +72,15 @@ describe('catalog views', () => {
     window.sessionStorage.clear()
     jobsMock.mockClear()
     jobsMock.mockResolvedValue([])
+    workGroupsMock.mockReset()
+    workGroupsMock.mockResolvedValue(works)
   })
 
   it('switches display mode, filters works, and groups by author', async () => {
     render(<App />)
     expect(await screen.findByText('作品甲')).toBeInTheDocument()
     expect(screen.getByLabelText('排序')).toHaveValue('first')
-    expect(screen.getAllByRole('heading', { level: 3 })[0]).toHaveTextContent('作品乙')
+    expect(document.querySelector('.work-grid h3')).toHaveTextContent('作品乙')
 
     fireEvent.click(screen.getByRole('button', { name: '封面墙' }))
     expect(screen.getByRole('button', { name: '查看《作品甲》' })).toBeInTheDocument()
@@ -93,6 +96,24 @@ describe('catalog views', () => {
       expect(screen.getByRole('heading', { name: '作者甲' })).toBeInTheDocument()
       expect(screen.getByRole('heading', { name: '作者乙' })).toBeInTheDocument()
     })
+  })
+
+  it('restores the selected author after a page reload', async () => {
+    const first = render(<App />)
+    await screen.findByRole('heading', { name: '作品总览' })
+
+    fireEvent.click(screen.getAllByText('作者乙')[0].closest('button')!)
+    await waitFor(() => {
+      expect(window.localStorage.getItem('mangafinder:selected-author')).toBe('2')
+      expect(workGroupsMock).toHaveBeenCalledWith(2)
+    })
+    first.unmount()
+    workGroupsMock.mockClear()
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: '作者乙' })).toBeInTheDocument()
+    expect(workGroupsMock).toHaveBeenCalledWith(2)
   })
 
   it('explains, timestamps, and dismisses a failed task without hiding newer failures', async () => {

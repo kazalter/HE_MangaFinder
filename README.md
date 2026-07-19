@@ -29,6 +29,11 @@ docker compose up --build
 
 打开 <http://localhost:8000>。
 
+左侧“系统设置”首次打开时会要求创建至少 12 位的管理员密码。模型 API Key、QQ Secret
+和 X 登录会话可随后在设置中心安全导入；Compose profile、数据卷和容器网络仍在 `.env`
+或 Dockge 中配置。加密密钥自动保存在数据目录的 `system-secret.key`，请与数据库一起备份，
+不要公开或删除。
+
 ### 本地开发
 
 后端：

@@ -22,6 +22,14 @@ class CollectorPost(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+class CollectorProfile(BaseModel):
+    id: str = ""
+    handle: str
+    display_name: str | None = None
+    profile_url: str | None = None
+    avatar_url: str | None = None
+
+
 class XBrowserCollector:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
@@ -73,6 +81,22 @@ class XBrowserCollector:
     async def suggestions(self, query: str) -> list[SocialAccountSuggestion]:
         body = await self._request("GET", "/accounts/suggest", params={"q": query})
         return [SocialAccountSuggestion.model_validate(item) for item in body]
+
+    async def profile(self, handle: str) -> CollectorProfile | None:
+        body = await self._request("GET", f"/accounts/{handle}")
+        return CollectorProfile.model_validate(body) if isinstance(body, dict) else None
+
+    async def health(self) -> dict[str, Any]:
+        body = await self._request("GET", "/health", timeout=5)
+        return body if isinstance(body, dict) else {}
+
+    async def check_session(self) -> dict[str, Any]:
+        body = await self._request("GET", "/session/check")
+        return body if isinstance(body, dict) else {}
+
+    async def reload_session(self) -> dict[str, Any]:
+        body = await self._request("POST", "/session/reload")
+        return body if isinstance(body, dict) else {}
 
     async def posts(
         self, handle: str, since_id: str | None, limit: int

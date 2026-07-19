@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     social_enabled: bool = False
     social_collector_base_url: str = "http://social-collector:8010"
     social_collector_token: str = ""
+    x_session_dir: Path = Path("./data/x-session")
+    x_proxy_url: str = ""
+    x_user_agent: str = ""
     social_sync_interval_minutes: int = 120
     social_event_sync_interval_minutes: int = 30
     social_initial_backfill_days: int = 90
@@ -68,6 +71,9 @@ class Settings(BaseSettings):
     qq_bot_user_openid: str = ""
     qq_bot_api_base_url: str = "https://api.sgroup.qq.com"
     qq_bot_token_url: str = "https://bots.qq.com/app/getAppAccessToken"
+    system_secret_key_file: Path = Path("./data/system-secret.key")
+    admin_session_hours: int = 12
+    admin_cookie_secure: bool = False
     static_dir: Path = Path(__file__).resolve().parents[3] / "web" / "dist"
     user_agent: str = "MangaFinder/0.1 (+https://github.com/local/mangafinder)"
 

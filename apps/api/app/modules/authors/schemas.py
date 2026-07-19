@@ -18,6 +18,11 @@ class AuthorCreate(BaseModel):
 class AuthorRead(BaseModel):
     id: int
     name: str
+    avatar_url: str | None = None
+    x_handle: str | None = None
+    x_display_name: str | None = None
+    x_last_synced_at: datetime | None = None
+    x_sync_error: str | None = None
     created_at: datetime
     last_checked_at: datetime | None
     work_count: int = 0
