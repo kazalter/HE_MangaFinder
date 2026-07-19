@@ -260,7 +260,7 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
 .candidate-actions button:last-child { border-color: #334a3f; color: white; background: #334a3f; }
 .review-empty { padding: 30px; color: #888177; text-align: center; }
 .social-radar-backdrop { z-index: 70; }
-.social-radar { position: relative; width: min(1120px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; padding: 36px; background: #f8f5ee; box-shadow: 0 25px 70px rgba(0, 0, 0, .3); }
+.social-radar { position: relative; width: min(1168px, 100%); height: min(876px, calc(100vh - 48px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; overflow: hidden; padding: 36px 36px 27px; background: #f8f5ee; box-shadow: 0 25px 70px rgba(0, 0, 0, .3); }
 .radar-header { display: flex; justify-content: space-between; gap: 30px; align-items: flex-start; }
 .radar-header h2 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 36px; font-weight: 500; }
 .radar-header > div > p:not(.eyebrow) { margin: 7px 0 0; color: #777066; font-size: 14px; line-height: 1.55; }
@@ -270,10 +270,59 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
 .radar-health span.off { color: #984e38; }
 .radar-health small { margin-top: 5px; color: #8b8379; font-size: 12px; }
 .radar-warning { margin-top: 18px; border-left: 3px solid #b18b3b; padding: 11px 13px; color: #6f5a2e; background: #f5ecd6; font-size: 13px; line-height: 1.5; }
+.radar-workspace { min-width: 0; min-height: 0; flex: 1; display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 28px; align-items: stretch; margin-top: 18px; }
+.radar-author-rail { min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; border: 1px solid #d6cfc3; background: rgba(255, 253, 250, .5); }
+.radar-author-search { height: 44px; display: flex; align-items: center; gap: 8px; margin: 15px 14px 10px; border: 1px solid #cfc7bb; padding: 0 11px; color: #7f786f; background: #fffdfa; }
+.radar-author-search:focus-within { border-color: #a85338; box-shadow: 0 0 0 2px rgba(168, 83, 56, .1); }
+.radar-author-search input { min-width: 0; width: 100%; border: 0; outline: 0; color: #35312d; background: transparent; font-size: 13px; }
+.radar-author-rail-heading { min-height: 42px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid #ddd6ca; padding: 0 15px; }
+.radar-author-rail-heading strong { font-size: 12px; }
+.radar-author-rail-heading span { color: #8c857b; font-size: 10px; }
+.radar-author-list { min-height: 0; display: grid; align-content: start; overflow-y: auto; scrollbar-width: thin; }
+.radar-author-list > button { position: relative; min-width: 0; min-height: 104px; display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center; gap: 13px; border: 0; border-bottom: 1px solid #ded7cc; padding: 14px 15px; color: #34312d; background: transparent; text-align: left; }
+.radar-author-list > button::before { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: transparent; content: ''; }
+.radar-author-list > button:hover { background: rgba(239, 232, 221, .58); }
+.radar-author-list > button.active { background: #eee7de; }
+.radar-author-list > button.active::before { background: #b65739; }
+.radar-author-list > button:focus-visible, .radar-account-rail-button:focus-visible, .radar-author-context > button:focus-visible { outline: 2px solid #a85338; outline-offset: -2px; }
+.radar-author-avatar { width: 54px; height: 54px; display: grid; place-items: center; overflow: hidden; border: 1px solid #aaa299; border-radius: 50%; color: #7f796f; background: #e5dfd5; }
+.radar-author-avatar img, .radar-context-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.radar-author-copy { min-width: 0; display: block; }
+.radar-author-copy b, .radar-author-copy small, .radar-author-copy em { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.radar-author-copy b { font-size: 13px; }
+.radar-author-copy small { margin-top: 3px; color: #807970; font-size: 10px; }
+.radar-author-copy em { position: relative; margin-top: 8px; padding-left: 11px; color: #827b72; font-size: 9px; font-style: normal; }
+.radar-author-copy em::before { position: absolute; left: 0; top: 50%; width: 6px; height: 6px; border-radius: 50%; background: #a7a198; content: ''; transform: translateY(-50%); }
+.radar-author-copy em.ok { color: #587563; }
+.radar-author-copy em.ok::before { background: #58a069; }
+.radar-author-copy em.error { color: #98503a; }
+.radar-author-copy em.error::before { background: #b6573e; }
+.radar-author-empty { margin: 28px 14px; color: #8a8379; font-size: 11px; text-align: center; }
+.radar-account-rail-button { min-height: 48px; display: flex; align-items: center; gap: 8px; margin-top: auto; border: 0; border-top: 1px solid #d8d1c6; padding: 0 15px; color: #756e65; background: transparent; font-size: 11px; }
+.radar-account-rail-button:hover, .radar-account-rail-button[aria-expanded="true"] { color: #87442f; background: #f1e9df; }
+.radar-content { min-width: 0; height: 100%; overflow-y: auto; padding-right: 2px; scrollbar-width: thin; }
+.radar-author-context { min-height: 86px; display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; align-items: center; gap: 17px; }
+.radar-context-avatar { width: 70px; height: 70px; display: grid; place-items: center; overflow: hidden; border: 1px solid #a7a097; border-radius: 50%; color: #787168; background: #e5dfd4; }
+.radar-author-context h3 { margin: 0; font-size: 20px; font-weight: 600; }
+.radar-author-context div > span, .radar-author-context div > small { display: block; }
+.radar-author-context div > span { margin-top: 3px; color: #787168; font-size: 12px; }
+.radar-author-context div > small { position: relative; margin-top: 9px; padding-left: 12px; color: #767067; font-size: 10px; }
+.radar-author-context div > small::before { position: absolute; left: 0; top: 50%; width: 6px; height: 6px; border-radius: 50%; background: #9d968d; content: ''; transform: translateY(-50%); }
+.radar-author-context div > small.ok { color: #587563; }
+.radar-author-context div > small.ok::before { background: #58a069; }
+.radar-author-context div > small.error { color: #98503a; }
+.radar-author-context div > small.error::before { background: #b6573e; }
+.radar-author-context > button { min-height: 39px; display: flex; align-items: center; gap: 7px; border: 1px solid #cdbdad; padding: 8px 12px; color: #775b4e; background: #fffaf3; font-size: 11px; }
+.radar-author-context > button:hover, .radar-author-context > button.active { color: #fff; background: #8a4935; }
+.radar-account-panel { margin-top: 15px; }
+.radar-no-authors { min-height: 520px; display: grid; place-items: center; align-content: center; color: #817a72; text-align: center; }
+.radar-no-authors h3 { margin: 15px 0 6px; font-family: Georgia, 'Noto Serif SC', serif; font-weight: 500; }
+.radar-no-authors p { margin: 0; font-size: 12px; }
 .activity-tabs { display: flex; gap: 8px; margin-top: 20px; border-bottom: 1px solid #d8d1c6; }
+.radar-content > .activity-tabs { margin-top: 9px; }
 .activity-tabs button { border: 0; border-bottom: 3px solid transparent; padding: 11px 16px; color: #726b62; background: transparent; font-size: 14px; font-weight: 700; }
 .activity-tabs button.active { border-bottom-color: #a55339; color: #7e3826; }
-.digest-card { margin-top: 18px; border: 1px solid #d5cbbc; padding: 20px; background: linear-gradient(135deg, #fffdfa, #f3ede2); }
+.digest-card { margin-top: 18px; border: 1px solid #d5cbbc; padding: 20px; background: #fbf8f2; }
 .digest-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }
 .digest-heading span { color: #9b6a56; font-size: 11px; font-weight: 800; letter-spacing: .12em; }
 .digest-heading h3 { margin: 4px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 25px; font-weight: 500; }
@@ -302,6 +351,7 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
 .activity-list p { margin: 0; color: #625c54; font-size: 14px; line-height: 1.6; }
 .activity-actions { display: flex; justify-content: space-between; margin-top: 9px; color: #8a8177; font-size: 11px; }
 .activity-actions a { color: #315342; font-size: 12px; text-decoration: none; }
+.post-availability { display: block; width: fit-content; margin: 8px 0; padding: 4px 8px; border: 1px solid #d9b980; border-radius: 999px; color: #8a5b09; background: #fff8e8; font-size: 12px; }
 .raw-posts { display: grid; gap: 10px; margin-top: 18px; }
 .raw-post-filter { display: flex; justify-content: space-between; align-items: center; }
 .raw-post-filter select { border: 1px solid #cec6ba; padding: 8px 10px; background: #fffdfa; }
@@ -512,9 +562,20 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
   .manual-merge { align-items: stretch; flex-direction: column; padding-inline: 20px; }
   .manual-merge select { max-width: none; }
   .merge-review { padding: 28px 18px; }
-  .social-radar { width: 100%; min-height: 100vh; max-height: 100vh; padding: 28px 18px; }
+  .social-radar { width: 100%; height: 100vh; min-height: 100vh; max-height: 100vh; overflow-y: auto; padding: 28px 18px; }
   .radar-header { flex-direction: column; }
   .radar-health { width: 100%; }
+  .radar-workspace { min-height: auto; flex: 0 0 auto; grid-template-columns: 1fr; gap: 18px; margin-top: 20px; }
+  .radar-author-rail { min-height: 0; }
+  .radar-author-list { display: flex; overflow-x: auto; overflow-y: hidden; }
+  .radar-author-list > button { min-width: 210px; min-height: 88px; grid-template-columns: 46px minmax(0, 1fr); padding: 10px 12px; }
+  .radar-author-avatar { width: 46px; height: 46px; }
+  .radar-author-list > button::before { right: 0; bottom: auto; width: auto; height: 3px; }
+  .radar-account-rail-button { justify-content: center; }
+  .radar-author-context { grid-template-columns: 58px minmax(0, 1fr); gap: 12px; }
+  .radar-context-avatar { width: 58px; height: 58px; }
+  .radar-author-context > button { grid-column: 1 / -1; justify-content: center; }
+  .radar-content { height: auto; overflow: visible; padding-right: 0; }
   .manual-account { flex-wrap: wrap; }
   .manual-account input { flex-basis: 100%; }
   .signal-list > article { grid-template-columns: 80px 1fr; gap: 11px; }

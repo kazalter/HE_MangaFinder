@@ -291,7 +291,47 @@ class SocialPost(Base):
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     posted_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
     edited_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    availability_status: Mapped[str] = mapped_column(
+        String(30), default="available", index=True
+    )
+    availability_reason: Mapped[str | None] = mapped_column(Text)
+    last_availability_checked_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(), index=True
+    )
+    unavailable_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    availability_failure_count: Mapped[int] = mapped_column(default=0)
     ingested_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utcnow, onupdate=utcnow
+    )
+
+
+class SocialMediaAsset(Base):
+    """Bounded local image archive; the source post remains the durable fact record."""
+
+    __tablename__ = "social_media_assets"
+    __table_args__ = (UniqueConstraint("post_id", "media_index"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    post_id: Mapped[int] = mapped_column(
+        ForeignKey("social_posts.id", ondelete="CASCADE"), index=True
+    )
+    media_index: Mapped[int] = mapped_column()
+    source_url: Mapped[str] = mapped_column(Text)
+    local_path: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    mime_type: Mapped[str | None] = mapped_column(String(100))
+    byte_size: Mapped[int] = mapped_column(default=0)
+    width: Mapped[int | None] = mapped_column()
+    height: Mapped[int | None] = mapped_column()
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    importance: Mapped[str] = mapped_column(String(20), default="normal", index=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    last_accessed_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utcnow, index=True
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), default=utcnow, onupdate=utcnow
     )

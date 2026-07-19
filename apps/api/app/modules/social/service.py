@@ -21,6 +21,7 @@ from app.modules.social.activity import ActivityService
 from app.modules.social.agent import SocialReleaseReviewer
 from app.modules.social.collector import CollectorPost, XBrowserCollector
 from app.modules.social.digest import DigestService
+from app.modules.social.media_archive import SocialMediaArchive
 from app.modules.social.ocr import LocalMediaOcr
 from app.modules.social.repository import SocialRepository
 from app.modules.social.rules import RuleAssessment, assess_post, cluster_key
@@ -123,6 +124,10 @@ class SocialSyncService:
                     "raw_metadata": item.raw,
                     "content_hash": content_hash,
                     "posted_at": posted_at,
+                    "availability_status": "available",
+                    "availability_reason": None,
+                    "unavailable_since": None,
+                    "availability_failure_count": 0,
                 },
             )
             if created:
@@ -131,13 +136,23 @@ class SocialSyncService:
                 continue
             if post.post_type == "retweet":
                 continue
+            media_archive = SocialMediaArchive(self.session, self.settings)
+            local_media = await media_archive.archive_post(post) if post.media else {}
             if post.media and not post.ocr_text and item.id in ocr_post_ids:
-                post.ocr_text = await LocalMediaOcr(self.settings).extract(post.media)
+                post.ocr_text = await LocalMediaOcr(self.settings).extract(
+                    post.media, local_media
+                )
             analyzed_count += 1
-            if ActivityService(self.session).ingest(account, post):
+            activity = ActivityService(self.session).ingest(account, post)
+            if activity:
                 activity_count += 1
-            if await self.analyze_post(account, post):
+                if activity.importance in {"high", "critical"}:
+                    media_archive.pin_post(post.id, activity.importance)
+            signal = await self.analyze_post(account, post)
+            if signal:
                 signal_count += 1
+                if signal.status in {"pending", "confirmed", "linked"}:
+                    media_archive.pin_post(post.id, "critical")
         if activity_count:
             await DigestService(self.session, self.settings).refresh(account.author_id)
         self.session.flush()

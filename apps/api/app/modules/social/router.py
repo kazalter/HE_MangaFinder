@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,8 +19,10 @@ from app.db.session import get_session
 from app.modules.authors.repository import AuthorRepository
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.schemas import JobRead
+from app.modules.social.availability import PostAvailabilityService
 from app.modules.social.collector import XBrowserCollector
 from app.modules.social.digest import DigestService
+from app.modules.social.media_archive import SocialMediaArchive
 from app.modules.social.repository import SocialRepository
 from app.modules.social.schemas import (
     ActivityItemRead,
@@ -42,6 +45,30 @@ SessionDep = Annotated[Session, Depends(get_session)]
 def _require_social_enabled() -> None:
     if not get_settings().social_enabled:
         raise HTTPException(status_code=503, detail="作者动态雷达尚未启用")
+
+
+def _post_read(post: SocialPost) -> SocialPostRead:
+    media: list[dict[str, object]] = []
+    for index, item in enumerate(post.media):
+        value = dict(item)
+        if value.get("type") == "image" and value.get("url"):
+            value["source_url"] = value["url"]
+            value["url"] = f"/api/social/posts/{post.id}/media/{index}"
+        media.append(value)
+    return SocialPostRead(
+        id=post.id,
+        platform_post_id=post.platform_post_id,
+        post_type=post.post_type,
+        text=post.text,
+        url=post.url,
+        media=media,
+        links=post.links,
+        ocr_text=post.ocr_text,
+        posted_at=post.posted_at,
+        availability_status=post.availability_status,
+        availability_reason=post.availability_reason,
+        last_availability_checked_at=post.last_availability_checked_at,
+    )
 
 
 def _signal_read(session: Session, signal: ReleaseSignal) -> ReleaseSignalRead:
@@ -68,7 +95,7 @@ def _signal_read(session: Session, signal: ReleaseSignal) -> ReleaseSignalRead:
         reviewed_by=signal.reviewed_by,
         created_at=signal.created_at,
         updated_at=signal.updated_at,
-        posts=[SocialPostRead.model_validate(post) for post in posts],
+        posts=[_post_read(post) for post in posts],
     )
 
 
@@ -88,7 +115,7 @@ def _activity_read(session: Session, activity: ActivityItem) -> ActivityItemRead
         started_at=activity.started_at,
         ended_at=activity.ended_at,
         posts=[
-            SocialPostRead.model_validate(post)
+            _post_read(post)
             for post in repository.activity_posts(activity.id)
         ],
     )
@@ -345,7 +372,49 @@ def list_author_social_posts(
     rows = list(
         session.scalars(statement.order_by(SocialPost.posted_at.desc()).limit(limit))
     )
-    return [SocialPostRead.model_validate(post) for post in rows]
+    return [_post_read(post) for post in rows]
+
+
+@router.get("/social/posts/{post_id}/media/{media_index}", response_class=FileResponse)
+async def social_post_media(
+    post_id: int, media_index: int, session: SessionDep
+) -> Response:
+    post = session.get(SocialPost, post_id)
+    if not post or media_index < 0 or media_index >= len(post.media):
+        raise HTTPException(status_code=404, detail="帖子图片不存在")
+    item = post.media[media_index]
+    source_url = str(item.get("url") or "")
+    if item.get("type") != "image" or not source_url:
+        raise HTTPException(status_code=404, detail="帖子图片不存在")
+    archive = SocialMediaArchive(session, get_settings())
+    asset = await archive.archive(post.id, media_index, source_url)
+    archive.apply_existing_importance(asset)
+    archive.enforce_quota()
+    path = archive.local_file(asset)
+    session.commit()
+    if path:
+        return FileResponse(
+            path,
+            media_type=asset.mime_type or "image/webp",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    return RedirectResponse(source_url, status_code=307)
+
+
+@router.post("/social/posts/{post_id}/verify", response_model=SocialPostRead)
+async def verify_social_post(post_id: int, session: SessionDep) -> SocialPostRead:
+    _require_social_enabled()
+    post = session.get(SocialPost, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="原始动态不存在")
+    try:
+        await PostAvailabilityService(session, get_settings()).verify(post)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    session.commit()
+    return _post_read(post)
 
 
 @router.post("/social/activity/{activity_id}/read", status_code=status.HTTP_204_NO_CONTENT)

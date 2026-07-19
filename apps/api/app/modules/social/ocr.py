@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import shutil
+import tempfile
 from hashlib import sha256
 from io import BytesIO
 from urllib.parse import urlparse
@@ -19,12 +20,16 @@ class LocalMediaOcr:
         self.settings = settings
         self.settings.social_media_dir.mkdir(parents=True, exist_ok=True)
 
-    async def extract(self, media: list[dict[str, object]]) -> str | None:
+    async def extract(
+        self,
+        media: list[dict[str, object]],
+        local_paths: dict[int, object] | None = None,
+    ) -> str | None:
         if not self.settings.social_ocr_enabled or not shutil.which("tesseract"):
             return None
         texts: list[str] = []
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            for item in media[:4]:
+            for index, item in enumerate(media[:4]):
                 url = str(item.get("url", ""))
                 parsed = urlparse(url)
                 if (
@@ -34,34 +39,24 @@ class LocalMediaOcr:
                 ):
                     continue
                 try:
-                    response = await client.get(
-                        url, headers={"User-Agent": self.settings.user_agent}
-                    )
-                    response.raise_for_status()
-                    raw = response.content
-                    image = Image.open(BytesIO(raw))
-                    image.verify()
-                    suffix = ".png" if image.format == "PNG" else ".jpg"
-                    path = self.settings.social_media_dir / f"{sha256(raw).hexdigest()}{suffix}"
-                    if not path.exists():
-                        path.write_bytes(raw)
-                    result = await asyncio.create_subprocess_exec(
-                        "tesseract",
-                        str(path),
-                        "stdout",
-                        "-l",
-                        "jpn+eng",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    try:
-                        stdout, _ = await asyncio.wait_for(
-                            result.communicate(),
-                            timeout=self.settings.social_ocr_timeout_seconds,
+                    supplied = (local_paths or {}).get(index)
+                    if supplied:
+                        stdout = await self._recognize(str(supplied))
+                    else:
+                        response = await client.get(
+                            url, headers={"User-Agent": self.settings.user_agent}
                         )
-                    except TimeoutError:
-                        result.kill()
-                        await result.communicate()
+                        response.raise_for_status()
+                        raw = response.content
+                        image = Image.open(BytesIO(raw))
+                        image.verify()
+                        suffix = ".png" if image.format == "PNG" else ".jpg"
+                        with tempfile.TemporaryDirectory(prefix="mangafinder-ocr-") as temp:
+                            path = f"{temp}/{sha256(raw).hexdigest()}{suffix}"
+                            with open(path, "wb") as temporary:
+                                temporary.write(raw)
+                            stdout = await self._recognize(path)
+                    if stdout is None:
                         logger.info("Social media OCR timed out: %s", url)
                         continue
                     text = stdout.decode("utf-8", errors="replace").strip()
@@ -70,3 +65,23 @@ class LocalMediaOcr:
                 except Exception as exc:
                     logger.info("Social media OCR skipped %s: %s", url, exc)
         return "\n\n".join(texts) or None
+
+    async def _recognize(self, path: str) -> bytes | None:
+        result = await asyncio.create_subprocess_exec(
+            "tesseract",
+            path,
+            "stdout",
+            "-l",
+            "jpn+eng",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                result.communicate(), timeout=self.settings.social_ocr_timeout_seconds
+            )
+            return stdout
+        except TimeoutError:
+            result.kill()
+            await result.communicate()
+            return None

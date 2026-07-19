@@ -108,3 +108,9 @@ class XBrowserCollector:
             "GET", f"/accounts/{handle}/posts", params=params
         )
         return [CollectorPost.model_validate(item) for item in body]
+
+    async def post_status(self, handle: str, post_id: str) -> dict[str, Any]:
+        body = await self._request(
+            "GET", f"/posts/{post_id}/status", params={"handle": handle}
+        )
+        return body if isinstance(body, dict) else {}

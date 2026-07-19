@@ -54,9 +54,14 @@ class Settings(BaseSettings):
     social_auto_confirm_threshold: float = 0.92
     social_candidate_threshold: float = 0.60
     social_media_dir: Path = Path("./data/social-media")
+    social_media_cache_max_bytes: int = 10 * 1024 * 1024 * 1024
+    social_media_cache_target_ratio: float = 0.8
+    social_media_max_dimension: int = 1600
+    social_media_webp_quality: int = 80
     social_ocr_enabled: bool = True
     social_ocr_max_posts_per_sync: int = 12
     social_ocr_timeout_seconds: float = 30.0
+    social_post_delete_confirm_hours: int = 24
     social_daily_digest_enabled: bool = True
     social_daily_digest_hour: int = 20
     social_daily_digest_timezone: str = "Asia/Shanghai"

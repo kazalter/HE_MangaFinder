@@ -37,6 +37,10 @@ class RadarConfig(BaseModel):
     ocr_enabled: bool
     ocr_max_posts_per_sync: int = Field(ge=0, le=100)
     ocr_timeout_seconds: float = Field(ge=5, le=180)
+    media_cache_max_gb: int = Field(ge=1, le=1000)
+    media_max_dimension: int = Field(ge=640, le=4096)
+    media_webp_quality: int = Field(ge=40, le=95)
+    delete_confirm_hours: int = Field(ge=1, le=168)
 
     @model_validator(mode="after")
     def thresholds_are_ordered(self) -> "RadarConfig":

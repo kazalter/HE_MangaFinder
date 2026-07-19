@@ -181,10 +181,13 @@ export interface SocialPost {
   post_type: 'original' | 'reply' | 'quote' | 'retweet'
   text: string
   url: string
-  media: Array<{ type?: string; url?: string; alt_text?: string }>
+  media: Array<{ type?: string; url?: string; source_url?: string; alt_text?: string }>
   links: string[]
   ocr_text: string | null
   posted_at: string
+  availability_status: 'available' | 'unavailable' | 'deleted' | 'protected' | 'account_unavailable' | 'unknown'
+  availability_reason: string | null
+  last_availability_checked_at: string | null
 }
 
 export interface ReleaseSignal {
@@ -254,6 +257,10 @@ export interface RadarConfig {
   ocr_enabled: boolean
   ocr_max_posts_per_sync: number
   ocr_timeout_seconds: number
+  media_cache_max_gb: number
+  media_max_dimension: number
+  media_webp_quality: number
+  delete_confirm_hours: number
 }
 
 export interface NotificationConfig {

@@ -71,6 +71,9 @@ class SocialPostRead(BaseModel):
     links: list[str]
     ocr_text: str | None
     posted_at: datetime
+    availability_status: str
+    availability_reason: str | None
+    last_availability_checked_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
 

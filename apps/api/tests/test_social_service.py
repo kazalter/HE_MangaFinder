@@ -68,6 +68,7 @@ async def test_ingest_auto_confirms_strong_new_release_without_catalog_write(
         social_agent_enabled=False,
         social_ocr_enabled=False,
         social_media_dir=tmp_path,
+        social_media_cache_max_bytes=0,
         social_auto_confirm_threshold=0.92,
     )
     incoming = [

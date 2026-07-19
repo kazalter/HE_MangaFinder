@@ -86,6 +86,8 @@ export const api = {
     if (postType) params.set('post_type', postType)
     return request<SocialPost[]>(`/authors/${authorId}/social-posts${params.size ? `?${params}` : ''}`)
   },
+  verifySocialPost: (postId: number) =>
+    request<SocialPost>(`/social/posts/${postId}/verify`, { method: 'POST' }),
   markActivityRead: (activityId: number) =>
     request<void>(`/social/activity/${activityId}/read`, { method: 'POST' }),
   addSocialAccount: (authorId: number, handle: string, accountType: 'personal' | 'circle' = 'personal') =>

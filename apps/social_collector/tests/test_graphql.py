@@ -43,3 +43,21 @@ def test_parse_quote_keeps_quoted_text_separate_from_author_text() -> None:
     assert parsed["text"] == "これ！よろしく！"
     assert parsed["quoted_post_id"] == "90"
     assert parsed["raw"]["quoted_text"] == "花店の設営写真"
+
+
+def test_post_status_only_calls_explicit_tombstone_deleted() -> None:
+    collector = WebGraphQLCollector.__new__(WebGraphQLCollector)
+    collector._request = lambda *args, **kwargs: {
+        "data": {
+            "tweetResult": {
+                "result": {
+                    "__typename": "TweetTombstone",
+                    "tombstone": {
+                        "text": {"text": "This Post was deleted by the Post author."}
+                    },
+                }
+            }
+        }
+    }
+
+    assert collector.post_status("123")["status"] == "deleted"

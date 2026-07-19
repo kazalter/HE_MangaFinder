@@ -118,6 +118,9 @@ class WebGraphQLCollector:
             "UserTweets": os.getenv(
                 "SOCIAL_COLLECTOR_USER_TWEETS_QUERY_ID", "6r5OLCC_wFH4CpRyXKuAmQ"
             ),
+            "TweetResultByRestId": os.getenv(
+                "SOCIAL_COLLECTOR_TWEET_RESULT_QUERY_ID", "D_jNhjWZeRZT5NURzfJZSQ"
+            ),
         }
 
     @property
@@ -203,7 +206,7 @@ class WebGraphQLCollector:
         )
         url = f"{GRAPHQL_BASE}/{self.query_ids[operation]}/{operation}?{params}"
         response = self._get(url)
-        if response.status_code == 404 and not refreshed:
+        if response.status_code in {400, 404} and not refreshed:
             self._discover_query_ids()
             return self._request(operation, variables, features, toggles, refreshed=True)
         if response.status_code in {401, 403}:
@@ -220,6 +223,54 @@ class WebGraphQLCollector:
             message = body["errors"][0].get("message", "GraphQL error")
             raise GraphQLTransientError(f"X GraphQL 错误：{message}")
         return body
+
+    def post_status(self, post_id: str) -> dict[str, str | None]:
+        body = self._request(
+            "TweetResultByRestId",
+            {
+                "tweetId": str(post_id),
+                "withCommunity": False,
+                "includePromotedContent": False,
+                "withVoice": True,
+            },
+            TIMELINE_FEATURES,
+            TIMELINE_TOGGLES,
+        )
+        result = ((body.get("data") or {}).get("tweetResult") or {}).get("result") or {}
+        if result.get("__typename") == "TweetWithVisibilityResults":
+            result = result.get("tweet") or {}
+        kind = str(result.get("__typename") or "")
+        if kind == "Tweet" or result.get("legacy"):
+            return {"status": "available", "reason": None}
+        reason = self._unavailable_reason(result)
+        folded = reason.casefold()
+        deleted_words = (
+            "deleted by the post author",
+            "post was deleted",
+            "tweet was deleted",
+            "削除されました",
+            "已被删除",
+            "已刪除",
+        )
+        if kind == "TweetTombstone" and any(word in folded for word in deleted_words):
+            return {"status": "deleted", "reason": reason or "X 明确返回已删除"}
+        return {
+            "status": "unavailable",
+            "reason": reason or kind or "X 没有返回可访问的帖子",
+        }
+
+    @staticmethod
+    def _unavailable_reason(result: dict[str, Any]) -> str:
+        tombstone = result.get("tombstone") or {}
+        text = tombstone.get("text") or {}
+        if isinstance(text, dict):
+            text = text.get("text") or ""
+        return str(
+            text
+            or result.get("reason")
+            or result.get("message")
+            or ""
+        ).strip()
 
     def lookup_user(self, handle: str) -> dict[str, Any] | None:
         body = self._request(

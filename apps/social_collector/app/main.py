@@ -211,6 +211,38 @@ class BrowserCollector:
                     await self.context.storage_state(path=str(STATE_RUNTIME))
                 await page.close()
 
+    async def post_status(self, handle: str, post_id: str) -> dict[str, str | None]:
+        async with self.lock:
+            page = await self.page()
+            try:
+                await self.navigate(page, f"https://x.com/{handle}/status/{post_id}")
+                await page.wait_for_timeout(1800)
+                await self.ensure_access(page)
+                for article in await page.locator('article[data-testid="tweet"]').all():
+                    for anchor in await article.locator('a[href*="/status/"]').all():
+                        href = await anchor.get_attribute("href")
+                        match = POST_RE.search(href or "")
+                        if match and match.group(1) == post_id:
+                            return {"status": "available", "reason": None}
+                body = (await page.locator("body").inner_text()).strip()
+                folded = body.casefold()
+                deleted_words = (
+                    "deleted by the post author",
+                    "post was deleted",
+                    "tweet was deleted",
+                    "削除されました",
+                    "已被删除",
+                    "已刪除",
+                )
+                status = (
+                    "deleted"
+                    if any(word in folded for word in deleted_words)
+                    else "unavailable"
+                )
+                return {"status": status, "reason": body[:500] or "X 页面没有返回帖子"}
+            finally:
+                await page.close()
+
     async def _parse_article(self, article: Any, handle: str) -> dict[str, Any] | None:
         time_locator = article.locator("time")
         if not await time_locator.count():
@@ -414,3 +446,18 @@ async def posts(
         except GraphQLTransientError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     return await collector.posts(clean, since_id, limit)
+
+
+@app.get("/posts/{post_id}/status", dependencies=[Depends(authorize)])
+async def post_status(post_id: str, handle: str) -> dict[str, str | None]:
+    clean = handle.removeprefix("@")
+    if not post_id.isdigit() or not re.fullmatch(r"[A-Za-z0-9_]{1,15}", clean):
+        raise HTTPException(status_code=422, detail="X 帖子参数无效")
+    if graphql_collector.available:
+        try:
+            return await asyncio.to_thread(graphql_collector.post_status, post_id)
+        except GraphQLUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except GraphQLTransientError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return await collector.post_status(clean, post_id)

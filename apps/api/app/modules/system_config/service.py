@@ -57,6 +57,12 @@ def _radar(settings: Settings) -> RadarConfig:
         ocr_enabled=settings.social_ocr_enabled,
         ocr_max_posts_per_sync=settings.social_ocr_max_posts_per_sync,
         ocr_timeout_seconds=settings.social_ocr_timeout_seconds,
+        media_cache_max_gb=max(
+            1, round(settings.social_media_cache_max_bytes / (1024**3))
+        ),
+        media_max_dimension=settings.social_media_max_dimension,
+        media_webp_quality=settings.social_media_webp_quality,
+        delete_confirm_hours=settings.social_post_delete_confirm_hours,
     )
 
 
@@ -144,6 +150,10 @@ def _values(payload: SystemConfigUpdate) -> dict[str, Any]:
         "social_ocr_enabled": payload.radar.ocr_enabled,
         "social_ocr_max_posts_per_sync": payload.radar.ocr_max_posts_per_sync,
         "social_ocr_timeout_seconds": payload.radar.ocr_timeout_seconds,
+        "social_media_cache_max_bytes": payload.radar.media_cache_max_gb * 1024**3,
+        "social_media_max_dimension": payload.radar.media_max_dimension,
+        "social_media_webp_quality": payload.radar.media_webp_quality,
+        "social_post_delete_confirm_hours": payload.radar.delete_confirm_hours,
         "social_daily_digest_enabled": payload.notifications.daily_digest_enabled,
         "social_daily_digest_hour": payload.notifications.daily_digest_hour,
         "social_daily_digest_timezone": payload.notifications.daily_digest_timezone.strip(),

@@ -91,6 +91,31 @@ def _apply_additive_migrations() -> None:
                 "ON jobs (next_attempt_at)"
             )
 
+    social_post_columns = {
+        item["name"] for item in inspect(engine).get_columns("social_posts")
+    }
+    social_post_additions = {
+        "availability_status": "VARCHAR(30) NOT NULL DEFAULT 'available'",
+        "availability_reason": "TEXT",
+        "last_availability_checked_at": "DATETIME",
+        "unavailable_since": "DATETIME",
+        "availability_failure_count": "INTEGER NOT NULL DEFAULT 0",
+    }
+    with engine.begin() as connection:
+        for column, declaration in social_post_additions.items():
+            if column not in social_post_columns:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE social_posts ADD COLUMN {column} {declaration}"
+                )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_social_posts_availability_status "
+            "ON social_posts (availability_status)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_social_posts_last_availability_checked_at "
+            "ON social_posts (last_availability_checked_at)"
+        )
+
 
 def get_session() -> Generator[Session, None, None]:
     with SessionLocal() as session:
