@@ -19,6 +19,10 @@ MANGAFINDER_SOCIAL_MEDIA_HOST_DIR=/mnt/hdd/mangafinder/social-media
 MANGAFINDER_PUBLIC_BASE_URL=http://你的Linux局域网IP:8000
 ```
 
+动态图片会保存在该目录的 `archive/` 下，作者头像保存在 `avatars/` 下。浏览器只访问
+MangaFinder 的同源图片接口，不需要也不会直接连接 `pbs.twimg.com`。归档上限可在设置页调整；
+头像体积很小，不参与普通动态图片的容量淘汰。
+
 令牌可以在 Linux 上用 `openssl rand -hex 32` 生成。需要代理时设置
 `MANGAFINDER_X_PROXY_URL=http://代理容器名:端口`。如果代理监听在某个 Docker 网桥地址，必须填写
 采集器容器实际可达的地址（例如 `http://172.19.0.1:7897`），不要默认使用

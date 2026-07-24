@@ -11,8 +11,6 @@ services:
       MANGAFINDER_DATABASE_URL: sqlite:////app/data/mangafinder.db
       MANGAFINDER_DOWNLOADS_DIR: /app/data/downloads
       MANGAFINDER_COVER_CACHE_DIR: /app/data/cover-cache
-      MANGAFINDER_CHAPTER_LANGUAGES: ${MANGAFINDER_CHAPTER_LANGUAGES:-zh-hans,zh-hant,en,ja}
-      MANGAFINDER_USE_DATA_SAVER: ${MANGAFINDER_USE_DATA_SAVER:-true}
       MANGAFINDER_USER_AGENT: ${MANGAFINDER_USER_AGENT:-MangaFinder/0.1}
       MANGAFINDER_ADMIN_SESSION_HOURS: ${MANGAFINDER_ADMIN_SESSION_HOURS:-12}
       MANGAFINDER_ADMIN_COOKIE_SECURE: ${MANGAFINDER_ADMIN_COOKIE_SECURE:-false}
@@ -88,6 +86,7 @@ services:
       - ${MANGAFINDER_DOWNLOADS_HOST_DIR:-./data/downloads}:/app/data/downloads
       # 第三方封面通过服务端代理后缓存在大容量盘，浏览器只访问同源 API。
       - ${MANGAFINDER_COVER_CACHE_HOST_DIR:-./data/cover-cache}:/app/data/cover-cache
+      # X 动态图片和作者头像都只由服务器读取，并持久化到外挂盘。
       - ${MANGAFINDER_SOCIAL_MEDIA_HOST_DIR:-./data/social-media}:/app/data/social-media
       # 主应用只在管理员设置页中写入会话文件；采集器读取同一目录。
       - ${MANGAFINDER_X_SESSION_HOST_DIR:-./data/x-session}:/app/data/x-session

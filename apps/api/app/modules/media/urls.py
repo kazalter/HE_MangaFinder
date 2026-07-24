@@ -2,7 +2,7 @@ from hashlib import sha256
 
 from app.db.models import Work, WorkGroup
 
-_PROXIED_PROVIDERS = frozenset({"mangadex", "nhentai", "wnacg"})
+_PROXIED_PROVIDERS = frozenset({"nhentai", "wnacg"})
 
 
 def work_cover_url(work: Work) -> str | None:

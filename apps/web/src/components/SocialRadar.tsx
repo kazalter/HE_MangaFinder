@@ -1,7 +1,10 @@
-import { Article, ArrowsClockwise, GearSix, MagnifyingGlass, NewspaperClipping, UserCircle } from '@phosphor-icons/react'
+import { Article, ArrowsClockwise, CaretDown, GearSix, MagnifyingGlass, NewspaperClipping, UserCircle } from '@phosphor-icons/react'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import type { ActivityItem, Author, AuthorDigest, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, WorkGroup } from '../types'
+import { useAnimatedClose } from '../hooks/useAnimatedClose'
+import { ExpandablePanel } from './ExpandablePanel'
+import { ThemedSelect } from './ThemedSelect'
 
 const kindLabels: Record<string, string> = {
   new_release: '新作预告', release_preview: '样张公开', cover_reveal: '封面公开',
@@ -14,6 +17,12 @@ const activityLabels: Record<string, string> = {
   artwork: '插画公开', collaboration: '合作项目', schedule_notice: '重要公告',
   personal: '日常近况', other: '其他动态',
 }
+
+const postTypeOptions = [
+  { value: '', label: '全部类型' }, { value: 'original', label: '原创' },
+  { value: 'quote', label: '引用' }, { value: 'reply', label: '回复' },
+  { value: 'retweet', label: '转推' },
+] as const
 
 const radarAuthorKey = 'mangafinder:radar-author'
 
@@ -60,6 +69,7 @@ interface Props {
 }
 
 export function SocialRadar({ status, signals, authors, works, selectedAuthorId, busy, focusSignalId, onClose, onChanged, onOpenWork }: Props) {
+  const { closing, requestClose } = useAnimatedClose(onClose)
   const [filter, setFilter] = useState('all')
   const [view, setView] = useState<'overview' | 'releases' | 'raw'>('overview')
   const [radarAuthorId, setRadarAuthorId] = useState<number | null>(() => initialRadarAuthorId(selectedAuthorId, focusSignalId, signals, authors))
@@ -76,6 +86,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
   const [localError, setLocalError] = useState<string | null>(null)
   const [localNotice, setLocalNotice] = useState<string | null>(null)
   const [links, setLinks] = useState<Record<number, number>>({})
+  const [linkingSignalId, setLinkingSignalId] = useState<number | null>(null)
   const [radarSignals, setRadarSignals] = useState<ReleaseSignal[]>(signals)
   const activeAuthor = authors.find((author) => author.id === radarAuthorId)
   const filteredAuthors = useMemo(() => {
@@ -117,7 +128,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
     } catch { /* The radar remains usable without preference storage. */ }
   }, [radarAuthorId])
   useEffect(() => {
-    setSuggestions([]); setHandle(''); setLocalError(null); setLocalNotice(null)
+    setSuggestions([]); setHandle(''); setLinkingSignalId(null); setLocalError(null); setLocalNotice(null)
     void Promise.all([loadAccounts(), loadActivityData('')]).catch((error) => setLocalError(String(error)))
   }, [radarAuthorId])
   useEffect(() => {
@@ -166,9 +177,9 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
   }
 
   return (
-    <div className="modal-backdrop social-radar-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
+    <div className={`modal-backdrop social-radar-backdrop${closing ? ' is-closing' : ''}`} role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) requestClose() }}>
       <section className="social-radar" role="dialog" aria-modal="true" aria-label="作者动态雷达">
-        <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        <button className="modal-close" onClick={requestClose} aria-label="关闭">×</button>
         <header className="radar-header">
           <div><p className="eyebrow">AUTHOR / ACTIVITY CENTER</p><h2>作者动态中心</h2><p>汇总作者最近近况；新作与重要变更仍走独立高精度提醒。</p></div>
           <div className="radar-health">
@@ -195,7 +206,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
                 return <button className={active ? 'active' : ''} onClick={() => { setRadarAuthorId(author.id); setAccountOpen(false) }} aria-current={active ? 'true' : undefined} key={author.id}>
                   <span className="radar-author-avatar">
                     {author.avatar_url
-                      ? <img src={author.avatar_url} alt="" referrerPolicy="no-referrer" />
+                      ? <img src={author.avatar_url} alt="" referrerPolicy="no-referrer" loading="lazy" decoding="async" />
                       : <UserCircle size={38} weight="thin" />}
                   </span>
                   <span className="radar-author-copy"><b>{author.name}</b><small>{author.x_handle ? `@${author.x_handle}` : '未绑定 X'}</small><em className={author.x_sync_error ? 'error' : author.x_last_synced_at ? 'ok' : ''}>{author.work_count} 部作品 · {author.x_sync_error ? '同步异常' : author.x_last_synced_at ? '同步正常' : '等待同步'}</em></span>
@@ -203,8 +214,8 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
               })}
               {!filteredAuthors.length && <p className="radar-author-empty">没有匹配的作者</p>}
             </nav>
-            <button className="radar-account-rail-button" disabled={!activeAuthor} onClick={() => setAccountOpen((current) => !current)} aria-expanded={accountOpen}>
-              <GearSix size={18} />管理 X 账号
+            <button className="radar-account-rail-button" disabled={!activeAuthor} onClick={() => setAccountOpen((current) => !current)} aria-expanded={accountOpen} aria-controls="radar-account-panel">
+              <GearSix size={18} />管理 X 账号<CaretDown className="expand-caret" size={15} />
             </button>
           </aside>
 
@@ -217,10 +228,11 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
                     : <UserCircle size={66} weight="thin" />}
                 </span>
                 <div><h3>{activeAuthor.name}</h3><span>{activeAuthor.x_handle ? `@${activeAuthor.x_handle}` : '未绑定 X 账号'}</span><small className={activeAuthor.x_sync_error ? 'error' : 'ok'}>{activeAuthor.work_count} 部作品 · {activeAuthor.x_sync_error ? '同步异常' : activeAuthor.x_last_synced_at ? '同步正常' : '等待首次同步'}</small></div>
-                <button className={accountOpen ? 'active' : ''} onClick={() => setAccountOpen((current) => !current)} aria-expanded={accountOpen}><ArrowsClockwise size={17} />账号与同步</button>
+                <button className={accountOpen ? 'active' : ''} onClick={() => setAccountOpen((current) => !current)} aria-expanded={accountOpen} aria-controls="radar-account-panel"><ArrowsClockwise size={17} />账号与同步<CaretDown className="expand-caret" size={15} /></button>
               </header>
 
-        {accountOpen && <section className="account-panel radar-account-panel">
+        <ExpandablePanel open={accountOpen} className="radar-account-expandable">
+          <section className="account-panel radar-account-panel" id="radar-account-panel">
           <div className="account-heading">
             <div><strong>{activeAuthor.name} 的 X 账号</strong><small>候选账号只有经过你的确认才会监控</small></div>
             <button onClick={() => void findAccounts()} disabled={!status.enabled || finding || busy}>{finding ? '查找中…' : '自动查找候选'}</button>
@@ -235,7 +247,8 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
             </div>
             {suggestions.length > 0 && <div className="account-suggestions">{suggestions.map((item) => <button key={item.handle} onClick={() => void bindAccount(item.handle)}><b>@{item.handle}</b><span>{item.display_name} · {Math.round(item.score * 100)}%</span><em>确认绑定</em></button>)}</div>}
             <div className="manual-account"><input value={handle} onChange={(event) => setHandle(event.target.value)} placeholder="手动输入 @handle" disabled={!status.enabled} /><button disabled={!status.enabled || !handle.trim() || busy} onClick={() => void bindAccount(handle)}>确认并监控</button><button disabled={!status.enabled || !accounts.some((item) => item.status === 'confirmed') || busy} onClick={() => void act(() => api.syncSocial(activeAuthor.id))}>立即扫描</button></div>
-        </section>}
+          </section>
+        </ExpandablePanel>
 
         <nav className="activity-tabs" aria-label="动态中心视图">
           <button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>最近近况</button>
@@ -249,7 +262,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
             {digest ? <><p className="digest-summary">{digest.summary}</p><div className="digest-highlights">{digest.highlights.map((item, index) => <article className={`importance-${item.importance}`} key={`${item.text}-${index}`}><span>{activityLabels[item.category] ?? item.category} · {item.factuality === 'fact' ? '明确事实' : item.factuality === 'plan' ? '作者计划' : '推测'}</span><p>{item.text}</p><small>证据 {item.post_ids.map((id, evidenceIndex) => { const post = rawPosts.find((candidate) => candidate.id === id); return post ? <span key={id}>{evidenceIndex > 0 ? '、' : ''}<a href={post.url} target="_blank" rel="noreferrer">帖子 {id} ↗</a></span> : <span key={id}>{evidenceIndex > 0 ? '、' : ''}帖子 {id}</span> })}</small></article>)}</div>{digest.uncertainties.length > 0 && <div className="digest-uncertain"><strong>仍不确定</strong><ul>{digest.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></div>}<small className="digest-source">{digest.generated_by === 'agent' ? `Agent 总结 · ${digest.model ?? ''}` : '规则降级摘要'}{digest.error ? ` · Agent 暂不可用：${digest.error}` : ''}</small></> : <p className="review-empty">扫描到作者动态后，这里会生成最近 7 天摘要。</p>}
           </section>
           <section className="activity-list">
-            {activities.map((item) => { const post = item.posts.at(-1); const image = post?.media.find((media) => media.type === 'image')?.url; const availability = post ? availabilityLabel(post) : null; return <article className={`${item.is_read ? '' : 'unread'} importance-${item.importance}`} key={item.id}><div className="activity-thumb">{image ? <img src={image} alt="" /> : <Article size={30} weight="thin" />}</div><div><div className="activity-meta"><b>{activityLabels[item.category] ?? item.category}</b><span>{item.author_name}</span><time>{new Date(item.ended_at).toLocaleString()}</time></div><h3>{item.headline}</h3><p>{item.summary}</p>{availability && <small className="post-availability">{availability}</small>}<div className="activity-actions"><span>{item.importance === 'critical' ? '紧急' : item.importance === 'high' ? '重要' : item.importance === 'normal' ? '一般' : '低优先级'} · 置信度 {Math.round(item.confidence * 100)}%</span>{post && <a href={post.url} target="_blank" rel="noreferrer" onClick={() => { void api.markActivityRead(item.id); verifyPost(post) }}>查看原帖 ↗</a>}</div></div></article> })}
+            {activities.map((item) => { const post = item.posts.at(-1); const image = post?.media.find((media) => media.type === 'image')?.url; const availability = post ? availabilityLabel(post) : null; return <article className={`${item.is_read ? '' : 'unread'} importance-${item.importance}`} key={item.id}><div className="activity-thumb">{image ? <img src={image} alt="" loading="lazy" decoding="async" /> : <Article size={30} weight="thin" />}</div><div><div className="activity-meta"><b>{activityLabels[item.category] ?? item.category}</b><span>{item.author_name}</span><time>{new Date(item.ended_at).toLocaleString()}</time></div><h3>{item.headline}</h3><p>{item.summary}</p>{availability && <small className="post-availability">{availability}</small>}<div className="activity-actions"><span>{item.importance === 'critical' ? '紧急' : item.importance === 'high' ? '重要' : item.importance === 'normal' ? '一般' : '低优先级'} · 置信度 {Math.round(item.confidence * 100)}%</span>{post && <a href={post.url} target="_blank" rel="noreferrer" onClick={() => { void api.markActivityRead(item.id); verifyPost(post) }}>查看原帖 ↗</a>}</div></div></article> })}
             {!activities.length && <div className="review-empty">还没有可展示的作者近况。</div>}
           </section>
         </>}
@@ -261,7 +274,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
             const post = signal.posts.at(-1)
             const image = post?.media.find((item) => item.type === 'image' && item.url)?.url
             return <article className={`${signal.is_read ? '' : 'unread'} ${focusSignalId === signal.id ? 'focused' : ''}`} id={`signal-${signal.id}`} key={signal.id}>
-              <div className="signal-media">{image ? <img src={image} alt="帖子媒体" /> : <NewspaperClipping size={36} weight="thin" />}</div>
+              <div className="signal-media">{image ? <img src={image} alt="帖子媒体" loading="lazy" decoding="async" /> : <NewspaperClipping size={36} weight="thin" />}</div>
               <div className="signal-copy">
                 <div className="signal-meta"><span className={`signal-kind kind-${signal.kind}`}>{kindLabels[signal.kind] ?? signal.kind}</span><b>{signal.author_name}</b><time>{new Date(post?.posted_at ?? signal.created_at).toLocaleString()}</time></div>
                 <h3>{signal.title ?? '标题尚未确认'}</h3>
@@ -270,7 +283,11 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
                 <div className="signal-evidence"><strong>支持证据</strong>{signal.evidence.length ? <ul>{signal.evidence.map((item) => <li key={item}>{item}</li>)}</ul> : <p>没有足够证据</p>}{signal.counter_evidence.length > 0 && <><strong className="counter">反证 / 风险</strong><ul>{signal.counter_evidence.map((item) => <li key={item}>{item}</li>)}</ul></>}</div>
                 <div className="signal-actions">
                   {post && <a href={post.url} target="_blank" rel="noreferrer" onClick={() => { void api.markSocialSignalRead(signal.id); verifyPost(post) }}>查看原帖 ↗</a>}
-                  {signal.linked_group_id ? <button onClick={() => onOpenWork(signal.linked_group_id!)}>打开关联作品</button> : <><select value={links[signal.id] ?? ''} onChange={(event) => setLinks({ ...links, [signal.id]: Number(event.target.value) })}><option value="">关联现有作品…</option>{works.map((work) => <option value={work.id} key={work.id}>{work.title}</option>)}</select><button disabled={!links[signal.id]} onClick={() => void act(() => api.linkSocialSignal(signal.id, links[signal.id]))}>关联</button></>}
+                  {signal.linked_group_id
+                    ? <button onClick={() => onOpenWork(signal.linked_group_id!)}>打开关联作品</button>
+                    : linkingSignalId === signal.id
+                      ? <><select autoFocus value={links[signal.id] ?? ''} onChange={(event) => setLinks({ ...links, [signal.id]: Number(event.target.value) })}><option value="">选择要关联的作品…</option>{works.map((work) => <option value={work.id} key={work.id}>{work.title}</option>)}</select><button disabled={!links[signal.id]} onClick={() => void act(async () => { await api.linkSocialSignal(signal.id, links[signal.id]); setLinkingSignalId(null) })}>关联</button><button onClick={() => setLinkingSignalId(null)}>取消</button></>
+                      : <button onClick={() => setLinkingSignalId(signal.id)}>关联现有作品</button>}
                   {signal.status === 'pending' && <><button className="reject" onClick={() => void act(() => api.reviewSocialSignal(signal.id, 'reject'))}>不是新情报</button><button className="confirm" onClick={() => void act(() => api.reviewSocialSignal(signal.id, 'confirm'))}>确认情报</button></>}
                 </div>
               </div>
@@ -279,7 +296,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
           {!visible.length && <div className="review-empty">当前筛选下没有作者动态。</div>}
         </section></>}
 
-        {view === 'raw' && <section className="raw-posts"><div className="raw-post-filter"><strong>原始事实流</strong><select value={postType} onChange={(event) => { const value = event.target.value; setPostType(value); void loadActivityData(value) }}><option value="">全部类型</option><option value="original">原创</option><option value="quote">引用</option><option value="reply">回复</option><option value="retweet">转推</option></select></div>{rawPosts.map((post) => <article key={post.id}><div><b>{post.post_type === 'original' ? '原创' : post.post_type === 'quote' ? '引用' : post.post_type === 'reply' ? '回复' : '转推'}</b><time>{new Date(post.posted_at).toLocaleString()}</time></div><p>{post.text || post.ocr_text || '无文字内容'}</p>{post.media.length > 0 && <div className="raw-media">{post.media.filter((item) => item.type === 'image' && item.url).slice(0, 4).map((item) => <img src={item.url} alt="" key={item.url} />)}</div>}{availabilityLabel(post) && <small className="post-availability">{availabilityLabel(post)}</small>}<a href={post.url} target="_blank" rel="noreferrer" onClick={() => verifyPost(post)}>打开原帖 ↗</a></article>)}{!rawPosts.length && <div className="review-empty">还没有采集到原始动态。</div>}</section>}
+        {view === 'raw' && <section className="raw-posts"><div className="raw-post-filter"><strong>原始事实流</strong><ThemedSelect label="动态类型" value={postType} options={postTypeOptions} onChange={(value) => { setPostType(value); void loadActivityData(value) }} /></div>{rawPosts.map((post) => <article key={post.id}><div><b>{post.post_type === 'original' ? '原创' : post.post_type === 'quote' ? '引用' : post.post_type === 'reply' ? '回复' : '转推'}</b><time>{new Date(post.posted_at).toLocaleString()}</time></div><p>{post.text || post.ocr_text || '无文字内容'}</p>{post.media.length > 0 && <div className="raw-media">{post.media.filter((item) => item.type === 'image' && item.url).slice(0, 4).map((item) => <img src={item.url} alt="" loading="lazy" decoding="async" key={item.url} />)}</div>}{availabilityLabel(post) && <small className="post-availability">{availabilityLabel(post)}</small>}<a href={post.url} target="_blank" rel="noreferrer" onClick={() => verifyPost(post)}>打开原帖 ↗</a></article>)}{!rawPosts.length && <div className="review-empty">还没有采集到原始动态。</div>}</section>}
             </> : <div className="radar-no-authors"><UserCircle size={58} weight="thin" /><h3>还没有订阅作者</h3><p>添加作者后，就可以在这里直接切换并查看动态。</p></div>}
           </div>
         </div>

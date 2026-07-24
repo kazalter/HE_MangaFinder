@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import App from './App'
+import App, { calculateCoverColumns } from './App'
 
 const { jobsMock, workGroupsMock, works } = vi.hoisted(() => ({
   jobsMock: vi.fn(),
@@ -17,7 +17,7 @@ const { jobsMock, workGroupsMock, works } = vi.hoisted(() => ({
     first_source_at: '2024-01-01T00:00:00Z',
     latest_source_at: '2026-07-15T00:00:00Z',
     edition_count: 2,
-    providers: ['mangadex'],
+    providers: ['nhentai'],
     authors: [{ id: 1, name: '作者甲' }],
   }, {
     id: 2,
@@ -61,14 +61,35 @@ vi.mock('./lib/api', () => ({
       daily_digest_timezone: 'Asia/Shanghai',
     }),
     socialRadar: vi.fn().mockResolvedValue([]),
+    dashboard: vi.fn().mockResolvedValue({
+      period_days: 30,
+      summary: { authors: 2, works: 2, editions: 3, new_works: 0, new_editions: 0, unread_discoveries: 0, pending_merges: 0, pending_signals: 0, failed_provider_scans: 0, incomplete_works: 1 },
+      trend: [], source_health: [], upcoming: [],
+    }),
+    discoveryInbox: vi.fn().mockResolvedValue([]),
   },
 }))
+
+function chooseToolbarOption(label: string, option: string) {
+  fireEvent.click(screen.getByRole('combobox', { name: label }))
+  fireEvent.click(screen.getByRole('option', { name: option }))
+}
+
+describe('responsive cover sizing', () => {
+  it('derives columns from the actual catalog width', () => {
+    expect(calculateCoverColumns(400)).toBe(2)
+    expect(calculateCoverColumns(800)).toBe(5)
+    expect(calculateCoverColumns(1500)).toBe(7)
+    expect(calculateCoverColumns(2200)).toBe(10)
+  })
+})
 
 describe('catalog views', () => {
   afterEach(cleanup)
 
   beforeEach(() => {
     window.localStorage.clear()
+    window.localStorage.setItem('mangafinder:library-mode', 'works')
     window.sessionStorage.clear()
     jobsMock.mockClear()
     jobsMock.mockResolvedValue([])
@@ -79,23 +100,47 @@ describe('catalog views', () => {
   it('switches display mode, filters works, and groups by author', async () => {
     render(<App />)
     expect(await screen.findByText('作品甲')).toBeInTheDocument()
-    expect(screen.getByLabelText('排序')).toHaveValue('first')
+    expect(screen.getByRole('combobox', { name: '排序' })).toHaveAttribute('data-value', 'first')
     expect(document.querySelector('.work-grid h3')).toHaveTextContent('作品乙')
 
     fireEvent.click(screen.getByRole('button', { name: '封面墙' }))
     expect(screen.getByRole('button', { name: '查看《作品甲》' })).toBeInTheDocument()
     expect(window.localStorage.getItem('mangafinder:view')).toBe('covers')
 
-    fireEvent.change(screen.getByLabelText('筛选'), { target: { value: 'multi' } })
+    chooseToolbarOption('筛选', '多版本')
     expect(screen.getByText('作品甲')).toBeInTheDocument()
     expect(screen.queryByText('作品乙')).not.toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText('筛选'), { target: { value: 'all' } })
-    fireEvent.change(screen.getByLabelText('分组'), { target: { value: 'author' } })
+    chooseToolbarOption('筛选', '全部作品')
+    chooseToolbarOption('分组', '按作者')
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: '作者甲' })).toBeInTheDocument()
       expect(screen.getByRole('heading', { name: '作者乙' })).toBeInTheDocument()
     })
+  })
+
+  it('paginates large catalogs with a fixed size and supports direct page jumps', async () => {
+    const manyWorks = Array.from({ length: 30 }, (_, index) => ({
+      ...works[0],
+      id: 100 + index,
+      title: `分页作品 ${String(index + 1).padStart(2, '0')}`,
+      edition_count: 1,
+    }))
+    workGroupsMock.mockResolvedValue(manyWorks)
+    render(<App />)
+
+    expect(await screen.findByText('分页作品 01')).toBeInTheDocument()
+    expect(screen.queryByText('分页作品 25')).not.toBeInTheDocument()
+    expect(screen.getByText('第 1 / 2 页 · 共 30 部')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('跳转页码'), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: '前往' }))
+    expect(await screen.findByText('分页作品 25')).toBeInTheDocument()
+    expect(screen.queryByText('分页作品 01')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '第一页' }))
+    expect(await screen.findByText('分页作品 01')).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: '每页' })).not.toBeInTheDocument()
   })
 
   it('restores the selected author after a page reload', async () => {

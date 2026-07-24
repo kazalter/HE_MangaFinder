@@ -2,7 +2,6 @@ from collections.abc import Iterable
 
 from app.core.config import Settings
 from app.providers.base import SourceProvider
-from app.providers.mangadex import MangaDexProvider
 from app.providers.nhentai import NhentaiProvider
 from app.providers.wnacg import WnacgProvider
 
@@ -27,11 +26,6 @@ class ProviderRegistry:
 
 def build_registry(settings: Settings) -> ProviderRegistry:
     providers: list[SourceProvider] = [
-        MangaDexProvider(
-            user_agent=settings.user_agent,
-            use_data_saver=settings.use_data_saver,
-            chapter_languages=settings.chapter_language_list,
-        ),
         WnacgProvider(
             user_agent=settings.user_agent,
             base_urls=settings.wnacg_base_url_list,

@@ -18,7 +18,7 @@ class JobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def enqueue_discovery(self, author_id: int) -> Job:
+    def enqueue_discovery(self, author_id: int, *, trigger: str = "manual") -> Job:
         active = self.session.scalars(
             select(Job).where(
                 Job.kind == DISCOVER_AUTHOR,
@@ -29,8 +29,13 @@ class JobRepository:
             (job for job in active if job.payload.get("author_id") == author_id), None
         )
         if existing:
+            if trigger != "scheduled":
+                existing.payload = {**existing.payload, "trigger": trigger}
             return existing
-        job = Job(kind=DISCOVER_AUTHOR, payload={"author_id": author_id})
+        job = Job(
+            kind=DISCOVER_AUTHOR,
+            payload={"author_id": author_id, "trigger": trigger},
+        )
         self.session.add(job)
         self.session.flush()
         return job

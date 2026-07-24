@@ -39,6 +39,11 @@ class DownloadCreate(BaseModel):
     chapter_id: str = Field(min_length=1, max_length=300)
 
 
+class WorkGroupAuthorRead(BaseModel):
+    id: int
+    name: str
+
+
 class EditionRead(BaseModel):
     work_id: int
     title: str
@@ -53,12 +58,8 @@ class EditionRead(BaseModel):
     confidence: float
     match_method: str
     is_manual: bool
+    authors: list[WorkGroupAuthorRead]
     sources: list[WorkSourceRead]
-
-
-class WorkGroupAuthorRead(BaseModel):
-    id: int
-    name: str
 
 
 class WorkGroupRead(BaseModel):

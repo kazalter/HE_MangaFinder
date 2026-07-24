@@ -1,16 +1,17 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.time import utc_timestamp
-from app.db.models import MergeSuggestion, WorkGroup
+from app.db.models import Author, AuthorWork, MergeSuggestion, WorkGroup
 from app.db.session import get_session
 from app.modules.agent_review.candidates import build_candidate_evidence, evidence_hash
 from app.modules.agent_review.repository import AgentReviewRepository
 from app.modules.agent_review.router import review_read
 from app.modules.agent_review.schemas import CandidateEvidence
 from app.modules.catalog.aggregation import AggregationService
+from app.modules.catalog.exclusions import WorkExclusionService
 from app.modules.catalog.group_repository import WorkGroupRepository
 from app.modules.catalog.pair_identity import candidate_key
 from app.modules.catalog.schemas import (
@@ -44,6 +45,10 @@ def _edition(member: object) -> EditionRead:
         confidence=member.confidence,
         match_method=member.match_method,
         is_manual=member.is_manual,
+        authors=[
+            {"id": author.id, "name": author.name}
+            for author in sorted(work.authors, key=lambda item: item.name.casefold())
+        ],
         sources=[
             WorkSourceRead(
                 provider=source.provider,
@@ -264,6 +269,53 @@ def merge_work_groups(
     merged = AggregationService(session).merge_groups(target, source)
     session.commit()
     return _detail(merged)
+
+
+@router.delete(
+    "/{group_id}/authors/{author_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def exclude_work_group_for_author(
+    group_id: int, author_id: int, session: SessionDep
+) -> Response:
+    repository = WorkGroupRepository(session)
+    group = repository.get(group_id)
+    author = session.get(Author, author_id)
+    if group is None or author is None:
+        raise HTTPException(status_code=404, detail="作品或作者不存在")
+    works = [
+        member.work
+        for member in group.members
+        if session.get(AuthorWork, (author_id, member.work_id)) is not None
+    ]
+    if not works:
+        raise HTTPException(status_code=404, detail="该作品不属于所选作者")
+    service = WorkExclusionService(session)
+    for work in works:
+        service.exclude_work(author, work)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/{group_id}/members/{work_id}/authors/{author_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def exclude_work_group_member_for_author(
+    group_id: int, work_id: int, author_id: int, session: SessionDep
+) -> Response:
+    group = WorkGroupRepository(session).get(group_id)
+    author = session.get(Author, author_id)
+    if group is None or author is None:
+        raise HTTPException(status_code=404, detail="作品或作者不存在")
+    member = next((item for item in group.members if item.work_id == work_id), None)
+    if member is None:
+        raise HTTPException(status_code=404, detail="版本不属于该作品")
+    try:
+        WorkExclusionService(session).exclude_work(author, member.work)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{group_id}/members/{work_id}/split", response_model=WorkGroupDetail)

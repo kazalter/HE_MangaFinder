@@ -1,21 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { AuthorDirectory } from './components/AuthorDirectory'
 import { AuthorSidebar } from './components/AuthorSidebar'
+import { Dashboard } from './components/Dashboard'
 import { MergeReview } from './components/MergeReview'
 import { SocialRadar } from './components/SocialRadar'
 import { SystemSettings } from './components/SystemSettings'
+import { ThemedSelect } from './components/ThemedSelect'
 import { WorkCard } from './components/WorkCard'
 import { WorkCoverTile } from './components/WorkCoverTile'
 import { WorkDetail } from './components/WorkDetail'
 import { WorkListRow } from './components/WorkListRow'
 import { api } from './lib/api'
-import type { AgentStatus, Author, Edition, Job, MergeSuggestion, ReleaseSignal, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkSource } from './types'
+import type { AgentStatus, Author, CatalogEvent, DashboardData, Edition, Job, MergeSuggestion, ReleaseSignal, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkSource } from './types'
 
 type ViewMode = 'cards' | 'covers' | 'list'
 type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
 type WorkSort = 'first' | 'updated' | 'title' | 'year' | 'editions'
 type GroupMode = 'none' | 'author'
-export type LibraryMode = 'works' | 'authors'
+export type LibraryMode = 'overview' | 'works' | 'authors'
 
 const JOB_LABELS: Record<string, string> = {
   discover_author: '作品发现',
@@ -45,6 +47,39 @@ function saveChoice(key: string, value: string) {
 }
 
 const selectedAuthorKey = 'mangafinder:selected-author'
+const standardPageSize = 24
+
+export function calculateCoverColumns(width: number): number {
+  const idealCoverWidth = width < 520 ? 130 : width < 900 ? 145 : width < 1300 ? 165 : 185
+  const gap = width <= 600 ? 13 : 17
+  return Math.max(2, Math.min(12, Math.floor((width + gap) / (idealCoverWidth + gap))))
+}
+const workFilterOptions: readonly { value: WorkFilter, label: string }[] = [
+  { value: 'all', label: '全部作品' }, { value: 'ongoing', label: '连载中' },
+  { value: 'completed', label: '已完结' }, { value: 'multi', label: '多版本' },
+  { value: 'review', label: '待整理' },
+]
+const workSortOptions: readonly { value: WorkSort, label: string }[] = [
+  { value: 'first', label: '作品时间' }, { value: 'updated', label: '最近有新版本' },
+  { value: 'title', label: '标题' }, { value: 'year', label: '年份' },
+  { value: 'editions', label: '版本数' },
+]
+const groupOptions: readonly { value: GroupMode, label: string }[] = [
+  { value: 'none', label: '不分组' }, { value: 'author', label: '按作者' },
+]
+function paginationPages(current: number, total: number): Array<number | string> {
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1)
+  const pages = new Set([1, total, current - 1, current, current + 1])
+  if (current <= 3) [2, 3, 4].forEach((page) => pages.add(page))
+  if (current >= total - 2) [total - 3, total - 2, total - 1].forEach((page) => pages.add(page))
+  const sorted = [...pages].filter((page) => page >= 1 && page <= total).sort((a, b) => a - b)
+  const result: Array<number | string> = []
+  sorted.forEach((page, index) => {
+    if (index > 0 && page - sorted[index - 1] > 1) result.push(`ellipsis-${page}`)
+    result.push(page)
+  })
+  return result
+}
 
 function savedAuthorId(): number | null {
   try {
@@ -101,6 +136,8 @@ export default function App() {
   const [sources, setSources] = useState<Source[]>([])
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
+  const [dashboard, setDashboard] = useState<DashboardData | null>(null)
+  const [discoveryEvents, setDiscoveryEvents] = useState<CatalogEvent[]>([])
   const [openedWork, setOpenedWork] = useState<WorkGroupDetail | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
   const [radarOpen, setRadarOpen] = useState(() => new URLSearchParams(window.location.search).has('radar'))
@@ -113,11 +150,12 @@ export default function App() {
   const [socialSignals, setSocialSignals] = useState<ReleaseSignal[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(savedAuthorId)
   const [previewAuthorId, setPreviewAuthorId] = useState<number | null>(savedAuthorId)
-  const [libraryMode, setLibraryMode] = useState<LibraryMode>(() => (
-    new URLSearchParams(window.location.search).get('view') === 'authors'
-      ? 'authors'
-      : savedChoice('mangafinder:library-mode', ['works', 'authors'], 'works')
-  ))
+  const [libraryMode, setLibraryMode] = useState<LibraryMode>(() => {
+    const requested = new URLSearchParams(window.location.search).get('view')
+    if (requested === 'authors') return 'authors'
+    if (requested === 'overview') return 'overview'
+    return savedChoice('mangafinder:library-mode', ['overview', 'works', 'authors'], 'overview')
+  })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -125,16 +163,21 @@ export default function App() {
   const [workFilter, setWorkFilter] = useState<WorkFilter>('all')
   const [workSort, setWorkSort] = useState<WorkSort>(() => savedChoice('mangafinder:sort-v2', ['first', 'updated', 'title', 'year', 'editions'], 'first'))
   const [groupMode, setGroupMode] = useState<GroupMode>(() => savedChoice('mangafinder:group', ['none', 'author'], 'none'))
+  const [page, setPage] = useState(1)
+  const [pageInput, setPageInput] = useState('1')
+  const [coverColumns, setCoverColumns] = useState(6)
+  const catalogTopRef = useRef<HTMLElement>(null)
   const [dismissedJobThrough, setDismissedJobThrough] = useState(() => {
     try { return Number(window.sessionStorage.getItem('mangafinder:dismissed-job-through') ?? 0) || 0 }
     catch { return 0 }
   })
+  const hasModal = Boolean(openedWork || reviewOpen || radarOpen)
 
   const load = useCallback(async () => {
     try {
       const activeAuthorId = libraryMode === 'works' ? selectedId : null
-      const [nextAuthors, nextWorks, nextJobs, nextSources, nextSuggestions, nextAgentStatus, nextSocialStatus, nextSocialSignals] = await Promise.all([
-        api.authors(), api.workGroups(activeAuthorId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.agentStatus(), api.socialStatus(), api.socialRadar(activeAuthorId ?? undefined),
+      const [nextAuthors, nextWorks, nextJobs, nextSources, nextSuggestions, nextAgentStatus, nextSocialStatus, nextSocialSignals, nextDashboard, nextDiscoveryEvents] = await Promise.all([
+        api.authors(), api.workGroups(activeAuthorId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.agentStatus(), api.socialStatus(), api.socialRadar(activeAuthorId ?? undefined), api.dashboard(), api.discoveryInbox(),
       ])
       setAuthors(nextAuthors)
       setWorks(nextWorks)
@@ -144,6 +187,8 @@ export default function App() {
       setAgentStatus(nextAgentStatus)
       setSocialStatus(nextSocialStatus)
       setSocialSignals(nextSocialSignals)
+      setDashboard(nextDashboard)
+      setDiscoveryEvents(nextDiscoveryEvents)
       if (selectedId !== null && !nextAuthors.some((author) => author.id === selectedId)) {
         setSelectedId(null)
       }
@@ -159,14 +204,37 @@ export default function App() {
   }, [libraryMode, selectedId])
 
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    document.body.classList.toggle('modal-open', hasModal)
+    return () => document.body.classList.remove('modal-open')
+  }, [hasModal])
   useEffect(() => { saveChoice('mangafinder:view', viewMode) }, [viewMode])
   useEffect(() => { saveChoice('mangafinder:sort-v2', workSort) }, [workSort])
   useEffect(() => { saveChoice('mangafinder:group', groupMode) }, [groupMode])
   useEffect(() => { saveChoice('mangafinder:library-mode', libraryMode) }, [libraryMode])
   useEffect(() => { saveAuthorId(selectedId) }, [selectedId])
+  useLayoutEffect(() => {
+    const element = catalogTopRef.current
+    if (!element) return
+    const measure = () => {
+      const width = element.getBoundingClientRect().width
+      if (width <= 0) return
+      const columns = calculateCoverColumns(width)
+      setCoverColumns((current) => current === columns ? current : columns)
+    }
+    measure()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    observer?.observe(element)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [libraryMode, settingsOpen, works.length])
   useEffect(() => {
     const url = new URL(window.location.href)
     if (libraryMode === 'authors') url.searchParams.set('view', 'authors')
+    else if (libraryMode === 'overview') url.searchParams.set('view', 'overview')
     else url.searchParams.delete('view')
     if (libraryMode === 'works' && selectedId !== null) url.searchParams.set('author', String(selectedId))
     else url.searchParams.delete('author')
@@ -206,10 +274,28 @@ export default function App() {
       return new Date(right.latest_source_at ?? 0).getTime() - new Date(left.latest_source_at ?? 0).getTime()
     })
   }, [search, suggestions, workFilter, workSort, works])
+  const pageSize = viewMode === 'covers' ? coverColumns * 4 : standardPageSize
+  const pageCount = Math.max(1, Math.ceil(visibleWorks.length / pageSize))
+  const paginatedWorks = useMemo(
+    () => visibleWorks.slice((page - 1) * pageSize, page * pageSize),
+    [page, pageSize, visibleWorks],
+  )
+  const pageItems = useMemo(() => paginationPages(page, pageCount), [page, pageCount])
+  const previousPageSizeRef = useRef(pageSize)
+  useEffect(() => {
+    const previousPageSize = previousPageSizeRef.current
+    if (previousPageSize === pageSize) return
+    setPage((current) => Math.floor(((current - 1) * previousPageSize) / pageSize) + 1)
+    previousPageSizeRef.current = pageSize
+  }, [pageSize])
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount))
+  }, [pageCount])
+  useEffect(() => { setPageInput(String(page)) }, [page])
   const authorSections = useMemo(() => {
     if (groupMode !== 'author' || selectedId !== null) return []
     const grouped = new Map<string, { id: number, name: string, works: WorkGroup[] }>()
-    for (const work of visibleWorks) {
+    for (const work of paginatedWorks) {
       const workAuthors = work.authors.length ? work.authors : [{ id: 0, name: '未关联作者' }]
       for (const author of workAuthors) {
         const key = `${author.id}:${author.name}`
@@ -219,7 +305,7 @@ export default function App() {
       }
     }
     return [...grouped.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
-  }, [groupMode, selectedId, visibleWorks])
+  }, [groupMode, paginatedWorks, selectedId])
   const activeJobs = jobs.filter((job) => job.status === 'pending' || job.status === 'running')
   const failedJob = jobs.find((job) => (
     job.status === 'failed'
@@ -278,24 +364,65 @@ export default function App() {
     setOpenedWork(null)
   }
 
+  async function excludeEdition(authorId: number, workId: number) {
+    if (!openedWork || !window.confirm('确认这个版本不是该作者的作品？移除后，同一来源不会在刷新时再次添加。')) return
+    await act(() => api.excludeEdition(openedWork.id, workId, authorId))
+    setOpenedWork(null)
+  }
+
+  async function excludeGroup(authorId: number) {
+    if (!openedWork || !window.confirm('确认整部作品都不是该作者的作品？所有相关版本都会移除并加入排除名单。')) return
+    await act(() => api.excludeWorkGroup(openedWork.id, authorId))
+    setOpenedWork(null)
+  }
+
   async function reviewSuggestion(id: number, accept: boolean) {
     await act(() => accept ? api.acceptSuggestion(id) : api.rejectSuggestion(id))
   }
 
+  function changePage(nextPage: number) {
+    const target = Math.max(1, Math.min(nextPage, pageCount))
+    if (target === page) return
+    setPage(target)
+    window.requestAnimationFrame(() => catalogTopRef.current?.scrollIntoView?.({
+      block: 'start',
+      behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    }))
+  }
+
+  function submitPageJump(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const target = Number(pageInput)
+    if (!/^\d+$/.test(pageInput) || !Number.isSafeInteger(target) || target < 1 || target > pageCount) {
+      setPageInput(String(page))
+      return
+    }
+    changePage(target)
+  }
+
+  function showDashboard() {
+    setSettingsOpen(false)
+    setLibraryMode('overview')
+    setSelectedId(null)
+  }
+
   function showAllWorks() {
     setSettingsOpen(false)
+    setPage(1)
     setLibraryMode('works')
     setSelectedId(null)
   }
 
   function showAuthorDirectory() {
     setSettingsOpen(false)
+    setPage(1)
     setLibraryMode('authors')
     setSelectedId(null)
   }
 
   function openAuthorWorks(authorId: number) {
     setSettingsOpen(false)
+    setPage(1)
     setPreviewAuthorId(authorId)
     setLibraryMode('works')
     setSelectedId(authorId)
@@ -304,7 +431,7 @@ export default function App() {
 
   function renderWorks(items: WorkGroup[]) {
     if (viewMode === 'covers') {
-      return <section className="cover-wall">{items.map((work) => <WorkCoverTile work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
+      return <section className="cover-wall" style={{ gridTemplateColumns: `repeat(${coverColumns}, minmax(0, 1fr))` }}>{items.map((work) => <WorkCoverTile work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
     }
     if (viewMode === 'list') {
       return <section className="work-list">{items.map((work) => <WorkListRow work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
@@ -313,7 +440,7 @@ export default function App() {
   }
 
   return (
-    <div className="shell">
+    <div className={`shell${hasModal ? ' modal-active' : ''}`}>
       <AuthorSidebar
         authors={authors}
         sources={sources}
@@ -321,7 +448,7 @@ export default function App() {
         libraryMode={libraryMode}
         busy={busy}
         onSelect={(id) => id === null ? showAllWorks() : openAuthorWorks(id)}
-        onModeChange={(mode) => mode === 'authors' ? showAuthorDirectory() : showAllWorks()}
+        onModeChange={(mode) => mode === 'overview' ? showDashboard() : mode === 'authors' ? showAuthorDirectory() : showAllWorks()}
         onAdd={(name) => act(() => api.createAuthor(name))}
         onRefresh={(id) => act(() => api.refreshAuthor(id))}
         onDelete={async (id) => {
@@ -334,18 +461,32 @@ export default function App() {
         onOpenRadar={() => setRadarOpen(true)}
       />
 
-      <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : ''}>
+      <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : libraryMode === 'overview' ? 'dashboard-main' : ''}>
         {settingsOpen
           ? <SystemSettings onClose={() => setSettingsOpen(false)} />
-          : libraryMode === 'authors'
-            ? <AuthorDirectory
-                authors={authors}
-                works={works}
-                previewAuthorId={previewAuthorId}
-                onPreviewAuthor={setPreviewAuthorId}
-                onOpenAuthor={openAuthorWorks}
-              />
-            : <>
+          : libraryMode === 'overview'
+            ? dashboard
+              ? <Dashboard
+                  data={dashboard}
+                  events={discoveryEvents}
+                  busy={busy}
+                  onReload={() => void load()}
+                  onOpenWork={(id) => void openWork(id)}
+                  onOpenRadar={() => setRadarOpen(true)}
+                  onSetEventState={(id, state) => void act(() => api.updateDiscoveryEvent(id, state))}
+                  onReadAll={() => void act(() => api.updateAllDiscoveryEvents())}
+                  onOpenReviews={() => setReviewOpen(true)}
+                />
+              : <section className="settings-loading"><span className="spinner" /> 正在读取资料库总览…</section>
+            : libraryMode === 'authors'
+              ? <AuthorDirectory
+                  authors={authors}
+                  works={works}
+                  previewAuthorId={previewAuthorId}
+                  onPreviewAuthor={setPreviewAuthorId}
+                  onOpenAuthor={openAuthorWorks}
+                />
+              : <>
         <header className="topbar">
           <div>
             <p className="eyebrow">LIBRARY / DISCOVERY</p>
@@ -356,7 +497,7 @@ export default function App() {
             <button className="radar-button" onClick={() => setRadarOpen(true)}>动态雷达{socialStatus?.unread_count ? <span>{socialStatus.unread_count}</span> : null}</button>
             <div className="search-box">
               <span aria-hidden="true">⌕</span>
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索作品、作者或标签" aria-label="搜索作品" />
+              <input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="搜索作品、作者或标签" aria-label="搜索作品" />
             </div>
           </div>
         </header>
@@ -384,48 +525,48 @@ export default function App() {
           <button onClick={() => void load()} disabled={busy}>刷新视图</button>
         </section>
 
-        {works.length > 0 && <section className="catalog-toolbar" aria-label="作品显示设置">
+        {works.length > 0 && <section className="catalog-toolbar" aria-label="作品显示设置" ref={catalogTopRef}>
           <div className="view-switch" role="group" aria-label="显示方式">
             {([['cards', '信息卡'], ['covers', '封面墙'], ['list', '紧凑列表']] as const).map(([value, label]) => (
               <button className={viewMode === value ? 'active' : ''} onClick={() => setViewMode(value)} aria-pressed={viewMode === value} key={value}>{label}</button>
             ))}
           </div>
-          <label>筛选
-            <select value={workFilter} onChange={(event) => setWorkFilter(event.target.value as WorkFilter)}>
-              <option value="all">全部作品</option>
-              <option value="ongoing">连载中</option>
-              <option value="completed">已完结</option>
-              <option value="multi">多版本</option>
-              <option value="review">待整理</option>
-            </select>
-          </label>
-          <label>排序
-            <select value={workSort} onChange={(event) => setWorkSort(event.target.value as WorkSort)}>
-              <option value="first">作品时间</option>
-              <option value="updated">最近有新版本</option>
-              <option value="title">标题</option>
-              <option value="year">年份</option>
-              <option value="editions">版本数</option>
-            </select>
-          </label>
-          {!selectedAuthor && <label>分组
-            <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as GroupMode)}>
-              <option value="none">不分组</option>
-              <option value="author">按作者</option>
-            </select>
-          </label>}
+          <ThemedSelect label="筛选" value={workFilter} options={workFilterOptions} onChange={(value) => { setWorkFilter(value); setPage(1) }} />
+          <ThemedSelect label="排序" value={workSort} options={workSortOptions} onChange={(value) => { setWorkSort(value); setPage(1) }} />
+          {!selectedAuthor && <ThemedSelect label="分组" value={groupMode} options={groupOptions} onChange={(value) => { setGroupMode(value); setPage(1) }} />}
+          {visibleWorks.length > 0 && <span className="catalog-page-summary">第 {page} / {pageCount} 页 · 共 {visibleWorks.length} 部</span>}
         </section>}
 
-        {visibleWorks.length > 0 ? (
-          authorSections.length > 0 ? (
+        {visibleWorks.length > 0 ? <>
+          {authorSections.length > 0 ? (
             <div className="author-shelves">
               {authorSections.map((section) => <section className="author-shelf" key={section.id}>
                 <header><div><span>{section.name.slice(0, 1).toLocaleUpperCase()}</span><h3>{section.name}</h3></div><small>{section.works.length} 部作品</small></header>
                 {renderWorks(section.works)}
               </section>)}
             </div>
-          ) : renderWorks(visibleWorks)
-        ) : (
+          ) : renderWorks(paginatedWorks)}
+          {pageCount > 1 && <nav className="catalog-pagination" aria-label="作品分页">
+            <div><strong>第 {page} 页</strong><span>共 {pageCount} 页 · {visibleWorks.length} 部作品</span></div>
+            <div className="pagination-actions">
+              <form className="page-jump" onSubmit={submitPageJump}>
+                <label htmlFor="page-jump-input">跳至</label>
+                <input id="page-jump-input" value={pageInput} onChange={(event) => { if (/^\d*$/.test(event.target.value)) setPageInput(event.target.value) }} onFocus={(event) => event.currentTarget.select()} inputMode="numeric" autoComplete="off" aria-label="跳转页码" aria-invalid={pageInput !== '' && (Number(pageInput) < 1 || Number(pageInput) > pageCount)} />
+                <span>页</span>
+                <button disabled={!/^\d+$/.test(pageInput) || Number(pageInput) < 1 || Number(pageInput) > pageCount}>前往</button>
+              </form>
+              <div className="pagination-buttons">
+                <button onClick={() => changePage(1)} disabled={page === 1} aria-label="第一页">首页</button>
+                <button onClick={() => changePage(page - 1)} disabled={page === 1} aria-label="上一页">上一页</button>
+                {pageItems.map((item) => typeof item === 'number'
+                  ? <button className={item === page ? 'active' : ''} onClick={() => changePage(item)} aria-current={item === page ? 'page' : undefined} key={item}>{item}</button>
+                  : <span aria-hidden="true" key={item}>…</span>)}
+                <button onClick={() => changePage(page + 1)} disabled={page === pageCount} aria-label="下一页">下一页</button>
+                <button onClick={() => changePage(pageCount)} disabled={page === pageCount} aria-label="最后一页">末页</button>
+              </div>
+            </div>
+          </nav>}
+        </> : (
           <section className="empty-state">
             <div className="empty-symbol">冊</div>
             <h2>{works.length ? '当前条件下没有作品' : authors.length ? '还没有发现作品' : '从一位作者开始'}</h2>
@@ -434,7 +575,7 @@ export default function App() {
         )}
             </>}
       </main>
-      {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} />}
+      {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} activeAuthorId={selectedId} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)} onExcludeGroup={(authorId) => void excludeGroup(authorId)} />}
       {!settingsOpen && reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
       {!settingsOpen && radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
     </div>

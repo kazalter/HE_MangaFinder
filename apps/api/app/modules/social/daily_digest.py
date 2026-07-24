@@ -91,7 +91,9 @@ class DailyDigestService:
         author_activities = self._recent_activities(period_start, period_end)
         sections: list[tuple[int, str, list[str]]] = []
         for author_id, activities in author_activities.items():
-            digest = await DigestService(self.session, self.settings).refresh(author_id)
+            digest = await DigestService(self.session, self.settings).refresh(
+                author_id, now=period_end
+            )
             if not digest:
                 continue
             recent_post_ids = self._recent_post_ids(author_id, period_start, period_end)

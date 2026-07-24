@@ -418,10 +418,7 @@ class AggregationService:
         group.description = max(descriptions, key=len, default=None)
         preferred_works = sorted(
             works,
-            key=lambda work: (
-                not any(source.provider == "mangadex" for source in work.sources),
-                work.cover_url is None,
-            ),
+            key=lambda work: work.cover_url is None,
         )
         group.cover_url = next(
             (work.cover_url for work in preferred_works if work.cover_url), None

@@ -13,6 +13,8 @@ from app.modules.agent_review.router import router as agent_reviews_router
 from app.modules.authors.router import router as authors_router
 from app.modules.catalog.groups_router import router as groups_router
 from app.modules.catalog.router import router as catalog_router
+from app.modules.catalog.scheduler import CatalogScheduler
+from app.modules.dashboard.router import router as dashboard_router
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.router import router as jobs_router
 from app.modules.jobs.worker import JobWorker
@@ -38,13 +40,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.providers = providers
     app.state.cover_cache = CoverCacheService(settings.cover_cache_dir, providers)
     worker_task = None
+    catalog_scheduler_task = None
     social_scheduler_task = None
     if settings.worker_enabled:
         worker_task = asyncio.create_task(JobWorker(settings, providers).run())
+        catalog_scheduler_task = asyncio.create_task(CatalogScheduler(settings).run())
     if settings.social_enabled:
         social_scheduler_task = asyncio.create_task(SocialScheduler(settings).run())
     yield
-    tasks = [task for task in (worker_task, social_scheduler_task) if task]
+    tasks = [
+        task
+        for task in (worker_task, catalog_scheduler_task, social_scheduler_task)
+        if task
+    ]
     for task in tasks:
         task.cancel()
     if tasks:
@@ -71,6 +79,7 @@ app.include_router(authors_router, prefix="/api")
 app.include_router(agent_reviews_router, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(groups_router, prefix="/api")
+app.include_router(dashboard_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(media_router, prefix="/api")
 app.include_router(sources_router, prefix="/api")

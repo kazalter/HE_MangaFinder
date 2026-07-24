@@ -1,12 +1,21 @@
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.time import utc_timestamp
-from app.db.models import AuthorWork, Work, WorkSource
+from app.db.models import AuthorWork, AuthorWorkExclusion, Work, WorkSource
 from app.providers.base import DiscoveredWork
+
+
+@dataclass(frozen=True)
+class CatalogUpsertResult:
+    work: Work
+    source_created: bool
+    author_link_created: bool
+    metadata_changed: bool
 
 
 class CatalogRepository:
@@ -14,6 +23,11 @@ class CatalogRepository:
         self.session = session
 
     def upsert(self, author_id: int, provider: str, item: DiscoveredWork) -> Work:
+        return self.upsert_with_result(author_id, provider, item).work
+
+    def upsert_with_result(
+        self, author_id: int, provider: str, item: DiscoveredWork
+    ) -> CatalogUpsertResult:
         source = self.session.scalar(
             select(WorkSource)
             .options(selectinload(WorkSource.work))
@@ -22,6 +36,7 @@ class CatalogRepository:
                 WorkSource.external_id == item.external_id,
             )
         )
+        source_created = source is None
         if source is None:
             work = Work(title=item.title)
             source = WorkSource(
@@ -31,8 +46,21 @@ class CatalogRepository:
                 work=work,
             )
             self.session.add(work)
+            metadata_changed = False
         else:
             work = source.work
+            metadata_changed = (
+                work.title != item.title
+                or work.description != item.description
+                or work.cover_url != item.cover_url
+                or work.status != item.status
+                or work.year != item.year
+                or work.language != item.language
+                or work.tags != item.tags
+                or source.source_url != item.source_url
+                or source.raw_metadata != item.raw_metadata
+                or source.source_updated_at != item.source_updated_at
+            )
 
         work.title = item.title
         work.description = item.description
@@ -47,15 +75,31 @@ class CatalogRepository:
         self.session.flush()
 
         link = self.session.get(AuthorWork, (author_id, work.id))
+        author_link_created = link is None
         if link is None:
             self.session.add(AuthorWork(author_id=author_id, work_id=work.id))
-        return work
+        return CatalogUpsertResult(
+            work=work,
+            source_created=source_created,
+            author_link_created=author_link_created,
+            metadata_changed=metadata_changed,
+        )
 
     def get(self, work_id: int) -> Work | None:
         return self.session.scalar(
             select(Work)
             .options(selectinload(Work.sources))
             .where(Work.id == work_id)
+        )
+
+    def excluded_external_ids(self, author_id: int, provider: str) -> set[str]:
+        return set(
+            self.session.scalars(
+                select(AuthorWorkExclusion.external_id).where(
+                    AuthorWorkExclusion.author_id == author_id,
+                    AuthorWorkExclusion.provider == provider,
+                )
+            )
         )
 
     def preferred_author_query_name(

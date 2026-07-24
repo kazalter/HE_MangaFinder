@@ -11,7 +11,7 @@ from app.providers.errors import ProviderError
 
 router = APIRouter(prefix="/works", tags=["media"])
 SessionDep = Annotated[Session, Depends(get_session)]
-_SUPPORTED_PROVIDERS = frozenset({"mangadex", "nhentai", "wnacg"})
+_SUPPORTED_PROVIDERS = frozenset({"nhentai", "wnacg"})
 
 
 @router.get("/{work_id}/cover", response_class=FileResponse)

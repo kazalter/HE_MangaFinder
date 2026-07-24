@@ -50,9 +50,17 @@ class JobWorker:
                 return False
             try:
                 if job.kind == DISCOVER_AUTHOR:
-                    await DiscoveryService(session, self.providers).discover_author(
-                        int(job.payload["author_id"])
-                    )
+                    discovery = DiscoveryService(session, self.providers)
+                    trigger = str(job.payload.get("trigger", "manual"))
+                    if trigger == "manual":
+                        result = await discovery.discover_author(
+                            int(job.payload["author_id"])
+                        )
+                    else:
+                        result = await discovery.discover_author(
+                            int(job.payload["author_id"]), trigger=trigger
+                        )
+                    job.payload = {**job.payload, **result}
                     if (
                         self.settings.agent_review_after_discovery
                         and self.settings.agent_configured

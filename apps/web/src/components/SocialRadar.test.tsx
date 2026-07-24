@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Author, SocialStatus } from '../types'
+import type { Author, ReleaseSignal, SocialStatus, WorkGroup } from '../types'
 import { SocialRadar } from './SocialRadar'
 
 const apiMocks = vi.hoisted(() => ({
@@ -70,6 +70,32 @@ describe('SocialRadar author rail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '账号与同步' }))
     expect(screen.getByText('作者乙 的 X 账号')).toBeInTheDocument()
+  })
+
+  it('creates the large work selector only when a signal is being linked', async () => {
+    const signal: ReleaseSignal = {
+      id: 10, author_id: 1, author_name: '作者甲', kind: 'new_release', title: '新作',
+      event_code: null, booth: null, release_date: null, store_urls: [], confidence: .8,
+      status: 'pending', is_read: false, evidence: [], counter_evidence: [], missing_information: [],
+      linked_group_id: null, reviewed_by: null, created_at: '', updated_at: '', posts: [],
+    }
+    const works = Array.from({ length: 100 }, (_, index): WorkGroup => ({
+      id: index + 1, title: `作品 ${index + 1}`, description: null, cover_url: null, status: null,
+      year: null, language: null, tags: [], first_source_at: null, latest_source_at: null,
+      edition_count: 1, providers: ['wnacg'], authors: [{ id: 1, name: '作者甲' }],
+    }))
+    apiMocks.socialRadar.mockResolvedValue([signal])
+    render(
+      <SocialRadar status={status} signals={[signal]} authors={authors} works={works} selectedAuthorId={1} busy={false} focusSignalId={null}
+        onClose={vi.fn()} onChanged={vi.fn().mockResolvedValue(undefined)} onOpenWork={vi.fn()} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '作品情报' }))
+    await screen.findByRole('heading', { name: '新作' })
+    expect(screen.queryByRole('option', { name: '作品 100' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '关联现有作品' }))
+    expect(screen.getByRole('option', { name: '作品 100' })).toBeInTheDocument()
   })
 
   it('filters the author rail by name or X handle', async () => {

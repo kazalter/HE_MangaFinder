@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,7 +22,7 @@ from app.modules.jobs.schemas import JobRead
 from app.modules.social.availability import PostAvailabilityService
 from app.modules.social.collector import XBrowserCollector
 from app.modules.social.digest import DigestService
-from app.modules.social.media_archive import SocialMediaArchive
+from app.modules.social.media_archive import SocialAvatarArchive, SocialMediaArchive
 from app.modules.social.repository import SocialRepository
 from app.modules.social.schemas import (
     ActivityItemRead,
@@ -68,6 +68,15 @@ def _post_read(post: SocialPost) -> SocialPostRead:
         availability_status=post.availability_status,
         availability_reason=post.availability_reason,
         last_availability_checked_at=post.last_availability_checked_at,
+    )
+
+
+def _account_read(account: SocialAccount) -> SocialAccountRead:
+    avatar_url = (
+        f"/api/social/accounts/{account.id}/avatar" if account.avatar_url else None
+    )
+    return SocialAccountRead.model_validate(account).model_copy(
+        update={"avatar_url": avatar_url}
     )
 
 
@@ -181,7 +190,7 @@ def list_social_accounts(author_id: int, session: SessionDep) -> list[SocialAcco
     if not AuthorRepository(session).get(author_id):
         raise HTTPException(status_code=404, detail="作者不存在")
     return [
-        SocialAccountRead.model_validate(item)
+        _account_read(item)
         for item in SocialRepository(session).accounts_for_author(author_id)
     ]
 
@@ -217,7 +226,9 @@ async def add_social_account(
         if payload.confirmed:
             JobRepository(session).enqueue_social_sync(account.id)
         session.commit()
-        return SocialAccountRead.model_validate(account)
+        if account.avatar_url:
+            await SocialAvatarArchive(get_settings()).archive(account.avatar_url)
+        return _account_read(account)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -255,7 +266,22 @@ def confirm_social_account(
     account.next_sync_at = datetime.now(UTC)
     JobRepository(session).enqueue_social_sync(account.id)
     session.commit()
-    return SocialAccountRead.model_validate(account)
+    return _account_read(account)
+
+
+@router.get("/social/accounts/{account_id}/avatar", response_class=FileResponse)
+async def social_account_avatar(account_id: int, session: SessionDep) -> Response:
+    account = SocialRepository(session).get_account(account_id)
+    if not account or not account.avatar_url:
+        raise HTTPException(status_code=404, detail="社交账号头像不存在")
+    path = await SocialAvatarArchive(get_settings()).archive(account.avatar_url)
+    if not path:
+        raise HTTPException(status_code=502, detail="社交账号头像暂时无法归档")
+    return FileResponse(
+        path,
+        media_type="image/webp",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.delete(
@@ -398,7 +424,7 @@ async def social_post_media(
             media_type=asset.mime_type or "image/webp",
             headers={"Cache-Control": "public, max-age=86400"},
         )
-    return RedirectResponse(source_url, status_code=307)
+    raise HTTPException(status_code=502, detail="帖子图片暂时无法归档")
 
 
 @router.post("/social/posts/{post_id}/verify", response_model=SocialPostRead)

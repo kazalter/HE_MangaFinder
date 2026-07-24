@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.db.base import Base
 from app.db.models import Author, SocialAccount
 from app.modules.authors.repository import AuthorRepository
+from app.modules.authors.router import list_authors
 
 
 def test_author_list_uses_only_confirmed_x_account_avatar() -> None:
@@ -48,3 +49,27 @@ def test_author_list_uses_only_confirmed_x_account_avatar() -> None:
     }
     assert metadata["Confirmed"][0] == "confirmed"
     assert metadata["Suggested"] == (None, None, None, None)
+
+
+def test_author_api_exposes_only_same_origin_avatar_url() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="Local avatar")
+        session.add(author)
+        session.flush()
+        session.add(
+            SocialAccount(
+                author_id=author.id,
+                platform="x",
+                handle="local_avatar",
+                status="confirmed",
+                avatar_url="https://pbs.twimg.com/profile_images/1/avatar.jpg",
+            )
+        )
+        session.commit()
+        author_id = author.id
+
+        result = list_authors(session)
+
+    assert result[0].avatar_url == f"/api/authors/{author_id}/avatar"

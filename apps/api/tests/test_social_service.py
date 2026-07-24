@@ -9,6 +9,7 @@ from app.db.base import Base
 from app.db.models import Author, ReleaseSignal, SocialAccount, SocialPost
 from app.modules.social.collector import CollectorPost
 from app.modules.social.repository import SocialRepository
+from app.modules.social.router import _account_read
 from app.modules.social.schemas import SocialAccountCreate
 from app.modules.social.service import SocialSyncService
 
@@ -19,6 +20,23 @@ def session() -> Session:
     Base.metadata.create_all(engine)
     with Session(engine) as value:
         yield value
+
+
+def test_social_account_api_exposes_only_same_origin_avatar_url(session: Session) -> None:
+    author = Author(name="头像作者")
+    session.add(author)
+    session.flush()
+    account = SocialAccount(
+        author_id=author.id,
+        platform="x",
+        handle="avatar_creator",
+        status="confirmed",
+        avatar_url="https://pbs.twimg.com/profile_images/2/avatar.jpg",
+    )
+    session.add(account)
+    session.flush()
+
+    assert _account_read(account).avatar_url == f"/api/social/accounts/{account.id}/avatar"
 
 
 @pytest.mark.asyncio

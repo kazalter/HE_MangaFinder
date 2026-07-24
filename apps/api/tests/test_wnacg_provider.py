@@ -48,7 +48,26 @@ async def test_falls_back_to_mirror_and_discovers() -> None:
 
     assert [work.external_id for work in works] == ["277305"]
     assert works[0].source_url == "https://www.wnacg.com/photos-index-aid-277305.html"
+    assert works[0].raw_metadata["author_match"] == "creator_credit_exact"
     await client.aclose()
+
+
+def test_only_accepts_exact_leading_creator_credit() -> None:
+    assert WnacgProvider.matches_creator_credit(
+        "(C106) [YD WORKS (YD)] 正确作品 [白杨汉化组]", "YD"
+    )
+    assert WnacgProvider.matches_creator_credit(
+        "[实际作者] 正确作品 [YD汉化]", "实际作者"
+    )
+    assert not WnacgProvider.matches_creator_credit(
+        "[实际作者] 正确作品 [YD汉化]", "YD"
+    )
+    assert not WnacgProvider.matches_creator_credit(
+        "[YD汉化] 只有发布者命中", "YD汉化"
+    )
+    assert not WnacgProvider.matches_creator_credit(
+        "标题正文提到了 YD", "YD"
+    )
 
 
 async def test_downloads_gallery_to_cbz_and_filters_promo(tmp_path: Path) -> None:

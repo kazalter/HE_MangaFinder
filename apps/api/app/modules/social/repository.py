@@ -200,19 +200,22 @@ class SocialRepository:
             )
         )
 
-    def recent_posts_for_author(self, author_id: int, since: datetime) -> list[SocialPost]:
-        return list(
-            self.session.scalars(
-                select(SocialPost)
-                .join(SocialAccount, SocialAccount.id == SocialPost.account_id)
-                .where(
-                    SocialAccount.author_id == author_id,
-                    SocialPost.posted_at >= since,
-                    SocialPost.post_type != "retweet",
-                )
-                .order_by(SocialPost.posted_at)
+    def recent_posts_for_author(
+        self, author_id: int, since: datetime, until: datetime | None = None
+    ) -> list[SocialPost]:
+        statement = (
+            select(SocialPost)
+            .join(SocialAccount, SocialAccount.id == SocialPost.account_id)
+            .where(
+                SocialAccount.author_id == author_id,
+                SocialPost.posted_at >= since,
+                SocialPost.post_type != "retweet",
             )
+            .order_by(SocialPost.posted_at)
         )
+        if until is not None:
+            statement = statement.where(SocialPost.posted_at <= until)
+        return list(self.session.scalars(statement))
 
     def digest_for_period(
         self, author_id: int, period_type: str, period_end: datetime

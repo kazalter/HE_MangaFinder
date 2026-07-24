@@ -10,7 +10,52 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import Author, SocialAccount, SocialMediaAsset, SocialPost
-from app.modules.social.media_archive import SocialMediaArchive
+from app.modules.social import media_archive
+from app.modules.social.media_archive import SocialAvatarArchive, SocialMediaArchive
+
+
+@pytest.mark.asyncio
+async def test_avatar_archive_is_local_and_reused(tmp_path) -> None:
+    source = BytesIO()
+    Image.new("RGB", (1200, 1200), "#445566").save(source, format="PNG")
+    requests = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, content=source.getvalue())
+
+    settings = Settings(social_media_dir=tmp_path, _env_file=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        archive = SocialAvatarArchive(settings, client)
+        first = await archive.archive(
+            "https://pbs.twimg.com/profile_images/42/avatar.jpg"
+        )
+        second = await archive.archive(
+            "https://pbs.twimg.com/profile_images/42/avatar.jpg"
+        )
+
+    assert first == second
+    assert first is not None
+    assert first.parent == tmp_path / "avatars"
+    assert first.read_bytes().startswith(b"RIFF")
+    assert requests == 1
+
+
+def test_social_media_http_client_uses_x_proxy(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(media_archive.httpx, "AsyncClient", fake_client)
+    settings = Settings(x_proxy_url="http://proxy:7890", _env_file=None)
+
+    media_archive._http_client(settings)
+
+    assert captured["proxy"] == "http://proxy:7890"
+    assert captured["follow_redirects"] is True
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.time import utc_timestamp
+from app.core.time import as_utc, utc_timestamp
 from app.db.models import AuthorDigest, SocialPost
 from app.modules.social.activity import assess_activity
 from app.modules.social.repository import SocialRepository
@@ -174,11 +174,17 @@ class DigestService:
         self.settings = settings
         self.repository = SocialRepository(session)
 
-    async def refresh(self, author_id: int, days: int = 7) -> AuthorDigest | None:
-        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    async def refresh(
+        self, author_id: int, days: int = 7, *, now: datetime | None = None
+    ) -> AuthorDigest | None:
+        today = as_utc(now or datetime.now(UTC)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
         period_end = today + timedelta(days=1)
         period_start = period_end - timedelta(days=days)
-        posts = self.repository.recent_posts_for_author(author_id, period_start)
+        posts = self.repository.recent_posts_for_author(
+            author_id, period_start, period_end
+        )
         if not posts:
             return None
         author = self.repository.author(author_id)

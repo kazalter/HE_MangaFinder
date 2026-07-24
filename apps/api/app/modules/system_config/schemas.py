@@ -25,6 +25,11 @@ class AiConfig(BaseModel):
     review_after_discovery: bool
 
 
+class DiscoveryConfig(BaseModel):
+    enabled: bool
+    interval_minutes: int = Field(ge=60, le=10080)
+
+
 class RadarConfig(BaseModel):
     enabled: bool
     sync_interval_minutes: int = Field(ge=5, le=10080)
@@ -86,6 +91,7 @@ class DeploymentStatus(BaseModel):
 
 class SystemConfigRead(BaseModel):
     ai: AiConfig
+    discovery: DiscoveryConfig
     radar: RadarConfig
     notifications: NotificationConfig
     x_session: XSessionStatus
@@ -94,6 +100,7 @@ class SystemConfigRead(BaseModel):
 
 class SystemConfigUpdate(BaseModel):
     ai: AiConfig
+    discovery: DiscoveryConfig
     radar: RadarConfig
     notifications: NotificationConfig
 

@@ -18,6 +18,8 @@ RUNTIME_FIELDS = {
     "agent_temperature",
     "agent_timeout_seconds",
     "agent_review_after_discovery",
+    "catalog_auto_discovery_enabled",
+    "catalog_discovery_interval_minutes",
     "social_enabled",
     "social_sync_interval_minutes",
     "social_event_sync_interval_minutes",

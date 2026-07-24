@@ -1,4 +1,5 @@
 import type { AgentStatus, MergeSuggestion, WorkGroup } from '../types'
+import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { CoverImage } from './CoverImage'
 
 const decisionLabel = {
@@ -53,10 +54,11 @@ export function MergeReview({ suggestions, agentStatus, busy, onRunAgent, onOpen
   onReject: (id: number) => void
   onClose: () => void
 }) {
+  const { closing, requestClose } = useAnimatedClose(onClose)
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div className={`modal-backdrop${closing ? ' is-closing' : ''}`} role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) requestClose() }}>
       <section className="merge-review" role="dialog" aria-modal="true" aria-label="聚合候选审核">
-        <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        <button className="modal-close" onClick={requestClose} aria-label="关闭">×</button>
         <p className="eyebrow">MATCH REVIEW</p>
         <h2>聚合候选</h2>
         <p>这些作品有相似迹象，但证据不足以安全自动合并，请人工确认。</p>

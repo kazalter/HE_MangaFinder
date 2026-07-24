@@ -99,6 +99,24 @@ class AuthorWork(Base):
     discovered_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
+class AuthorWorkExclusion(Base):
+    """A user rejection that prevents one source result from being rediscovered."""
+
+    __tablename__ = "author_work_exclusions"
+    __table_args__ = (UniqueConstraint("author_id", "provider", "external_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    external_id: Mapped[str] = mapped_column(String(300))
+    title: Mapped[str] = mapped_column(String(500))
+    source_url: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(String(80), default="human_rejection")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
 class WorkGroup(Base):
     __tablename__ = "work_groups"
 
@@ -222,6 +240,76 @@ class PairConstraint(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), default=utcnow, onupdate=utcnow
     )
+
+
+class DiscoveryRun(Base):
+    """One auditable catalog scan for an author across all enabled providers."""
+
+    __tablename__ = "discovery_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    trigger: Mapped[str] = mapped_column(String(30), default="manual", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="running", index=True)
+    found_count: Mapped[int] = mapped_column(default=0)
+    new_count: Mapped[int] = mapped_column(default=0)
+    updated_count: Mapped[int] = mapped_column(default=0)
+    excluded_count: Mapped[int] = mapped_column(default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+
+
+class ProviderScanRun(Base):
+    """Provider-level result retained even when another provider makes the job succeed."""
+
+    __tablename__ = "provider_scan_runs"
+    __table_args__ = (UniqueConstraint("discovery_run_id", "provider"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    discovery_run_id: Mapped[int] = mapped_column(
+        ForeignKey("discovery_runs.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    query_name: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(30), default="running", index=True)
+    found_count: Mapped[int] = mapped_column(default=0)
+    new_count: Mapped[int] = mapped_column(default=0)
+    updated_count: Mapped[int] = mapped_column(default=0)
+    excluded_count: Mapped[int] = mapped_column(default=0)
+    duration_ms: Mapped[int] = mapped_column(default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class CatalogEvent(Base):
+    """Durable discovery inbox item and the source of catalog growth statistics."""
+
+    __tablename__ = "catalog_events"
+    __table_args__ = (
+        UniqueConstraint("author_id", "provider", "external_id", "event_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_groups.id", ondelete="SET NULL"), index=True
+    )
+    work_id: Mapped[int | None] = mapped_column(
+        ForeignKey("works.id", ondelete="SET NULL"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    external_id: Mapped[str] = mapped_column(String(300))
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    state: Mapped[str] = mapped_column(String(30), default="unread", index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    read_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class Job(Base):

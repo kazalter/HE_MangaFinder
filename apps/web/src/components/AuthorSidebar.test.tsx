@@ -8,7 +8,7 @@ const authors = [
   { id: 3, name: 'mignon', avatar_url: 'https://pbs.twimg.com/profile_images/mignon.jpg', x_handle: 'mignon', x_display_name: 'mignon', x_last_synced_at: null, x_sync_error: null, created_at: '', last_checked_at: null, work_count: 5 },
 ]
 
-const sources = [{ name: 'mangadex', display_name: 'MangaDex', capabilities: ['search'] }]
+const sources = [{ name: 'wnacg', display_name: 'WNACG', capabilities: ['author_discovery'] }]
 
 function renderSidebar(overrides: Partial<Parameters<typeof AuthorSidebar>[0]> = {}) {
   const props = {
@@ -92,7 +92,7 @@ describe('AuthorSidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认添加' }))
 
     await waitFor(() => expect(onAdd).toHaveBeenCalledWith('新作者'))
-    expect(screen.queryByPlaceholderText('输入要订阅的作者名')).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText('输入要订阅的作者名').closest('.expandable-panel')).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('opens the mobile drawer and closes it with Escape', () => {

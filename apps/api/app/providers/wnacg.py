@@ -1,7 +1,9 @@
 import asyncio
 import html
 import re
+import unicodedata
 import zipfile
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -30,6 +32,18 @@ class WnacgProvider:
         }
     )
     canonical_url = "https://www.wnacg.com"
+
+    _event_prefix_re = re.compile(
+        r"^\s*[（(](?:c\d+[a-z]?|comiket\s*\d+|comic\s*market\s*\d+|"
+        r"ac\d+|comitia\s*\d+|コミティア\s*\d+)[）)]\s*",
+        re.IGNORECASE,
+    )
+    _creator_prefix_re = re.compile(r"^\s*[\[【]([^\]】]{1,160})[\]】]")
+    _non_creator_re = re.compile(
+        r"汉化|漢化|翻译|翻譯|翻訳|扫图|掃圖|嵌字|机翻|機翻|校对|校對|"
+        r"修图|修圖|去码|去碼|無修正|无修正|scan(?:lation)?|translat",
+        re.IGNORECASE,
+    )
 
     _category_names = {
         "cate-1": "同人誌 / 漢化",
@@ -104,10 +118,25 @@ class WnacgProvider:
             page_works, _ = self.parse_search(response.text, base_url)
             works.extend(page_works)
             await asyncio.sleep(0.25)
-        if not works:
-            raise AuthorNotFoundError(f'WNACG 未找到与“{author_name}”相关的作品')
         unique_works = list({work.external_id: work for work in works}.values())
-        return sort_discovered_works(unique_works)
+        verified = [
+            replace(
+                work,
+                raw_metadata={
+                    **work.raw_metadata,
+                    "author_match": "creator_credit_exact",
+                    "author_query": author_name,
+                },
+            )
+            for work in unique_works
+            if self.matches_creator_credit(work.title, author_name)
+        ]
+        if not verified:
+            raise AuthorNotFoundError(
+                f'WNACG 未找到作者署名与“{author_name}”一致的作品；'
+                "仅在汉化组、发布者或标题正文中命中不会导入"
+            )
+        return sort_discovered_works(verified)
 
     async def list_chapters(self, work_external_id: str) -> list[Chapter]:
         self._validate_id(work_external_id)
@@ -278,6 +307,38 @@ class WnacgProvider:
             if (match := re.search(r"[?&]p=(\d+)", str(anchor.get("href") or "")))
         ]
         return works, max(pages, default=1)
+
+    @classmethod
+    def matches_creator_credit(cls, title: str, author_name: str) -> bool:
+        """Only trust an exact leading creator credit, never a scanlator suffix."""
+
+        value = unicodedata.normalize("NFKC", html.unescape(title)).strip()
+        value = cls._event_prefix_re.sub("", value)
+        match = cls._creator_prefix_re.match(value)
+        if match is None:
+            return False
+        credit = " ".join(match.group(1).split()).strip()
+        if not credit or cls._non_creator_re.search(credit):
+            return False
+
+        candidates = {credit}
+        candidates.update(re.findall(r"[（(]([^）)]{1,100})[）)]", credit))
+        without_parenthetical = re.sub(r"[（(][^）)]{1,100}[）)]", " ", credit).strip()
+        if without_parenthetical:
+            candidates.add(without_parenthetical)
+        for value in tuple(candidates):
+            candidates.update(
+                part.strip()
+                for part in re.split(r"[/／|｜,&＆+＋]", value)
+                if part.strip()
+            )
+        expected = cls._identity(author_name)
+        return bool(expected and any(cls._identity(item) == expected for item in candidates))
+
+    @staticmethod
+    def _identity(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+        return re.sub(r"[^\w\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+", "", normalized)
 
     @staticmethod
     def parse_gallery_images(html_text: str) -> list[str]:

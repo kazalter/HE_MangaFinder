@@ -1,8 +1,50 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Work, WorkGroup, WorkSource
+from app.db.models import AuthorWork, Work, WorkGroup, WorkSource
 from app.modules.catalog.aggregation import AggregationService
+
+_RETIRED_PROVIDERS = frozenset({"mangadex"})
+
+
+def remove_retired_provider_sources(session: Session) -> int:
+    """Permanently remove records belonging to providers removed from the application."""
+
+    sources = list(
+        session.scalars(
+            select(WorkSource).where(WorkSource.provider.in_(_RETIRED_PROVIDERS))
+        )
+    )
+    if not sources:
+        return 0
+    works = {source.work_id: source.work for source in sources}
+    affected_group_ids = {
+        work.group_membership.group_id
+        for work in works.values()
+        if work.group_membership is not None
+    }
+    for source in sources:
+        session.delete(source)
+    session.flush()
+    for work in works.values():
+        session.expire(work, ["sources"])
+        if not work.sources:
+            session.execute(delete(AuthorWork).where(AuthorWork.work_id == work.id))
+            session.delete(work)
+    session.flush()
+
+    aggregation = AggregationService(session)
+    for group_id in affected_group_ids:
+        group = session.get(WorkGroup, group_id)
+        if group is None:
+            continue
+        session.expire(group, ["members"])
+        if group.members:
+            aggregation.recompute(group)
+        else:
+            session.delete(group)
+    session.commit()
+    return len(sources)
 
 
 def repair_wnacg_upload_years(session: Session) -> int:

@@ -11,10 +11,10 @@ class Settings(BaseSettings):
     poll_interval_seconds: float = 2.0
     max_job_attempts: int = 3
     worker_enabled: bool = True
+    catalog_auto_discovery_enabled: bool = False
+    catalog_discovery_interval_minutes: int = 1440
     downloads_dir: Path = Path("./data/downloads")
     cover_cache_dir: Path = Path("./data/cover-cache")
-    use_data_saver: bool = True
-    chapter_languages: str = "zh-hans,zh-hant,en,ja"
     wnacg_base_urls: str = (
         "https://www.wnacg.com,https://www.wn08.cfd,"
         "https://www.wn07.cfd,https://www.wn08.shop,https://www.wn07.shop"
@@ -89,10 +89,6 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
-
-    @property
-    def chapter_language_list(self) -> list[str]:
-        return [item.strip() for item in self.chapter_languages.split(",") if item.strip()]
 
     @property
     def wnacg_base_url_list(self) -> list[str]:

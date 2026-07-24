@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type Re
 import { api } from '../lib/api'
 import type { ConfigAuthStatus, ConnectionTestResult, SystemConfig } from '../types'
 
-type Section = 'overview' | 'ai' | 'x' | 'radar' | 'notifications' | 'deployment'
+type Section = 'overview' | 'discovery' | 'ai' | 'x' | 'radar' | 'notifications' | 'deployment'
 
 const sections: Array<{ id: Section, label: string, note: string }> = [
   { id: 'overview', label: '状态概览', note: '连接与待处理项目' },
+  { id: 'discovery', label: '作品发现', note: '自动扫描与刷新周期' },
   { id: 'ai', label: 'AI 模型', note: '审核、判断与摘要' },
   { id: 'x', label: 'X 采集', note: '登录会话与访问检测' },
   { id: 'radar', label: '动态雷达', note: '频率、规则与 OCR' },
@@ -49,8 +50,8 @@ export function SystemSettings({ onClose }: { onClose: () => void }) {
 
   const dirty = useMemo(() => {
     if (!config || !draft) return false
-    return JSON.stringify({ ai: config.ai, radar: config.radar, notifications: config.notifications })
-      !== JSON.stringify({ ai: draft.ai, radar: draft.radar, notifications: draft.notifications })
+    return JSON.stringify({ ai: config.ai, discovery: config.discovery, radar: config.radar, notifications: config.notifications })
+      !== JSON.stringify({ ai: draft.ai, discovery: draft.discovery, radar: draft.radar, notifications: draft.notifications })
   }, [config, draft])
 
   async function loadConfig() {
@@ -94,7 +95,7 @@ export function SystemSettings({ onClose }: { onClose: () => void }) {
     if (!draft) return
     setBusy(true); setError(null); setNotice(null)
     try {
-      const result = await api.saveSystemConfig({ ai: draft.ai, radar: draft.radar, notifications: draft.notifications })
+      const result = await api.saveSystemConfig({ ai: draft.ai, discovery: draft.discovery, radar: draft.radar, notifications: draft.notifications })
       setConfig(result.config); setDraft(structuredClone(result.config))
       setNotice({ ok: true, message: result.changed_keys.length ? '设置已保存' : '没有需要保存的更改' })
     } catch (reason) {
@@ -175,6 +176,17 @@ export function SystemSettings({ onClose }: { onClose: () => void }) {
             <HealthCard label="QQ 通知" value={config.notifications.qq_enabled && config.notifications.qq_client_secret_configured ? '已配置' : '站内通知'} tone={config.notifications.qq_enabled && config.notifications.qq_client_secret_configured ? 'ok' : 'off'} detail={config.notifications.daily_digest_enabled ? `日报每天 ${String(config.notifications.daily_digest_hour).padStart(2, '0')}:00` : '每日摘要未启用'} action={() => setSection('notifications')} />
           </div>
           {config.deployment.social_profile_required && <div className="settings-callout"><strong>采集器尚未连接</strong><p>请先在 Dockge 中启用 social Compose profile。应用页面无法自行启动缺失的 Docker 服务。</p></div>}
+        </>}
+
+        {section === 'discovery' && <>
+          <div className="settings-section-title"><div><span>CATALOG / AUTOMATION</span><h2>作品自动发现</h2><p>定期刷新已订阅作者；每个来源的结果会独立记录，部分失败不会再被隐藏。</p></div></div>
+          <div className="settings-card">
+            <Toggle checked={draft.discovery.enabled} onChange={(enabled) => setDraft({ ...draft, discovery: { ...draft.discovery, enabled } })} label="启用自动作品扫描" note="开启后，达到刷新周期的作者会自动加入后台队列" />
+            <div className="settings-form-grid">
+              <Field label="刷新周期（分钟）" note="建议 1440 分钟；最短 60 分钟，避免给来源造成压力"><input type="number" min="60" max="10080" value={draft.discovery.interval_minutes} onChange={(event) => setDraft({ ...draft, discovery: { ...draft.discovery, interval_minutes: Number(event.target.value) } })} /></Field>
+            </div>
+            <p className="setting-help">手动刷新仍可随时使用。来源失败会单独退避到下一个周期，并在总览的来源健康度中展示。</p>
+          </div>
         </>}
 
         {section === 'ai' && <>

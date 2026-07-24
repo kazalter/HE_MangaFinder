@@ -19,6 +19,7 @@ from app.modules.system_config.schemas import (
     AiConnectionInput,
     ConnectionTestResult,
     DeploymentStatus,
+    DiscoveryConfig,
     NotificationConfig,
     QqConnectionInput,
     RadarConfig,
@@ -41,6 +42,13 @@ def _ai(settings: Settings) -> AiConfig:
         temperature=settings.agent_temperature,
         timeout_seconds=settings.agent_timeout_seconds,
         review_after_discovery=settings.agent_review_after_discovery,
+    )
+
+
+def _discovery(settings: Settings) -> DiscoveryConfig:
+    return DiscoveryConfig(
+        enabled=settings.catalog_auto_discovery_enabled,
+        interval_minutes=settings.catalog_discovery_interval_minutes,
     )
 
 
@@ -112,6 +120,7 @@ async def read_config(
     x_status = await _x_status(settings)
     return SystemConfigRead(
         ai=_ai(settings),
+        discovery=_discovery(settings),
         radar=_radar(settings),
         notifications=_notifications(settings),
         x_session=x_status,
@@ -139,6 +148,8 @@ def _values(payload: SystemConfigUpdate) -> dict[str, Any]:
         "agent_temperature": payload.ai.temperature,
         "agent_timeout_seconds": payload.ai.timeout_seconds,
         "agent_review_after_discovery": payload.ai.review_after_discovery,
+        "catalog_auto_discovery_enabled": payload.discovery.enabled,
+        "catalog_discovery_interval_minutes": payload.discovery.interval_minutes,
         "social_enabled": payload.radar.enabled,
         "social_sync_interval_minutes": payload.radar.sync_interval_minutes,
         "social_event_sync_interval_minutes": payload.radar.event_sync_interval_minutes,

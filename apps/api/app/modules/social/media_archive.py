@@ -1,4 +1,6 @@
 import logging
+import os
+import tempfile
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
@@ -23,6 +25,99 @@ from app.db.models import (
 logger = logging.getLogger(__name__)
 ALLOWED_MEDIA_HOSTS = {"pbs.twimg.com"}
 MAX_SOURCE_BYTES = 32 * 1024 * 1024
+MAX_AVATAR_BYTES = 8 * 1024 * 1024
+
+
+def _http_client(settings: Settings) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=30,
+        follow_redirects=True,
+        proxy=settings.x_proxy_url or None,
+    )
+
+
+def _encode_webp(
+    raw: bytes, maximum_dimension: int, quality: int
+) -> tuple[bytes, int, int]:
+    with Image.open(BytesIO(raw)) as opened:
+        opened.load()
+        image = ImageOps.exif_transpose(opened)
+        if image.mode not in {"RGB", "RGBA"}:
+            image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+        maximum = max(320, maximum_dimension)
+        image.thumbnail((maximum, maximum), Image.Resampling.LANCZOS)
+        width, height = image.size
+        output = BytesIO()
+        image.save(
+            output,
+            format="WEBP",
+            quality=min(95, max(40, quality)),
+            method=6,
+        )
+        return output.getvalue(), width, height
+
+
+def _write_atomically(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(content)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+class SocialAvatarArchive:
+    """Small durable avatar cache stored alongside the HDD-backed social archive."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.settings = settings
+        self.client = client
+        self.avatar_dir = settings.social_media_dir / "avatars"
+        self.avatar_dir.mkdir(parents=True, exist_ok=True)
+
+    def local_file(self, source_url: str) -> Path | None:
+        path = self.avatar_dir / f"{sha256(source_url.encode()).hexdigest()}.webp"
+        return path if path.is_file() else None
+
+    async def archive(self, source_url: str) -> Path | None:
+        parsed = urlparse(source_url)
+        if parsed.scheme != "https" or parsed.hostname not in ALLOWED_MEDIA_HOSTS:
+            return None
+        existing = self.local_file(source_url)
+        if existing:
+            return existing
+
+        owns_client = self.client is None
+        client = self.client or _http_client(self.settings)
+        try:
+            response = await client.get(
+                source_url, headers={"User-Agent": self.settings.user_agent}
+            )
+            response.raise_for_status()
+            if len(response.content) > MAX_AVATAR_BYTES:
+                raise ValueError("头像超过 8 MB 归档上限")
+            encoded, _, _ = _encode_webp(
+                response.content,
+                min(800, self.settings.social_media_max_dimension),
+                self.settings.social_media_webp_quality,
+            )
+            path = self.avatar_dir / f"{sha256(source_url.encode()).hexdigest()}.webp"
+            if not path.exists():
+                _write_atomically(path, encoded)
+            return path
+        except Exception as exc:
+            logger.info("Social avatar archive skipped %s: %s", source_url, exc)
+            return None
+        finally:
+            if owns_client:
+                await client.aclose()
 
 
 class SocialMediaArchive:
@@ -104,7 +199,7 @@ class SocialMediaArchive:
             return asset
 
         owns_client = self.client is None
-        client = self.client or httpx.AsyncClient(timeout=30, follow_redirects=True)
+        client = self.client or _http_client(self.settings)
         try:
             response = await client.get(
                 source_url, headers={"User-Agent": self.settings.user_agent}
@@ -118,7 +213,7 @@ class SocialMediaArchive:
             filename = f"archive/{post_id}-{media_index}-{digest[:20]}.webp"
             path = self.settings.social_media_dir / filename
             if not path.exists():
-                path.write_bytes(encoded)
+                _write_atomically(path, encoded)
             asset.local_path = filename
             asset.content_hash = digest
             asset.mime_type = "image/webp"
@@ -147,22 +242,11 @@ class SocialMediaArchive:
         return asset
 
     def _encode(self, raw: bytes) -> tuple[bytes, int, int]:
-        with Image.open(BytesIO(raw)) as opened:
-            opened.load()
-            image = ImageOps.exif_transpose(opened)
-            if image.mode not in {"RGB", "RGBA"}:
-                image = image.convert("RGBA" if "transparency" in image.info else "RGB")
-            maximum = max(320, self.settings.social_media_max_dimension)
-            image.thumbnail((maximum, maximum), Image.Resampling.LANCZOS)
-            width, height = image.size
-            output = BytesIO()
-            image.save(
-                output,
-                format="WEBP",
-                quality=min(95, max(40, self.settings.social_media_webp_quality)),
-                method=6,
-            )
-            return output.getvalue(), width, height
+        return _encode_webp(
+            raw,
+            self.settings.social_media_max_dimension,
+            self.settings.social_media_webp_quality,
+        )
 
     def pin_post(self, post_id: int, importance: str = "high") -> None:
         assets = self.session.scalars(

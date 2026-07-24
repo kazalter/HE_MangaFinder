@@ -3,6 +3,7 @@ import {
   BookOpenText,
   CaretDoubleLeft,
   CaretDoubleRight,
+  ChartBar,
   Check,
   Crosshair,
   GearSix,
@@ -17,8 +18,11 @@ import {
   X,
 } from '@phosphor-icons/react'
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { flushSync } from 'react-dom'
 import type { LibraryMode } from '../App'
+import mangaFinderMark from '../assets/mangafinder-mark.png'
 import type { Author, Source } from '../types'
+import { ExpandablePanel } from './ExpandablePanel'
 
 const sidebarExpandedKey = 'mangafinder:library-sidebar-expanded'
 const pinnedAuthorsKey = 'mangafinder:pinned-authors'
@@ -80,6 +84,7 @@ export function AuthorSidebar({
   const [pinnedIds, setPinnedIds] = useState<number[] | null>(initialPinnedAuthors)
   const sidebarRef = useRef<HTMLElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const addInputRef = useRef<HTMLInputElement>(null)
   const expandButtonRef = useRef<HTMLButtonElement>(null)
   const collapseButtonRef = useRef<HTMLButtonElement>(null)
 
@@ -111,6 +116,11 @@ export function AuthorSidebar({
     try { localStorage.setItem(sidebarExpandedKey, String(expanded)) }
     catch { /* The navigation remains functional without preference storage. */ }
   }, [expanded])
+
+  useEffect(() => {
+    if (!addOpen) return
+    window.requestAnimationFrame(() => addInputRef.current?.focus())
+  }, [addOpen])
 
   useEffect(() => {
     if (pinnedIds === null) return
@@ -190,14 +200,27 @@ export function AuthorSidebar({
     })
   }
 
+  function updateSidebarState(nextExpanded: boolean, focusTarget: () => HTMLElement | null) {
+    const update = () => flushSync(() => setExpanded(nextExpanded))
+    const transitionDocument = document as Document & {
+      startViewTransition?: (callback: () => void) => { finished: Promise<void> }
+    }
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    if (!transitionDocument.startViewTransition || reduceMotion) {
+      update()
+      window.requestAnimationFrame(() => focusTarget()?.focus())
+      return
+    }
+    const transition = transitionDocument.startViewTransition(update)
+    void transition.finished.finally(() => focusTarget()?.focus())
+  }
+
   function collapseSidebar() {
-    setExpanded(false)
-    window.requestAnimationFrame(() => expandButtonRef.current?.focus())
+    updateSidebarState(false, () => expandButtonRef.current)
   }
 
   function expandSidebar() {
-    setExpanded(true)
-    window.requestAnimationFrame(() => collapseButtonRef.current?.focus())
+    updateSidebarState(true, () => collapseButtonRef.current)
   }
 
   function authorRow(author: Author, pinned = false) {
@@ -241,7 +264,9 @@ export function AuthorSidebar({
       >
         <div className="sidebar-expanded-content">
           <header className="library-brand-row">
-            <span className="library-brand-mark" aria-hidden="true">漫</span>
+            <span className="library-brand-mark" aria-hidden="true">
+              <img src={mangaFinderMark} alt="" />
+            </span>
             <div><strong>MangaFinder</strong><small>作者作品雷达</small></div>
             <button
               ref={collapseButtonRef}
@@ -253,6 +278,7 @@ export function AuthorSidebar({
           </header>
 
           <div className="library-tabs" role="group" aria-label="资料库范围">
+            <button className={libraryMode === 'overview' && !settingsActive ? 'active' : ''} onClick={() => onModeChange('overview')}>总览</button>
             <button className={libraryMode === 'works' && !settingsActive ? 'active' : ''} onClick={() => onModeChange('works')}>作品</button>
             <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={focusAuthors}>作者 <span>{authors.length}</span></button>
           </div>
@@ -269,14 +295,16 @@ export function AuthorSidebar({
                 <span className="sr-only">搜索作者</span>
                 <input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：浅野一二〇" />
               </label>
-              <button className={addOpen ? 'active' : ''} onClick={() => setAddOpen((value) => !value)} aria-label={addOpen ? '取消添加作者' : '添加作者'} aria-expanded={addOpen}>
-                {addOpen ? <X size={20} /> : <Plus size={20} />}
+              <button className={addOpen ? 'active' : ''} onClick={() => setAddOpen((value) => !value)} aria-label={addOpen ? '取消添加作者' : '添加作者'} aria-expanded={addOpen} aria-controls="library-add-panel">
+                <Plus size={20} />
               </button>
             </div>
-            {addOpen && <form className="library-add-form" onSubmit={submit}>
-              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="输入要订阅的作者名" maxLength={200} autoFocus />
-              <button disabled={busy || !name.trim()}>确认添加</button>
-            </form>}
+            <ExpandablePanel open={addOpen} className="library-add-panel">
+              <form className="library-add-form" id="library-add-panel" onSubmit={submit}>
+                <input ref={addInputRef} value={name} onChange={(event) => setName(event.target.value)} placeholder="输入要订阅的作者名" maxLength={200} />
+                <button disabled={busy || !name.trim()}>确认添加</button>
+              </form>
+            </ExpandablePanel>
           </section>
 
           <div className="library-author-scroll">
@@ -311,9 +339,12 @@ export function AuthorSidebar({
         </div>
 
         <div className="sidebar-collapsed-content">
-          <span className="library-brand-mark" aria-label="MangaFinder">漫</span>
+          <span className="library-brand-mark" aria-label="MangaFinder">
+            <img src={mangaFinderMark} alt="" />
+          </span>
           <button ref={expandButtonRef} onClick={expandSidebar} aria-label="展开资料库导航" title="展开资料库导航"><CaretDoubleRight size={21} /></button>
           <nav aria-label="快捷导航">
+            <button className={libraryMode === 'overview' && !settingsActive ? 'active' : ''} onClick={() => onModeChange('overview')} aria-label="资料库总览" title="资料库总览"><ChartBar size={21} /></button>
             <button className={libraryMode === 'works' && selectedId === null && !settingsActive ? 'active' : ''} onClick={() => selectAuthor(null)} aria-label="全部作品" title="全部作品"><SquaresFour size={21} /></button>
             <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={focusAuthors} aria-label="作者" title="作者"><User size={22} /></button>
             <button onClick={onOpenRadar} aria-label="动态雷达" title="动态雷达"><Crosshair size={22} /></button>

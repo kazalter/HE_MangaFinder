@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { MergeSuggestion, WorkGroup } from '../types'
 import { MergeReview } from './MergeReview'
@@ -68,5 +68,20 @@ describe('MergeReview', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '查看《作品 B》的作品详情' }))
     expect(onOpenGroup).toHaveBeenCalledWith(22)
+  })
+
+  it('plays its closing state before unmounting', () => {
+    vi.useFakeTimers()
+    const onClose = vi.fn()
+    const { container } = render(
+      <MergeReview suggestions={[]} agentStatus={null} busy={false} onRunAgent={vi.fn()} onOpenGroup={vi.fn()} onAccept={vi.fn()} onReject={vi.fn()} onClose={onClose} />,
+    )
+
+    fireEvent.click(within(container).getByRole('button', { name: '关闭' }))
+    expect(container.querySelector('.modal-backdrop')).toHaveClass('is-closing')
+    expect(onClose).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(180))
+    expect(onClose).toHaveBeenCalledOnce()
+    vi.useRealTimers()
   })
 })

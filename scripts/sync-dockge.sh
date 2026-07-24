@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${DOCKGE_STACK_DIR:-/opt/stacks/mangafinder}"
 
 if [[ "${1:-}" == "--build-web" ]]; then
-  npm ci --prefix "$ROOT_DIR/apps/web"
-  npm run build --prefix "$ROOT_DIR/apps/web"
+  npm ci --include=dev --prefix "$ROOT_DIR/apps/web"
+  NODE_ENV=production npm run build --prefix "$ROOT_DIR/apps/web"
 fi
 
 mkdir -p "$TARGET_DIR/data"

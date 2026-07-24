@@ -21,7 +21,7 @@ from app.modules.social.activity import ActivityService
 from app.modules.social.agent import SocialReleaseReviewer
 from app.modules.social.collector import CollectorPost, XBrowserCollector
 from app.modules.social.digest import DigestService
-from app.modules.social.media_archive import SocialMediaArchive
+from app.modules.social.media_archive import SocialAvatarArchive, SocialMediaArchive
 from app.modules.social.ocr import LocalMediaOcr
 from app.modules.social.repository import SocialRepository
 from app.modules.social.rules import RuleAssessment, assess_post, cluster_key
@@ -54,6 +54,8 @@ class SocialSyncService:
                 account.display_name = profile.display_name or account.display_name
                 account.profile_url = profile.profile_url or account.profile_url
                 account.avatar_url = profile.avatar_url or account.avatar_url
+            if account.avatar_url:
+                await SocialAvatarArchive(self.settings).archive(account.avatar_url)
             incoming = await collector.posts(
                 account.handle,
                 account.last_post_id,

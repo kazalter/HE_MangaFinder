@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Edition, WorkGroup, WorkGroupDetail, WorkSource } from '../types'
+import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { CoverImage } from './CoverImage'
 
 interface Props {
@@ -7,28 +8,36 @@ interface Props {
   allGroups: WorkGroup[]
   busy: boolean
   enabledProviders: string[]
+  activeAuthorId: number | null
   onClose: () => void
   onDownload: (edition: Edition, source: WorkSource) => void
   onSplit: (workId: number) => void
   onMerge: (targetGroupId: number) => void
+  onExcludeEdition: (authorId: number, workId: number) => void
+  onExcludeGroup: (authorId: number) => void
 }
 
 function displayDate(value: string | null) {
   return value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(new Date(value)) : '日期未知'
 }
 
-export function WorkDetail({ group, allGroups, busy, enabledProviders, onClose, onDownload, onSplit, onMerge }: Props) {
+export function WorkDetail({ group, allGroups, busy, enabledProviders, activeAuthorId, onClose, onDownload, onSplit, onMerge, onExcludeEdition, onExcludeGroup }: Props) {
+  const { closing, requestClose } = useAnimatedClose(onClose)
   const [provider, setProvider] = useState('all')
   const [mergeTarget, setMergeTarget] = useState('')
+  const [exclusionAuthor, setExclusionAuthor] = useState(() => {
+    if (activeAuthorId && group.authors.some((author) => author.id === activeAuthorId)) return String(activeAuthorId)
+    return group.authors.length === 1 ? String(group.authors[0].id) : ''
+  })
   const providers = group.providers
   const editions = useMemo(() => group.editions.filter((edition) => (
     provider === 'all' || edition.sources.some((source) => source.provider === provider)
   )), [group.editions, provider])
 
   return (
-    <div className="modal-backdrop work-detail-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className={`modal-backdrop work-detail-backdrop${closing ? ' is-closing' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
       <section className="work-detail" role="dialog" aria-modal="true" aria-label={`${group.title} 版本详情`}>
-        <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        <button className="modal-close" onClick={requestClose} aria-label="关闭">×</button>
         <header className="detail-header">
           <CoverImage src={group.cover_url} alt={`${group.title} 封面`} fallback={<div className="detail-cover-empty">冊</div>} />
           <div>
@@ -69,11 +78,23 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, onClose, 
                     </div>
                   ))}
                 </div>
-                {group.edition_count > 1 && <button className="split-link" disabled={busy} onClick={() => onSplit(edition.work_id)}>聚合有误？拆分此版本</button>}
+                <div className="edition-correction-actions">
+                  {group.edition_count > 1 && <button className="split-link" disabled={busy} onClick={() => onSplit(edition.work_id)}>聚合有误？拆分此版本</button>}
+                  {exclusionAuthor && edition.authors.some((author) => author.id === Number(exclusionAuthor)) && <button className="exclude-link" disabled={busy} onClick={() => onExcludeEdition(Number(exclusionAuthor), edition.work_id)}>不是该作者的版本</button>}
+                </div>
               </div>
             </article>
           ))}
         </div>
+
+        {group.authors.length > 0 && <section className="exclusion-panel">
+          <div><strong>纠正误收录</strong><small>移除后会记入排除名单，今后刷新不会再次自动添加同一来源。</small></div>
+          <select value={exclusionAuthor} onChange={(event) => setExclusionAuthor(event.target.value)} aria-label="选择要纠正的作者">
+            <option value="">选择作者…</option>
+            {group.authors.map((author) => <option value={author.id} key={author.id}>{author.name}</option>)}
+          </select>
+          <button className="danger" disabled={!exclusionAuthor || busy} onClick={() => onExcludeGroup(Number(exclusionAuthor))}>整部都不是该作者作品</button>
+        </section>}
 
         <footer className="manual-merge">
           <div><strong>人工合并</strong><small>自动算法漏掉时，可把当前作品并入另一部作品；此操作会被保护。</small></div>

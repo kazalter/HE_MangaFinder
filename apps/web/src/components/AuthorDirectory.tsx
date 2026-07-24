@@ -8,8 +8,15 @@ import {
 } from '@phosphor-icons/react'
 import { useMemo, useState } from 'react'
 import type { Author, WorkGroup } from '../types'
+import { ThemedSelect } from './ThemedSelect'
 
 type AuthorSort = 'recent' | 'name' | 'works'
+
+const authorSortOptions: readonly { value: AuthorSort, label: string }[] = [
+  { value: 'recent', label: '最近动态' },
+  { value: 'name', label: '作者名称' },
+  { value: 'works', label: '作品数量' },
+]
 
 interface Props {
   authors: Author[]
@@ -112,14 +119,7 @@ export function AuthorDirectory({
                 placeholder="搜索作者名称或 @handle"
               />
             </label>
-            <label className="author-directory-sort">
-              <span>排序</span>
-              <select value={sort} onChange={(event) => setSort(event.target.value as AuthorSort)}>
-                <option value="recent">最近动态</option>
-                <option value="name">作者名称</option>
-                <option value="works">作品数量</option>
-              </select>
-            </label>
+            <ThemedSelect label="排序" value={sort} options={authorSortOptions} onChange={setSort} />
           </div>
 
           <div className="author-index-head" aria-hidden="true">

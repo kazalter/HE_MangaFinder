@@ -61,6 +61,7 @@ export interface Edition {
   confidence: number
   match_method: string
   is_manual: boolean
+  authors: Pick<Author, 'id' | 'name'>[]
   sources: WorkSource[]
 }
 
@@ -245,6 +246,11 @@ export interface AiConfig {
   review_after_discovery: boolean
 }
 
+export interface DiscoveryConfig {
+  enabled: boolean
+  interval_minutes: number
+}
+
 export interface RadarConfig {
   enabled: boolean
   sync_interval_minutes: number
@@ -280,6 +286,7 @@ export interface NotificationConfig {
 
 export interface SystemConfig {
   ai: AiConfig
+  discovery: DiscoveryConfig
   radar: RadarConfig
   notifications: NotificationConfig
   x_session: {
@@ -300,6 +307,74 @@ export interface SystemConfig {
     database_url: string
     restart_required_fields: string[]
   }
+}
+
+export interface DashboardSummary {
+  authors: number
+  works: number
+  editions: number
+  new_works: number
+  new_editions: number
+  unread_discoveries: number
+  pending_merges: number
+  pending_signals: number
+  failed_provider_scans: number
+  incomplete_works: number
+}
+
+export interface DashboardTrendPoint {
+  date: string
+  works: number
+  editions: number
+}
+
+export interface SourceHealth {
+  provider: string
+  scans: number
+  succeeded: number
+  failed: number
+  success_rate: number
+  new_items: number
+  average_duration_ms: number
+  last_success_at: string | null
+  last_error: string | null
+}
+
+export interface UpcomingRelease {
+  id: number
+  author_id: number
+  author_name: string
+  title: string | null
+  kind: string
+  status: string
+  release_date: string
+  event_code: string | null
+  booth: string | null
+  linked_group_id: number | null
+}
+
+export interface DashboardData {
+  period_days: number
+  summary: DashboardSummary
+  trend: DashboardTrendPoint[]
+  source_health: SourceHealth[]
+  upcoming: UpcomingRelease[]
+}
+
+export interface CatalogEvent {
+  id: number
+  author_id: number
+  author_name: string
+  group_id: number | null
+  work_id: number | null
+  provider: string
+  external_id: string
+  event_type: 'work_discovered' | 'edition_discovered'
+  title: string
+  cover_url: string | null
+  state: 'unread' | 'read' | 'interested' | 'ignored'
+  created_at: string
+  read_at: string | null
 }
 
 export interface ConnectionTestResult {

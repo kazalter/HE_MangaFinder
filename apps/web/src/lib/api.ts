@@ -1,4 +1,4 @@
-import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, Chapter, ConfigAuthStatus, ConnectionTestResult, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail } from '../types'
+import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail } from '../types'
 
 function cookie(name: string): string | undefined {
   return document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -40,6 +40,10 @@ export const api = {
     }),
   splitEdition: (groupId: number, workId: number) =>
     request<WorkGroupDetail>(`/work-groups/${groupId}/members/${workId}/split`, { method: 'POST' }),
+  excludeWorkGroup: (groupId: number, authorId: number) =>
+    request<void>(`/work-groups/${groupId}/authors/${authorId}`, { method: 'DELETE' }),
+  excludeEdition: (groupId: number, workId: number, authorId: number) =>
+    request<void>(`/work-groups/${groupId}/members/${workId}/authors/${authorId}`, { method: 'DELETE' }),
   mergeSuggestions: () => request<MergeSuggestion[]>('/work-groups/suggestions'),
   acceptSuggestion: (id: number) =>
     request<WorkGroupDetail>(`/work-groups/suggestions/${id}/accept`, { method: 'POST' }),
@@ -53,6 +57,17 @@ export const api = {
     }),
   jobs: () => request<Job[]>('/jobs?limit=10'),
   sources: () => request<Source[]>('/sources'),
+  dashboard: (days = 30) => request<DashboardData>(`/dashboard?days=${days}`),
+  discoveryInbox: (state = 'unread') =>
+    request<CatalogEvent[]>(`/discovery-inbox?state=${encodeURIComponent(state)}`),
+  updateDiscoveryEvent: (id: number, state: CatalogEvent['state']) =>
+    request<void>(`/discovery-inbox/${id}`, {
+      method: 'PATCH', body: JSON.stringify({ state }),
+    }),
+  updateAllDiscoveryEvents: (state: 'read' | 'ignored' = 'read') =>
+    request<{ changed: number }>('/discovery-inbox/bulk', {
+      method: 'POST', body: JSON.stringify({ state }),
+    }),
   chapters: (workId: number, provider: string) =>
     request<Chapter[]>(`/works/${workId}/chapters?provider=${encodeURIComponent(provider)}`),
   downloadChapter: (workId: number, provider: string, chapterId: string) =>
@@ -116,7 +131,7 @@ export const api = {
     request<ConfigAuthStatus>('/system-config/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
   logoutConfigAdmin: () => request<void>('/system-config/auth/logout', { method: 'POST' }),
   systemConfig: () => request<SystemConfig>('/system-config'),
-  saveSystemConfig: (config: Pick<SystemConfig, 'ai' | 'radar' | 'notifications'>) =>
+  saveSystemConfig: (config: Pick<SystemConfig, 'ai' | 'discovery' | 'radar' | 'notifications'>) =>
     request<{ config: SystemConfig, changed_keys: string[], restart_required_fields: string[] }>('/system-config', {
       method: 'PUT', body: JSON.stringify(config),
     }),

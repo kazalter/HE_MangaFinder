@@ -8,14 +8,14 @@ describe('WorkCard', () => {
       id: 1, title: '测试漫画', description: '简介', cover_url: null,
       status: 'ongoing', year: 2026, language: 'ja', tags: ['Drama'],
       first_source_at: '2025-01-01T00:00:00Z', latest_source_at: '2026-01-01T00:00:00Z', edition_count: 3,
-      providers: ['mangadex', 'wnacg'],
+      providers: ['nhentai', 'wnacg'],
       authors: [{ id: 1, name: '测试作者' }],
     }} />)
     expect(screen.getByText('测试漫画')).toBeInTheDocument()
     expect(screen.getByText('连载中')).toBeInTheDocument()
     expect(screen.getByText('3 个版本')).toBeInTheDocument()
     expect(screen.getByText('测试作者')).toBeInTheDocument()
-    expect(screen.getByText('mangadex')).toBeInTheDocument()
+    expect(screen.getByText('nhentai')).toBeInTheDocument()
     expect(screen.getByText('wnacg')).toBeInTheDocument()
   })
 

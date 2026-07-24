@@ -1,0 +1,28 @@
+{
+  "state": {
+    "row": {
+      "left": 383.59375,
+      "top": 583.625,
+      "right": 1405,
+      "bottom": 815.125,
+      "width": 1021.40625,
+      "height": 231.5
+    },
+    "cover": {
+      "left": 392.59375,
+      "top": 597.625,
+      "right": 542.59375,
+      "bottom": 800.125,
+      "width": 150,
+      "height": 202.5
+    },
+    "expandedInPlace": true,
+    "withinViewport": true,
+    "floatingPreviewAbsent": true
+  },
+  "interactions": {
+    "detailOpened": true,
+    "previewClosedAfterOpen": true
+  },
+  "browserErrors": []
+}
