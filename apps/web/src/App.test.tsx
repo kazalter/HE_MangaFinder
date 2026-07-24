@@ -131,7 +131,8 @@ describe('catalog views', () => {
 
     expect(await screen.findByText('分页作品 01')).toBeInTheDocument()
     expect(screen.queryByText('分页作品 25')).not.toBeInTheDocument()
-    expect(screen.getByText('第 1 / 2 页 · 共 30 部')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '第 1 / 2 页' }))
+    expect(screen.getByRole('listbox', { name: '可选页码' })).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('跳转页码'), { target: { value: '2' } })
     fireEvent.click(screen.getByRole('button', { name: '前往' }))

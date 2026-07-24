@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AuthorDirectory } from './components/AuthorDirectory'
 import { AuthorSidebar } from './components/AuthorSidebar'
 import { Dashboard } from './components/Dashboard'
 import { MergeReview } from './components/MergeReview'
+import { PageSelector } from './components/PageSelector'
 import { SocialRadar } from './components/SocialRadar'
 import { SystemSettings } from './components/SystemSettings'
 import { ThemedSelect } from './components/ThemedSelect'
@@ -67,20 +68,6 @@ const workSortOptions: readonly { value: WorkSort, label: string }[] = [
 const groupOptions: readonly { value: GroupMode, label: string }[] = [
   { value: 'none', label: '不分组' }, { value: 'author', label: '按作者' },
 ]
-function paginationPages(current: number, total: number): Array<number | string> {
-  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1)
-  const pages = new Set([1, total, current - 1, current, current + 1])
-  if (current <= 3) [2, 3, 4].forEach((page) => pages.add(page))
-  if (current >= total - 2) [total - 3, total - 2, total - 1].forEach((page) => pages.add(page))
-  const sorted = [...pages].filter((page) => page >= 1 && page <= total).sort((a, b) => a - b)
-  const result: Array<number | string> = []
-  sorted.forEach((page, index) => {
-    if (index > 0 && page - sorted[index - 1] > 1) result.push(`ellipsis-${page}`)
-    result.push(page)
-  })
-  return result
-}
-
 function savedAuthorId(): number | null {
   try {
     const urlValue = new URLSearchParams(window.location.search).get('author')
@@ -164,7 +151,6 @@ export default function App() {
   const [workSort, setWorkSort] = useState<WorkSort>(() => savedChoice('mangafinder:sort-v2', ['first', 'updated', 'title', 'year', 'editions'], 'first'))
   const [groupMode, setGroupMode] = useState<GroupMode>(() => savedChoice('mangafinder:group', ['none', 'author'], 'none'))
   const [page, setPage] = useState(1)
-  const [pageInput, setPageInput] = useState('1')
   const [coverColumns, setCoverColumns] = useState(6)
   const catalogTopRef = useRef<HTMLElement>(null)
   const [dismissedJobThrough, setDismissedJobThrough] = useState(() => {
@@ -280,7 +266,6 @@ export default function App() {
     () => visibleWorks.slice((page - 1) * pageSize, page * pageSize),
     [page, pageSize, visibleWorks],
   )
-  const pageItems = useMemo(() => paginationPages(page, pageCount), [page, pageCount])
   const previousPageSizeRef = useRef(pageSize)
   useEffect(() => {
     const previousPageSize = previousPageSizeRef.current
@@ -291,7 +276,6 @@ export default function App() {
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount))
   }, [pageCount])
-  useEffect(() => { setPageInput(String(page)) }, [page])
   const authorSections = useMemo(() => {
     if (groupMode !== 'author' || selectedId !== null) return []
     const grouped = new Map<string, { id: number, name: string, works: WorkGroup[] }>()
@@ -388,16 +372,6 @@ export default function App() {
       block: 'start',
       behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
     }))
-  }
-
-  function submitPageJump(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const target = Number(pageInput)
-    if (!/^\d+$/.test(pageInput) || !Number.isSafeInteger(target) || target < 1 || target > pageCount) {
-      setPageInput(String(page))
-      return
-    }
-    changePage(target)
   }
 
   function showDashboard() {
@@ -547,23 +521,13 @@ export default function App() {
             </div>
           ) : renderWorks(paginatedWorks)}
           {pageCount > 1 && <nav className="catalog-pagination" aria-label="作品分页">
-            <div><strong>第 {page} 页</strong><span>共 {pageCount} 页 · {visibleWorks.length} 部作品</span></div>
-            <div className="pagination-actions">
-              <form className="page-jump" onSubmit={submitPageJump}>
-                <label htmlFor="page-jump-input">跳至</label>
-                <input id="page-jump-input" value={pageInput} onChange={(event) => { if (/^\d*$/.test(event.target.value)) setPageInput(event.target.value) }} onFocus={(event) => event.currentTarget.select()} inputMode="numeric" autoComplete="off" aria-label="跳转页码" aria-invalid={pageInput !== '' && (Number(pageInput) < 1 || Number(pageInput) > pageCount)} />
-                <span>页</span>
-                <button disabled={!/^\d+$/.test(pageInput) || Number(pageInput) < 1 || Number(pageInput) > pageCount}>前往</button>
-              </form>
-              <div className="pagination-buttons">
-                <button onClick={() => changePage(1)} disabled={page === 1} aria-label="第一页">首页</button>
-                <button onClick={() => changePage(page - 1)} disabled={page === 1} aria-label="上一页">上一页</button>
-                {pageItems.map((item) => typeof item === 'number'
-                  ? <button className={item === page ? 'active' : ''} onClick={() => changePage(item)} aria-current={item === page ? 'page' : undefined} key={item}>{item}</button>
-                  : <span aria-hidden="true" key={item}>…</span>)}
-                <button onClick={() => changePage(page + 1)} disabled={page === pageCount} aria-label="下一页">下一页</button>
-                <button onClick={() => changePage(pageCount)} disabled={page === pageCount} aria-label="最后一页">末页</button>
-              </div>
+            <div><strong>浏览作品</strong><span>共 {pageCount} 页 · {visibleWorks.length} 部作品</span></div>
+            <div className="pagination-buttons">
+              <button onClick={() => changePage(1)} disabled={page === 1} aria-label="第一页">首页</button>
+              <button onClick={() => changePage(page - 1)} disabled={page === 1} aria-label="上一页">上一页</button>
+              <PageSelector page={page} pageCount={pageCount} totalItems={visibleWorks.length} onChange={changePage} />
+              <button onClick={() => changePage(page + 1)} disabled={page === pageCount} aria-label="下一页">下一页</button>
+              <button onClick={() => changePage(pageCount)} disabled={page === pageCount} aria-label="最后一页">末页</button>
             </div>
           </nav>}
         </> : (
