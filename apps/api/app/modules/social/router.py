@@ -240,6 +240,24 @@ async def add_social_account(
     _require_social_enabled()
     if not AuthorRepository(session).get(author_id):
         raise HTTPException(status_code=404, detail="作者不存在")
+    conflicting_account = session.scalar(
+        select(SocialAccount).where(
+            SocialAccount.author_id != author_id,
+            SocialAccount.platform == "x",
+            SocialAccount.handle == payload.handle,
+            SocialAccount.status.in_(["confirmed", "suggested"]),
+        )
+    )
+    if conflicting_account and not payload.confirm_identity_conflict:
+        conflict_author = AuthorRepository(session).get(conflicting_account.author_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该 X 账号已关联其他作者，需要人工确认身份冲突",
+                "author_id": conflicting_account.author_id,
+                "author_name": conflict_author.name if conflict_author else "已删除作者",
+            },
+        )
     profile = None
     try:
         profile = await XBrowserCollector(get_settings()).profile(payload.handle)

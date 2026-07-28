@@ -1,6 +1,10 @@
 export interface Author {
   id: number
   name: string
+  aliases?: string[]
+  circle_names?: string[]
+  provider_query_names?: Record<string, string>
+  identity_note?: string | null
   avatar_url: string | null
   x_handle: string | null
   x_display_name: string | null

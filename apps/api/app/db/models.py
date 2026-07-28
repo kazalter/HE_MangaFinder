@@ -34,6 +34,10 @@ class Author(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    circle_names: Mapped[list[str]] = mapped_column(JSON, default=list)
+    provider_query_names: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    identity_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 

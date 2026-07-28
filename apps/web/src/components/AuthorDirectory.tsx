@@ -76,6 +76,8 @@ export function AuthorDirectory({
     const filtered = authors.filter((author) => (
       !term
       || author.name.toLocaleLowerCase().includes(term)
+      || author.aliases?.some((name) => name.toLocaleLowerCase().includes(term))
+      || author.circle_names?.some((name) => name.toLocaleLowerCase().includes(term))
       || author.x_handle?.toLocaleLowerCase().includes(term)
       || author.x_display_name?.toLocaleLowerCase().includes(term)
     ))
@@ -164,6 +166,8 @@ export function AuthorDirectory({
                 {previewAuthor.x_display_name && previewAuthor.x_display_name !== previewAuthor.name
                   ? <small>{previewAuthor.x_display_name}</small>
                   : null}
+                {previewAuthor.aliases?.length ? <small>别名：{previewAuthor.aliases.join(' · ')}</small> : null}
+                {previewAuthor.circle_names?.length ? <small>社团：{previewAuthor.circle_names.join(' · ')}</small> : null}
               </div>
             </div>
             <button className="author-open-button" onClick={() => onOpenAuthor(previewAuthor.id)}>

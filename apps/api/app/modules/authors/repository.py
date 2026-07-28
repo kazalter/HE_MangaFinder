@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.models import Author, AuthorWork, SocialAccount, WorkGroupMember
+from app.modules.catalog.title_identity import normalize_identity_text
 
 
 class AuthorRepository:
@@ -76,6 +77,35 @@ class AuthorRepository:
         self.session.add(author)
         self.session.flush()
         return author
+
+    def identity_conflicts(
+        self, author_id: int, names: list[str]
+    ) -> list[dict[str, object]]:
+        identities = {
+            normalize_identity_text(name) for name in names if normalize_identity_text(name)
+        }
+        conflicts: list[dict[str, object]] = []
+        for other in self.session.scalars(
+            select(Author).where(Author.id != author_id).order_by(Author.id)
+        ):
+            other_names = [other.name, *(other.aliases or []), *(other.circle_names or [])]
+            matched = sorted(
+                {
+                    name
+                    for name in names
+                    if normalize_identity_text(name)
+                    in {
+                        normalize_identity_text(value)
+                        for value in other_names
+                        if value
+                    }
+                }
+            )
+            if identities and matched:
+                conflicts.append(
+                    {"author_id": other.id, "author_name": other.name, "names": matched}
+                )
+        return conflicts
 
     def delete(self, author: Author) -> None:
         self.session.delete(author)

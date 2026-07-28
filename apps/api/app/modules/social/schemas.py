@@ -22,6 +22,7 @@ class SocialAccountCreate(BaseModel):
     handle: str = Field(min_length=1, max_length=100)
     account_type: Literal["personal", "circle"] = "personal"
     confirmed: bool = False
+    confirm_identity_conflict: bool = False
     display_name: str | None = Field(default=None, max_length=200)
 
     @field_validator("handle")

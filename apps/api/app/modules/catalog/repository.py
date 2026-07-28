@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.time import utc_timestamp
-from app.db.models import AuthorWork, AuthorWorkExclusion, Work, WorkSource
+from app.db.models import Author, AuthorWork, AuthorWorkExclusion, Work, WorkSource
 from app.providers.base import DiscoveredWork
 
 
@@ -16,6 +16,14 @@ class CatalogUpsertResult:
     source_created: bool
     author_link_created: bool
     metadata_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorQueryNameDecision:
+    query_name: str
+    origin: str
+    explanation: str
+    support: int = 0
 
 
 class CatalogRepository:
@@ -105,7 +113,25 @@ class CatalogRepository:
     def preferred_author_query_name(
         self, author_id: int, provider: str, fallback: str
     ) -> str:
-        """Reuse a dominant provider-native artist tag learned from prior scans."""
+        return self.author_query_name_decision(
+            author_id, provider, fallback
+        ).query_name
+
+    def author_query_name_decision(
+        self, author_id: int, provider: str, fallback: str
+    ) -> AuthorQueryNameDecision:
+        """Choose an explicit query or explain the conservative historical inference."""
+
+        author = self.session.get(Author, author_id)
+        explicit = (
+            (author.provider_query_names or {}).get(provider.casefold()) if author else None
+        )
+        if explicit:
+            return AuthorQueryNameDecision(
+                query_name=explicit,
+                origin="manual",
+                explanation=f"使用为 {provider} 人工配置的来源专用查询名",
+            )
 
         metadata_rows = self.session.scalars(
             select(WorkSource.raw_metadata)
@@ -128,12 +154,26 @@ class CatalogRepository:
                     counts[identity] += 1
                     display_names.setdefault(identity, cleaned)
         if not counts:
-            return fallback
+            return AuthorQueryNameDecision(
+                query_name=fallback,
+                origin="canonical",
+                explanation="尚无可靠来源别名，使用作者标准名",
+            )
         ranked = counts.most_common(2)
         identity, support = ranked[0]
         if support < 2 or (len(ranked) > 1 and ranked[1][1] == support):
-            return fallback
-        return display_names[identity]
+            return AuthorQueryNameDecision(
+                query_name=fallback,
+                origin="canonical",
+                explanation="来源历史别名证据不足或存在并列冲突，使用作者标准名",
+                support=support,
+            )
+        return AuthorQueryNameDecision(
+            query_name=display_names[identity],
+            origin="inferred",
+            explanation=f"从 {support} 条 {provider} 历史作品的作者标签推断",
+            support=support,
+        )
 
     def list_for_author(self, author_id: int | None = None) -> list[tuple[Work, datetime]]:
         statement = (

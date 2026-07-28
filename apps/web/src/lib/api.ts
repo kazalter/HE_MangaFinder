@@ -27,6 +27,13 @@ export const api = {
   authors: () => request<Author[]>('/authors'),
   createAuthor: (name: string) =>
     request<Author>('/authors', { method: 'POST', body: JSON.stringify({ name }) }),
+  updateAuthorIdentity: (
+    id: number,
+    identity: Pick<Author, 'name'> & Partial<Pick<Author, 'aliases' | 'circle_names' | 'provider_query_names' | 'identity_note'>>,
+    confirmConflicts = false,
+  ) => request<Author>(`/authors/${id}`, {
+    method: 'PATCH', body: JSON.stringify({ ...identity, confirm_conflicts: confirmConflicts }),
+  }),
   deleteAuthor: (id: number) => request<void>(`/authors/${id}`, { method: 'DELETE' }),
   refreshAuthor: (id: number) => request<Job>(`/authors/${id}/refresh`, { method: 'POST' }),
   works: (authorId?: number) =>

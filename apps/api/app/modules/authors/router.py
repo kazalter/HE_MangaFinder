@@ -9,7 +9,13 @@ from app.core.config import get_settings
 from app.db.models import SocialAccount
 from app.db.session import get_session
 from app.modules.authors.repository import AuthorRepository
-from app.modules.authors.schemas import AuthorCreate, AuthorRead
+from app.modules.authors.schemas import (
+    AuthorCreate,
+    AuthorIdentityUpdate,
+    AuthorQueryNameRead,
+    AuthorRead,
+)
+from app.modules.catalog.repository import CatalogRepository
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.schemas import JobRead
 from app.modules.social.media_archive import SocialAvatarArchive
@@ -42,6 +48,62 @@ def list_authors(session: SessionDep) -> list[AuthorRead]:
             x_sync_error,
         ) in rows
     ]
+
+
+@router.get(
+    "/{author_id}/query-name/{provider}", response_model=AuthorQueryNameRead
+)
+def author_query_name(
+    author_id: int, provider: str, session: SessionDep
+) -> AuthorQueryNameRead:
+    author = AuthorRepository(session).get(author_id)
+    if not author:
+        raise HTTPException(status_code=404, detail="作者不存在")
+    decision = CatalogRepository(session).author_query_name_decision(
+        author.id, provider, author.name
+    )
+    return AuthorQueryNameRead(
+        provider=provider,
+        query_name=decision.query_name,
+        origin=decision.origin,
+        explanation=decision.explanation,
+        support=decision.support,
+    )
+
+
+@router.patch("/{author_id}", response_model=AuthorRead)
+def update_author_identity(
+    author_id: int, payload: AuthorIdentityUpdate, session: SessionDep
+) -> AuthorRead:
+    repository = AuthorRepository(session)
+    author = repository.get(author_id)
+    if not author:
+        raise HTTPException(status_code=404, detail="作者不存在")
+    next_name = payload.name if payload.name is not None else author.name
+    next_aliases = payload.aliases if payload.aliases is not None else author.aliases
+    next_circles = (
+        payload.circle_names if payload.circle_names is not None else author.circle_names
+    )
+    conflicts = repository.identity_conflicts(
+        author.id, [next_name, *next_aliases, *next_circles]
+    )
+    if conflicts and not payload.confirm_conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "作者名称或别名与其他身份冲突，需要人工确认",
+                "conflicts": conflicts,
+            },
+        )
+    author.name = next_name
+    author.aliases = next_aliases
+    author.circle_names = next_circles
+    if payload.provider_query_names is not None:
+        author.provider_query_names = payload.provider_query_names
+    if "identity_note" in payload.model_fields_set:
+        author.identity_note = payload.identity_note
+    session.commit()
+    return AuthorRead.model_validate(author)
 
 
 @router.get("/{author_id}/avatar", response_class=FileResponse)

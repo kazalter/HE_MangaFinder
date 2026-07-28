@@ -93,9 +93,16 @@ def test_reuses_dominant_provider_artist_name() -> None:
             )
         session.commit()
 
-        assert (
-            repository.preferred_author_query_name(
-                author.id, "nhentai", author.name
-            )
-            == "ramanda"
+        decision = repository.author_query_name_decision(
+            author.id, "nhentai", author.name
         )
+        assert decision.query_name == "ramanda"
+        assert decision.origin == "inferred"
+        assert decision.support == 2
+
+        author.provider_query_names = {"nhentai": "ramanda-official"}
+        explicit = repository.author_query_name_decision(
+            author.id, "nhentai", author.name
+        )
+        assert explicit.query_name == "ramanda-official"
+        assert explicit.origin == "manual"

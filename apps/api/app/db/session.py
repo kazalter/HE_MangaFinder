@@ -62,6 +62,20 @@ def init_db() -> None:
 
 def _apply_additive_migrations() -> None:
     """Keep existing SQLite installations compatible without destructive migrations."""
+    author_columns = {item["name"] for item in inspect(engine).get_columns("authors")}
+    author_additions = {
+        "aliases": "JSON NOT NULL DEFAULT '[]'",
+        "circle_names": "JSON NOT NULL DEFAULT '[]'",
+        "provider_query_names": "JSON NOT NULL DEFAULT '{}'",
+        "identity_note": "TEXT",
+    }
+    with engine.begin() as connection:
+        for column, declaration in author_additions.items():
+            if column not in author_columns:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE authors ADD COLUMN {column} {declaration}"
+                )
+
     fingerprint_columns = {
         item["name"] for item in inspect(engine).get_columns("work_fingerprints")
     }
