@@ -14,6 +14,7 @@ from app.modules.authors.router import router as authors_router
 from app.modules.catalog.groups_router import router as groups_router
 from app.modules.catalog.router import router as catalog_router
 from app.modules.catalog.scheduler import CatalogScheduler
+from app.modules.catalog.series_router import router as series_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.router import router as jobs_router
@@ -79,6 +80,7 @@ app.include_router(authors_router, prefix="/api")
 app.include_router(agent_reviews_router, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(groups_router, prefix="/api")
+app.include_router(series_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(media_router, prefix="/api")

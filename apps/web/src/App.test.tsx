@@ -46,6 +46,8 @@ vi.mock('./lib/api', () => ({
     jobs: jobsMock,
     sources: vi.fn().mockResolvedValue([]),
     mergeSuggestions: vi.fn().mockResolvedValue([]),
+    seriesCandidates: vi.fn().mockResolvedValue([]),
+    createSeriesFromCandidate: vi.fn().mockResolvedValue({}),
     agentStatus: vi.fn().mockResolvedValue(null),
     socialStatus: vi.fn().mockResolvedValue({
       enabled: false,

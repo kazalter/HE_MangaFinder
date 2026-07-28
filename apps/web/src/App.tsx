@@ -12,7 +12,7 @@ import { WorkCoverTile } from './components/WorkCoverTile'
 import { WorkDetail } from './components/WorkDetail'
 import { WorkListRow } from './components/WorkListRow'
 import { api } from './lib/api'
-import type { AgentStatus, Author, CatalogEvent, DashboardData, Edition, Job, MergeSuggestion, ReleaseSignal, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkSource } from './types'
+import type { AgentStatus, Author, CatalogEvent, DashboardData, Edition, Job, MergeSuggestion, ReleaseSignal, SeriesCandidate, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkSource } from './types'
 
 type ViewMode = 'cards' | 'covers' | 'list'
 type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
@@ -122,6 +122,7 @@ export default function App() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [sources, setSources] = useState<Source[]>([])
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([])
+  const [seriesCandidates, setSeriesCandidates] = useState<SeriesCandidate[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
   const [discoveryEvents, setDiscoveryEvents] = useState<CatalogEvent[]>([])
@@ -162,14 +163,15 @@ export default function App() {
   const load = useCallback(async () => {
     try {
       const activeAuthorId = libraryMode === 'works' ? selectedId : null
-      const [nextAuthors, nextWorks, nextJobs, nextSources, nextSuggestions, nextAgentStatus, nextSocialStatus, nextSocialSignals, nextDashboard, nextDiscoveryEvents] = await Promise.all([
-        api.authors(), api.workGroups(activeAuthorId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.agentStatus(), api.socialStatus(), api.socialRadar(activeAuthorId ?? undefined), api.dashboard(), api.discoveryInbox(),
+      const [nextAuthors, nextWorks, nextJobs, nextSources, nextSuggestions, nextSeriesCandidates, nextAgentStatus, nextSocialStatus, nextSocialSignals, nextDashboard, nextDiscoveryEvents] = await Promise.all([
+        api.authors(), api.workGroups(activeAuthorId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.seriesCandidates(activeAuthorId ?? undefined), api.agentStatus(), api.socialStatus(), api.socialRadar(activeAuthorId ?? undefined), api.dashboard(), api.discoveryInbox(),
       ])
       setAuthors(nextAuthors)
       setWorks(nextWorks)
       setJobs(nextJobs)
       setSources(nextSources)
       setSuggestions(nextSuggestions)
+      setSeriesCandidates(nextSeriesCandidates)
       setAgentStatus(nextAgentStatus)
       setSocialStatus(nextSocialStatus)
       setSocialSignals(nextSocialSignals)
@@ -490,6 +492,10 @@ export default function App() {
         </div>}
         {activeJobs.length > 0 && <div className="sync-banner"><span className="spinner" /> 正在向来源查询，作品会自动出现…</div>}
         {suggestions.length > 0 && <button className="review-banner" onClick={() => setReviewOpen(true)}>有 {suggestions.length} 个相似作品等待确认聚合 <span>去审核 →</span></button>}
+        {seriesCandidates.slice(0, 1).map((candidate) => <button className="review-banner" key={`${candidate.normalized_title}:${candidate.author_ids.join('-')}`} onClick={() => {
+          const gap = candidate.missing_volumes.length ? `，可能缺少第 ${candidate.missing_volumes.join('、')} 卷` : ''
+          if (window.confirm(`将 ${candidate.groups.length} 部作品建立为“${candidate.title}”系列${gap}？`)) void act(() => api.createSeriesFromCandidate(candidate))
+        }}>发现系列候选「{candidate.title}」 · {candidate.groups.length} 卷{candidate.missing_volumes.length ? ` · 缺 ${candidate.missing_volumes.join('、')}` : ''}<span>确认系列 →</span></button>)}
         {jobs.filter((job) => job.kind === 'download_chapter' && job.status === 'succeeded' && job.payload.output_path).slice(0, 1).map((job) => (
           <div className="download-ready" key={job.id}>CBZ 已准备好 <a href={`/api/jobs/${job.id}/file`}>保存到本机 ↓</a></div>
         ))}

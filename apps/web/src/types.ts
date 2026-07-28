@@ -65,8 +65,34 @@ export interface Edition {
   sources: WorkSource[]
 }
 
+export interface WorkSeries {
+  id: number
+  title: string
+  volume_number: number | null
+  label: string | null
+  missing_volumes: number[]
+}
+
+export interface WorkRelation {
+  id: number
+  related_group_id: number
+  related_title: string
+  relation_type: 'prequel' | 'sequel' | 'side_story' | 'compilation'
+  direction: 'outgoing' | 'incoming'
+}
+
 export interface WorkGroupDetail extends WorkGroup {
   editions: Edition[]
+  series?: WorkSeries | null
+  relations?: WorkRelation[]
+}
+
+export interface SeriesCandidate {
+  title: string
+  normalized_title: string
+  author_ids: number[]
+  groups: Array<{ group_id: number, title: string, volume_number: number }>
+  missing_volumes: number[]
 }
 
 export interface MergeSuggestion {

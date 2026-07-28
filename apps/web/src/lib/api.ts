@@ -1,4 +1,4 @@
-import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail } from '../types'
+import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail } from '../types'
 
 function cookie(name: string): string | undefined {
   return document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -44,6 +44,18 @@ export const api = {
     request<void>(`/work-groups/${groupId}/authors/${authorId}`, { method: 'DELETE' }),
   excludeEdition: (groupId: number, workId: number, authorId: number) =>
     request<void>(`/work-groups/${groupId}/members/${workId}/authors/${authorId}`, { method: 'DELETE' }),
+  seriesCandidates: (authorId?: number) =>
+    request<SeriesCandidate[]>(`/series/candidates${authorId ? `?author_id=${authorId}` : ''}`),
+  createSeriesFromCandidate: (candidate: SeriesCandidate) => request('/series', {
+    method: 'POST',
+    body: JSON.stringify({
+      title: candidate.title,
+      candidate: true,
+      members: candidate.groups.map((item) => ({
+        group_id: item.group_id, volume_number: item.volume_number,
+      })),
+    }),
+  }),
   mergeSuggestions: () => request<MergeSuggestion[]>('/work-groups/suggestions'),
   acceptSuggestion: (id: number) =>
     request<WorkGroupDetail>(`/work-groups/suggestions/${id}/accept`, { method: 'POST' }),

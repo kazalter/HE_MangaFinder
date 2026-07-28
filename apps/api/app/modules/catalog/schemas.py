@@ -78,8 +78,26 @@ class WorkGroupRead(BaseModel):
     authors: list[WorkGroupAuthorRead]
 
 
+class WorkSeriesRead(BaseModel):
+    id: int
+    title: str
+    volume_number: int | None
+    label: str | None
+    missing_volumes: list[int] = Field(default_factory=list)
+
+
+class WorkRelationSummary(BaseModel):
+    id: int
+    related_group_id: int
+    related_title: str
+    relation_type: str
+    direction: str
+
+
 class WorkGroupDetail(WorkGroupRead):
     editions: list[EditionRead]
+    series: WorkSeriesRead | None = None
+    relations: list[WorkRelationSummary] = Field(default_factory=list)
 
 
 class GroupMergeCreate(BaseModel):

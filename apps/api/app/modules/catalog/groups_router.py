@@ -1,10 +1,19 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy.orm import Session
+from sqlalchemy import or_, select
+from sqlalchemy.orm import Session, object_session
 
 from app.core.time import utc_timestamp
-from app.db.models import Author, AuthorWork, MergeSuggestion, WorkGroup
+from app.db.models import (
+    Author,
+    AuthorWork,
+    MergeSuggestion,
+    Series,
+    SeriesMember,
+    WorkGroup,
+    WorkRelation,
+)
 from app.db.session import get_session
 from app.modules.agent_review.candidates import build_candidate_evidence, evidence_hash
 from app.modules.agent_review.repository import AgentReviewRepository
@@ -20,6 +29,8 @@ from app.modules.catalog.schemas import (
     MergeSuggestionRead,
     WorkGroupDetail,
     WorkGroupRead,
+    WorkRelationSummary,
+    WorkSeriesRead,
     WorkSourceRead,
 )
 from app.modules.media.urls import group_cover_url, work_cover_url
@@ -104,7 +115,69 @@ def _detail(group: WorkGroup) -> WorkGroupDetail:
         else 0.0,
         reverse=True,
     )
-    return WorkGroupDetail(**summary.model_dump(), editions=editions)
+    session = object_session(group)
+    series_read = None
+    relations: list[WorkRelationSummary] = []
+    if session:
+        membership = session.scalar(
+            select(SeriesMember).where(SeriesMember.group_id == group.id)
+        )
+        if membership:
+            series = session.get(Series, membership.series_id)
+            numbers = set(
+                session.scalars(
+                    select(SeriesMember.volume_number).where(
+                        SeriesMember.series_id == membership.series_id,
+                        SeriesMember.volume_number.is_not(None),
+                    )
+                )
+            )
+            missing = (
+                [
+                    number
+                    for number in range(min(numbers), max(numbers) + 1)
+                    if number not in numbers
+                ]
+                if numbers
+                else []
+            )
+            if series:
+                series_read = WorkSeriesRead(
+                    id=series.id,
+                    title=series.title,
+                    volume_number=membership.volume_number,
+                    label=membership.label,
+                    missing_volumes=missing,
+                )
+        relation_rows = session.scalars(
+            select(WorkRelation).where(
+                or_(
+                    WorkRelation.source_group_id == group.id,
+                    WorkRelation.target_group_id == group.id,
+                )
+            )
+        )
+        for relation in relation_rows:
+            outgoing = relation.source_group_id == group.id
+            related_id = (
+                relation.target_group_id if outgoing else relation.source_group_id
+            )
+            related = session.get(WorkGroup, related_id)
+            relations.append(
+                WorkRelationSummary(
+                    id=relation.id,
+                    related_group_id=related_id,
+                    related_title=related.title if related else "已删除作品",
+                    relation_type=relation.relation_type,
+                    direction="outgoing" if outgoing else "incoming",
+                )
+            )
+    return WorkGroupDetail(
+        **summary.model_dump(),
+        editions=editions,
+        series=series_read,
+        relations=relations,
+    )
 
 
 def _suggestion(

@@ -140,6 +140,53 @@ class WorkGroup(Base):
     )
 
 
+class Series(Base):
+    __tablename__ = "series"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(500), index=True)
+    normalized_title: Mapped[str] = mapped_column(String(500), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utcnow, onupdate=utcnow
+    )
+
+
+class SeriesMember(Base):
+    __tablename__ = "series_members"
+    __table_args__ = (UniqueConstraint("group_id"),)
+
+    series_id: Mapped[int] = mapped_column(
+        ForeignKey("series.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("work_groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    volume_number: Mapped[int | None] = mapped_column(index=True)
+    label: Mapped[str | None] = mapped_column(String(100))
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class WorkRelation(Base):
+    __tablename__ = "work_relations"
+    __table_args__ = (
+        UniqueConstraint("source_group_id", "target_group_id", "relation_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_group_id: Mapped[int] = mapped_column(
+        ForeignKey("work_groups.id", ondelete="CASCADE"), index=True
+    )
+    target_group_id: Mapped[int] = mapped_column(
+        ForeignKey("work_groups.id", ondelete="CASCADE"), index=True
+    )
+    relation_type: Mapped[str] = mapped_column(String(30), index=True)
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
 class WorkGroupMember(Base):
     __tablename__ = "work_group_members"
     __table_args__ = (UniqueConstraint("work_id"),)

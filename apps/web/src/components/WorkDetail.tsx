@@ -51,6 +51,19 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, activeAut
           </div>
         </header>
 
+        {(group.series || group.relations?.length) && <section className="exclusion-panel series-panel">
+          <div>
+            <strong>{group.series ? `系列 · ${group.series.title}` : '作品关系'}</strong>
+            <small>
+              {group.series?.volume_number ? `第 ${group.series.volume_number} 卷` : group.series?.label || '未指定卷号'}
+              {group.series?.missing_volumes.length ? ` · 可能缺少第 ${group.series.missing_volumes.join('、')} 卷` : ''}
+            </small>
+          </div>
+          <div className="variant-labels">
+            {group.relations?.map((relation) => <span key={relation.id}>{({ prequel: '前作', sequel: '续作', side_story: '番外', compilation: '总集篇' } as const)[relation.relation_type]} · {relation.related_title}</span>)}
+          </div>
+        </section>}
+
         <div className="provider-filter" aria-label="按来源筛选">
           {['all', ...providers].map((item) => (
             <button className={provider === item ? 'active' : ''} onClick={() => setProvider(item)} key={item}>
