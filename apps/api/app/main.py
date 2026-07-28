@@ -12,6 +12,7 @@ from app.db.session import SessionLocal, init_db
 from app.modules.agent_review.router import router as agent_reviews_router
 from app.modules.authors.router import router as authors_router
 from app.modules.catalog.groups_router import router as groups_router
+from app.modules.catalog.image_search_router import router as image_search_router
 from app.modules.catalog.router import router as catalog_router
 from app.modules.catalog.scheduler import CatalogScheduler
 from app.modules.catalog.series_router import router as series_router
@@ -80,6 +81,7 @@ app.include_router(authors_router, prefix="/api")
 app.include_router(agent_reviews_router, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(groups_router, prefix="/api")
+app.include_router(image_search_router, prefix="/api")
 app.include_router(series_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")

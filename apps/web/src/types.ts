@@ -91,6 +91,18 @@ export interface WorkGroupDetail extends WorkGroup {
   relations?: WorkRelation[]
 }
 
+export interface ImageSearchMatch {
+  group_id: number
+  group_title: string
+  work_id: number
+  edition_title: string
+  cover_url: string | null
+  distance: number
+  mode: 'full' | 'crop' | 'legacy'
+  confidence: 'exact' | 'strong' | 'possible'
+  evidence: string[]
+}
+
 export interface SeriesCandidate {
   title: string
   normalized_title: string

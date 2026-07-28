@@ -1,4 +1,4 @@
-import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail } from '../types'
+import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, ImageSearchMatch, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail } from '../types'
 
 function cookie(name: string): string | undefined {
   return document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -23,7 +23,26 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function uploadImage(file: File): Promise<ImageSearchMatch[]> {
+  const response = await fetch('/api/image-search', {
+    method: 'POST',
+    body: file,
+    headers: {
+      'Content-Type': file.type || 'image/jpeg',
+      ...(cookie('mangafinder_csrf')
+        ? { 'X-CSRF-Token': decodeURIComponent(cookie('mangafinder_csrf') ?? '') }
+        : {}),
+    },
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new Error(body?.detail ?? `图片搜索失败（${response.status}）`)
+  }
+  return response.json() as Promise<ImageSearchMatch[]>
+}
+
 export const api = {
+  imageSearch: uploadImage,
   authors: () => request<Author[]>('/authors'),
   createAuthor: (name: string) =>
     request<Author>('/authors', { method: 'POST', body: JSON.stringify({ name }) }),
