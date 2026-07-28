@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     catalog_auto_discovery_enabled: bool = False
     catalog_discovery_interval_minutes: int = 1440
     downloads_dir: Path = Path("./data/downloads")
+    downloads_max_bytes: int = 0
+    downloads_cleanup_target_ratio: float = 0.8
     cover_cache_dir: Path = Path("./data/cover-cache")
     wnacg_base_urls: str = (
         "https://www.wnacg.com,https://www.wn08.cfd,"

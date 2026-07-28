@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import asdict
 
 from app.core.config import Settings
 from app.db.session import SessionLocal
@@ -67,14 +68,18 @@ class JobWorker:
                     ):
                         jobs.enqueue_agent_reviews()
                 elif job.kind == DOWNLOAD_CHAPTER:
-                    path = await DownloadService(
+                    path, verification = await DownloadService(
                         session, self.providers, self.settings
                     ).download(
                         int(job.payload["work_id"]),
                         str(job.payload["provider"]),
                         str(job.payload["chapter_id"]),
                     )
-                    job.payload = {**job.payload, "output_path": path}
+                    job.payload = {
+                        **job.payload,
+                        "output_path": path,
+                        "verification": asdict(verification),
+                    }
                 elif job.kind == REFRESH_COVER_FINGERPRINTS:
                     result = await CoverFingerprintRefreshService(
                         session, self.providers
