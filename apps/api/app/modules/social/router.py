@@ -3,13 +3,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.models import (
     ActivityItem,
     AuthorDigest,
+    PlannedRelease,
     ReleaseSignal,
     SocialAccount,
     SocialPost,
@@ -23,10 +24,13 @@ from app.modules.social.availability import PostAvailabilityService
 from app.modules.social.collector import XBrowserCollector
 from app.modules.social.digest import DigestService
 from app.modules.social.media_archive import SocialAvatarArchive, SocialMediaArchive
+from app.modules.social.planned_releases import PlannedReleaseService
 from app.modules.social.repository import SocialRepository
 from app.modules.social.schemas import (
     ActivityItemRead,
     AuthorDigestRead,
+    PlannedReleaseRead,
+    PlannedReleaseUpdate,
     ReleaseSignalRead,
     SignalLinkRequest,
     SignalReviewRequest,
@@ -100,11 +104,41 @@ def _signal_read(session: Session, signal: ReleaseSignal) -> ReleaseSignalRead:
         evidence=signal.evidence,
         counter_evidence=signal.counter_evidence,
         missing_information=signal.missing_information,
+        planned_release_id=signal.planned_release_id,
         linked_group_id=signal.linked_group_id,
         reviewed_by=signal.reviewed_by,
         created_at=signal.created_at,
         updated_at=signal.updated_at,
         posts=[_post_read(post) for post in posts],
+    )
+
+
+def _planned_release_read(
+    session: Session, planned: PlannedRelease
+) -> PlannedReleaseRead:
+    author = SocialRepository(session).author(planned.author_id)
+    signal_count = int(
+        session.scalar(
+            select(func.count()).select_from(ReleaseSignal).where(
+                ReleaseSignal.planned_release_id == planned.id
+            )
+        )
+        or 0
+    )
+    return PlannedReleaseRead(
+        id=planned.id,
+        author_id=planned.author_id,
+        author_name=author.name if author else "已删除作者",
+        title=planned.title,
+        status=planned.status,
+        release_date=planned.release_date,
+        event_code=planned.event_code,
+        booth=planned.booth,
+        linked_group_id=planned.linked_group_id,
+        suggested_group_id=planned.suggested_group_id,
+        signal_count=signal_count,
+        created_at=planned.created_at,
+        updated_at=planned.updated_at,
     )
 
 
@@ -329,6 +363,53 @@ def list_radar(
     return [_signal_read(session, signal) for signal in rows]
 
 
+@router.get("/social/planned-releases", response_model=list[PlannedReleaseRead])
+def list_planned_releases(
+    session: SessionDep,
+    author_id: int | None = None,
+    include_closed: bool = False,
+    limit: Annotated[int, Query(ge=1, le=300)] = 100,
+) -> list[PlannedReleaseRead]:
+    statement = select(PlannedRelease)
+    if author_id is not None:
+        statement = statement.where(PlannedRelease.author_id == author_id)
+    if not include_closed:
+        statement = statement.where(
+            PlannedRelease.status.not_in(["released", "cancelled"])
+        )
+    rows = list(
+        session.scalars(
+            statement.order_by(PlannedRelease.updated_at.desc()).limit(limit)
+        )
+    )
+    return [_planned_release_read(session, item) for item in rows]
+
+
+@router.patch(
+    "/social/planned-releases/{planned_id}", response_model=PlannedReleaseRead
+)
+def update_planned_release(
+    planned_id: int, payload: PlannedReleaseUpdate, session: SessionDep
+) -> PlannedReleaseRead:
+    planned = session.get(PlannedRelease, planned_id)
+    if not planned:
+        raise HTTPException(status_code=404, detail="待发布作品不存在")
+    if payload.title is not None:
+        from app.modules.catalog.title_identity import normalize_identity_text
+
+        planned.title = payload.title.strip()
+        planned.normalized_title = normalize_identity_text(planned.title)
+    for field in ("status", "release_date", "event_code", "booth"):
+        if field in payload.model_fields_set:
+            setattr(planned, field, getattr(payload, field))
+    if payload.group_id is not None:
+        if not session.get(WorkGroup, payload.group_id):
+            raise HTTPException(status_code=404, detail="聚合作品不存在")
+        PlannedReleaseService(session).link(planned, payload.group_id)
+    session.commit()
+    return _planned_release_read(session, planned)
+
+
 @router.get("/social/activity", response_model=list[ActivityItemRead])
 def list_activity(
     session: SessionDep,
@@ -501,6 +582,10 @@ def link_signal(
     if not session.get(WorkGroup, payload.group_id):
         raise HTTPException(status_code=404, detail="聚合作品不存在")
     signal.linked_group_id = payload.group_id
+    if signal.planned_release_id:
+        planned = session.get(PlannedRelease, signal.planned_release_id)
+        if planned:
+            PlannedReleaseService(session).link(planned, payload.group_id)
     if signal.status == "confirmed":
         signal.status = "linked"
     signal.reviewed_by = "human"

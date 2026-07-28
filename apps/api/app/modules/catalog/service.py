@@ -9,6 +9,7 @@ from app.modules.authors.repository import AuthorRepository
 from app.modules.catalog.aggregation import AggregationService, CoverHasher
 from app.modules.catalog.discovery_repository import DiscoveryRepository
 from app.modules.catalog.repository import CatalogRepository
+from app.modules.social.planned_releases import PlannedReleaseService
 from app.providers.base import sort_discovered_works
 from app.providers.errors import AuthorNotFoundError
 from app.providers.registry import ProviderRegistry
@@ -77,6 +78,9 @@ class DiscoveryService:
                             author.id, provider.name, work
                         )
                         group = await aggregation.assign(result.work, author)
+                        PlannedReleaseService(self.session).suggest_catalog_match(
+                            author.id, group
+                        )
                         if result.source_created or result.author_link_created:
                             discovery.record_event(
                                 author_id=author.id,

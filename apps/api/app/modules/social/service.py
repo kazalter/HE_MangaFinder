@@ -23,6 +23,7 @@ from app.modules.social.collector import CollectorPost, XBrowserCollector
 from app.modules.social.digest import DigestService
 from app.modules.social.media_archive import SocialAvatarArchive, SocialMediaArchive
 from app.modules.social.ocr import LocalMediaOcr
+from app.modules.social.planned_releases import PlannedReleaseService
 from app.modules.social.repository import SocialRepository
 from app.modules.social.rules import RuleAssessment, assess_post, cluster_key
 
@@ -269,6 +270,7 @@ class SocialSyncService:
                 dict.fromkeys(signal.counter_evidence + grounded_counter)
             )
         self.repository.attach_post(signal, post)
+        PlannedReleaseService(self.session).absorb_signal(signal)
 
         if self.settings.social_agent_configured:
             self.session.add(

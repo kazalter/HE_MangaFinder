@@ -154,11 +154,37 @@ class ReleaseSignalRead(BaseModel):
     evidence: list[str]
     counter_evidence: list[str]
     missing_information: list[str]
+    planned_release_id: int | None
     linked_group_id: int | None
     reviewed_by: str | None
     created_at: datetime
     updated_at: datetime
     posts: list[SocialPostRead]
+
+
+class PlannedReleaseRead(BaseModel):
+    id: int
+    author_id: int
+    author_name: str
+    title: str
+    status: str
+    release_date: datetime | None
+    event_code: str | None
+    booth: str | None
+    linked_group_id: int | None
+    suggested_group_id: int | None
+    signal_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlannedReleaseUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    status: Literal["announced", "discovered", "linked", "released", "cancelled"] | None = None
+    release_date: datetime | None = None
+    event_code: str | None = Field(default=None, max_length=30)
+    booth: str | None = Field(default=None, max_length=100)
+    group_id: int | None = Field(default=None, ge=1)
 
 
 class SignalReviewRequest(BaseModel):

@@ -77,7 +77,7 @@ describe('SocialRadar author rail', () => {
       id: 10, author_id: 1, author_name: '作者甲', kind: 'new_release', title: '新作',
       event_code: null, booth: null, release_date: null, store_urls: [], confidence: .8,
       status: 'pending', is_read: false, evidence: [], counter_evidence: [], missing_information: [],
-      linked_group_id: null, reviewed_by: null, created_at: '', updated_at: '', posts: [],
+      planned_release_id: null, linked_group_id: null, reviewed_by: null, created_at: '', updated_at: '', posts: [],
     }
     const works = Array.from({ length: 100 }, (_, index): WorkGroup => ({
       id: index + 1, title: `作品 ${index + 1}`, description: null, cover_url: null, status: null,

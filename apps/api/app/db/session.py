@@ -39,6 +39,7 @@ def init_db() -> None:
     )
     from app.modules.jobs.repository import JobRepository
     from app.modules.social.events import seed_event_registry
+    from app.modules.social.planned_releases import backfill_planned_releases
 
     with Session(engine) as session:
         remove_retired_provider_sources(session)
@@ -48,6 +49,8 @@ def init_db() -> None:
         if repair_historical_rationales(session):
             session.commit()
         seed_event_registry(session)
+        if backfill_planned_releases(session):
+            session.commit()
         if session.scalar(
             select(WorkFingerprint.work_id).where(
                 WorkFingerprint.cover_fingerprint.is_(None)
@@ -93,6 +96,20 @@ def _apply_additive_migrations() -> None:
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_jobs_next_attempt_at "
                 "ON jobs (next_attempt_at)"
+            )
+
+    release_signal_columns = {
+        item["name"] for item in inspect(engine).get_columns("release_signals")
+    }
+    if "planned_release_id" not in release_signal_columns:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE release_signals ADD COLUMN planned_release_id INTEGER "
+                "REFERENCES planned_releases(id) ON DELETE SET NULL"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_release_signals_planned_release_id "
+                "ON release_signals (planned_release_id)"
             )
 
     social_post_columns = {

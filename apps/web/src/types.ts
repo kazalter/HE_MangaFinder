@@ -207,6 +207,7 @@ export interface ReleaseSignal {
   evidence: string[]
   counter_evidence: string[]
   missing_information: string[]
+  planned_release_id: number | null
   linked_group_id: number | null
   reviewed_by: string | null
   created_at: string

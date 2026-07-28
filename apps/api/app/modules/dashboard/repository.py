@@ -8,6 +8,7 @@ from app.db.models import (
     Author,
     CatalogEvent,
     MergeSuggestion,
+    PlannedRelease,
     ProviderScanRun,
     ReleaseSignal,
     Work,
@@ -180,31 +181,31 @@ class DashboardRepository:
 
     def _upcoming(self, now: datetime) -> list[UpcomingRelease]:
         rows = self.session.execute(
-            select(ReleaseSignal, Author)
-            .join(Author, Author.id == ReleaseSignal.author_id)
+            select(PlannedRelease, Author)
+            .join(Author, Author.id == PlannedRelease.author_id)
             .where(
-                ReleaseSignal.release_date.is_not(None),
-                ReleaseSignal.release_date >= now - timedelta(days=1),
-                ReleaseSignal.status.not_in(["rejected", "cancelled", "archived"]),
+                PlannedRelease.release_date.is_not(None),
+                PlannedRelease.release_date >= now - timedelta(days=1),
+                PlannedRelease.status != "cancelled",
             )
-            .order_by(ReleaseSignal.release_date, ReleaseSignal.id)
+            .order_by(PlannedRelease.release_date, PlannedRelease.id)
             .limit(20)
         )
         return [
             UpcomingRelease(
-                id=signal.id,
-                author_id=signal.author_id,
+                id=planned.id,
+                author_id=planned.author_id,
                 author_name=author.name,
-                title=signal.title,
-                kind=signal.kind,
-                status=signal.status,
-                release_date=signal.release_date,
-                event_code=signal.event_code,
-                booth=signal.booth,
-                linked_group_id=signal.linked_group_id,
+                title=planned.title,
+                kind="planned_release",
+                status=planned.status,
+                release_date=planned.release_date,
+                event_code=planned.event_code,
+                booth=planned.booth,
+                linked_group_id=planned.linked_group_id,
             )
-            for signal, author in rows
-            if signal.release_date is not None
+            for planned, author in rows
+            if planned.release_date is not None
         ]
 
     @staticmethod

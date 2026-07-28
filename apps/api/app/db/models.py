@@ -508,6 +508,34 @@ class EventRegistry(Base):
     )
 
 
+class PlannedRelease(Base):
+    """A work lifecycle shared by multiple social signals before catalog discovery."""
+
+    __tablename__ = "planned_releases"
+    __table_args__ = (UniqueConstraint("author_id", "normalized_title"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(500), index=True)
+    normalized_title: Mapped[str] = mapped_column(String(500), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="announced", index=True)
+    release_date: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    event_code: Mapped[str | None] = mapped_column(String(30), index=True)
+    booth: Mapped[str | None] = mapped_column(String(100))
+    linked_group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_groups.id", ondelete="SET NULL"), index=True
+    )
+    suggested_group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_groups.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utcnow, onupdate=utcnow
+    )
+
+
 class ReleaseSignal(Base):
     __tablename__ = "release_signals"
 
@@ -531,6 +559,9 @@ class ReleaseSignal(Base):
     evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
     counter_evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
     missing_information: Mapped[list[str]] = mapped_column(JSON, default=list)
+    planned_release_id: Mapped[int | None] = mapped_column(
+        ForeignKey("planned_releases.id", ondelete="SET NULL"), index=True
+    )
     linked_group_id: Mapped[int | None] = mapped_column(
         ForeignKey("work_groups.id", ondelete="SET NULL"), index=True
     )
