@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     downloads_max_bytes: int = 0
     downloads_cleanup_target_ratio: float = 0.8
     cover_cache_dir: Path = Path("./data/cover-cache")
+    komga_base_url: str = ""
+    komga_api_key: str = ""
+    komga_library_id: str = ""
+    kavita_base_url: str = ""
+    kavita_api_key: str = ""
+    kavita_library_id: str = ""
+    integration_timeout_seconds: float = 15.0
     wnacg_base_urls: str = (
         "https://www.wnacg.com,https://www.wn08.cfd,"
         "https://www.wn07.cfd,https://www.wn08.shop,https://www.wn07.shop"

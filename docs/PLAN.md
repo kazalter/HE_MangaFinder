@@ -170,10 +170,10 @@ REST API -> Job repository -> Worker -> discovery service
 
 ### 阶段 D8：阅读器与备份集成
 
-- [ ] 为 CBZ 写入 ComicInfo.xml；
-- [ ] 提供 JSON 导出和可验证备份，敏感凭证默认排除；
-- [ ] 增加 OPDS 与 Komga/Kavita 扫描触发；
-- [ ] 增加下载校验、空间统计和清理策略。
+- [x] 为 CBZ 写入 ComicInfo.xml；
+- [x] 提供 JSON 导出和可验证备份，敏感凭证默认排除；
+- [x] 增加 OPDS 与 Komga/Kavita 扫描触发；
+- [x] 增加下载校验、空间统计和清理策略。
 
 ### 实施约束
 

@@ -134,6 +134,9 @@ export const api = {
   refreshSocialDigest: (authorId: number) =>
     request<AuthorDigest | null>(`/authors/${authorId}/social-digest/refresh`, { method: 'POST' }),
   sendDailyDigest: () => request<Job>('/social/daily-digest/send', { method: 'POST' }),
+  triggerLibraryScan: (target: 'komga' | 'kavita') =>
+    request<{ message: string }>(`/integrations/${target}/scan`, { method: 'POST' })
+      .then((result): ConnectionTestResult => ({ ok: true, message: result.message })),
   socialPosts: (authorId: number, postType?: string) => {
     const params = new URLSearchParams()
     if (postType) params.set('post_type', postType)

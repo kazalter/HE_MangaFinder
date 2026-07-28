@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal, init_db
 from app.modules.agent_review.router import router as agent_reviews_router
 from app.modules.authors.router import router as authors_router
+from app.modules.backup.router import router as backup_router
 from app.modules.catalog.downloads_router import router as downloads_router
 from app.modules.catalog.groups_router import router as groups_router
 from app.modules.catalog.image_search_router import router as image_search_router
@@ -18,6 +19,7 @@ from app.modules.catalog.router import router as catalog_router
 from app.modules.catalog.scheduler import CatalogScheduler
 from app.modules.catalog.series_router import router as series_router
 from app.modules.dashboard.router import router as dashboard_router
+from app.modules.integrations.router import router as integrations_router
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.router import router as jobs_router
 from app.modules.jobs.worker import JobWorker
@@ -80,12 +82,14 @@ def health() -> dict[str, str]:
 
 app.include_router(authors_router, prefix="/api")
 app.include_router(agent_reviews_router, prefix="/api")
+app.include_router(backup_router, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(downloads_router, prefix="/api")
 app.include_router(groups_router, prefix="/api")
 app.include_router(image_search_router, prefix="/api")
 app.include_router(series_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
+app.include_router(integrations_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(media_router, prefix="/api")
 app.include_router(sources_router, prefix="/api")
