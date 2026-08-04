@@ -58,8 +58,18 @@ class JobWorker:
                             int(job.payload["author_id"])
                         )
                     else:
+                        provider_names = {
+                            str(provider)
+                            for provider in job.payload.get("providers", [])
+                        }
                         result = await discovery.discover_author(
-                            int(job.payload["author_id"]), trigger=trigger
+                            int(job.payload["author_id"]),
+                            trigger=trigger,
+                            provider_names=(
+                                provider_names
+                                if trigger == "provider_retry"
+                                else None
+                            ),
                         )
                     job.payload = {**job.payload, **result}
                     if (

@@ -185,7 +185,7 @@ export function SystemSettings({ onClose }: { onClose: () => void }) {
             <div className="settings-form-grid">
               <Field label="刷新周期（分钟）" note="建议 1440 分钟；最短 60 分钟，避免给来源造成压力"><input type="number" min="60" max="10080" value={draft.discovery.interval_minutes} onChange={(event) => setDraft({ ...draft, discovery: { ...draft.discovery, interval_minutes: Number(event.target.value) } })} /></Field>
             </div>
-            <p className="setting-help">手动刷新仍可随时使用。来源失败会单独退避到下一个周期，并在总览的来源健康度中展示。</p>
+            <p className="setting-help">手动刷新仍可随时使用。失败来源会独立指数退避并单独重试，不重复扫描健康来源；结果会在总览的来源健康度中展示。</p>
           </div>
         </>}
 

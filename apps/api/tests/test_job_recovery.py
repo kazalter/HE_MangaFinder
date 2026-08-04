@@ -38,6 +38,30 @@ def test_running_jobs_are_requeued_after_restart() -> None:
         assert succeeded.status == JobStatus.SUCCEEDED
 
 
+def test_provider_retry_jobs_merge_and_full_scan_takes_precedence() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        repository = JobRepository(session)
+        job = repository.enqueue_discovery(
+            1, trigger="provider_retry", providers=["broken-b"]
+        )
+        merged = repository.enqueue_discovery(
+            1, trigger="provider_retry", providers=["broken-a"]
+        )
+
+        assert merged.id == job.id
+        assert merged.payload == {
+            "author_id": 1,
+            "trigger": "provider_retry",
+            "providers": ["broken-a", "broken-b"],
+        }
+
+        scheduled = repository.enqueue_discovery(1, trigger="scheduled")
+        assert scheduled.id == job.id
+        assert scheduled.payload == {"author_id": 1, "trigger": "scheduled"}
+
+
 def test_failed_job_is_retried_after_backoff() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

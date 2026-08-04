@@ -18,7 +18,13 @@ class JobRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def enqueue_discovery(self, author_id: int, *, trigger: str = "manual") -> Job:
+    def enqueue_discovery(
+        self,
+        author_id: int,
+        *,
+        trigger: str = "manual",
+        providers: list[str] | None = None,
+    ) -> Job:
         active = self.session.scalars(
             select(Job).where(
                 Job.kind == DISCOVER_AUTHOR,
@@ -29,13 +35,28 @@ class JobRepository:
             (job for job in active if job.payload.get("author_id") == author_id), None
         )
         if existing:
-            if trigger != "scheduled":
-                existing.payload = {**existing.payload, "trigger": trigger}
+            existing_trigger = str(existing.payload.get("trigger", "manual"))
+            if trigger == "provider_retry":
+                if existing_trigger == "provider_retry":
+                    retry_providers = {
+                        str(provider)
+                        for provider in existing.payload.get("providers", [])
+                    }
+                    retry_providers.update(providers or [])
+                    existing.payload = {
+                        **existing.payload,
+                        "providers": sorted(retry_providers),
+                    }
+            elif existing_trigger == "provider_retry" or trigger != "scheduled":
+                existing.payload = {
+                    "author_id": author_id,
+                    "trigger": trigger,
+                }
             return existing
-        job = Job(
-            kind=DISCOVER_AUTHOR,
-            payload={"author_id": author_id, "trigger": trigger},
-        )
+        payload: dict[str, object] = {"author_id": author_id, "trigger": trigger}
+        if providers is not None:
+            payload["providers"] = sorted(set(providers))
+        job = Job(kind=DISCOVER_AUTHOR, payload=payload)
         self.session.add(job)
         self.session.flush()
         return job

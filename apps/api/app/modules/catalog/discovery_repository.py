@@ -74,9 +74,61 @@ class DiscoveryRepository:
             select(
                 DiscoveryRun.author_id,
                 func.max(DiscoveryRun.started_at),
-            ).group_by(DiscoveryRun.author_id)
+            )
+            .where(DiscoveryRun.trigger != "provider_retry")
+            .group_by(DiscoveryRun.author_id)
         )
         return {author_id: started_at for author_id, started_at in rows if started_at}
+
+    def due_provider_retries(
+        self,
+        now: datetime,
+        base_delay_minutes: int,
+        max_delay_minutes: int,
+        enabled_providers: set[str],
+    ) -> dict[int, list[str]]:
+        """Return only failed author/provider pairs whose exponential delay elapsed."""
+        rows = self.session.execute(
+            select(
+                DiscoveryRun.author_id,
+                ProviderScanRun.provider,
+                ProviderScanRun.status,
+                ProviderScanRun.finished_at,
+            )
+            .join(
+                DiscoveryRun,
+                DiscoveryRun.id == ProviderScanRun.discovery_run_id,
+            )
+            .where(ProviderScanRun.provider.in_(enabled_providers))
+            .order_by(
+                DiscoveryRun.author_id,
+                ProviderScanRun.provider,
+                ProviderScanRun.started_at.desc(),
+                ProviderScanRun.id.desc(),
+            )
+        )
+        failures: dict[tuple[int, str], tuple[int, datetime]] = {}
+        completed: set[tuple[int, str]] = set()
+        for author_id, provider, status, finished_at in rows:
+            key = (author_id, provider)
+            if key in completed:
+                continue
+            if status != "failed" or finished_at is None:
+                completed.add(key)
+                continue
+            count, latest_failure = failures.get(key, (0, finished_at))
+            failures[key] = (count + 1, latest_failure)
+
+        due: dict[int, list[str]] = {}
+        base_delay_minutes = max(base_delay_minutes, 1)
+        max_delay_minutes = max(max_delay_minutes, base_delay_minutes)
+        max_shift = (max_delay_minutes // base_delay_minutes).bit_length()
+        for (author_id, provider), (failure_count, latest_failure) in failures.items():
+            shift = min(max(failure_count - 1, 0), max_shift)
+            delay = min(base_delay_minutes * (1 << shift), max_delay_minutes)
+            if latest_failure + timedelta(minutes=delay) <= now:
+                due.setdefault(author_id, []).append(provider)
+        return due
 
     def due_authors(self, now: datetime, interval_minutes: int) -> list[Author]:
         threshold = now - timedelta(minutes=interval_minutes)

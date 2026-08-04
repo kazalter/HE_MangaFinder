@@ -6,6 +6,7 @@ from app.core.config import Settings
 from app.db.session import SessionLocal
 from app.modules.catalog.discovery_repository import DiscoveryRepository
 from app.modules.jobs.repository import JobRepository
+from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -13,8 +14,9 @@ logger = logging.getLogger(__name__)
 class CatalogScheduler:
     """Periodically enqueue stale author subscriptions without duplicating active jobs."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, providers: ProviderRegistry) -> None:
         self.settings = settings
+        self.providers = providers
 
     async def run(self) -> None:
         while True:
@@ -34,7 +36,23 @@ class CatalogScheduler:
                 now, self.settings.catalog_discovery_interval_minutes
             )
             jobs = JobRepository(session)
+            queued_author_ids: set[int] = set()
             for author in due:
                 jobs.enqueue_discovery(author.id, trigger="scheduled")
+                queued_author_ids.add(author.id)
+
+            retries = DiscoveryRepository(session).due_provider_retries(
+                now,
+                self.settings.catalog_provider_retry_base_minutes,
+                self.settings.catalog_provider_retry_max_minutes,
+                {provider.name for provider in self.providers.all()},
+            )
+            for author_id, provider_names in retries.items():
+                jobs.enqueue_discovery(
+                    author_id,
+                    trigger="provider_retry",
+                    providers=provider_names,
+                )
+                queued_author_ids.add(author_id)
             session.commit()
-            return len(due)
+            return len(queued_author_ids)

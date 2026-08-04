@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     worker_enabled: bool = True
     catalog_auto_discovery_enabled: bool = False
     catalog_discovery_interval_minutes: int = 1440
+    catalog_provider_retry_base_minutes: int = 15
+    catalog_provider_retry_max_minutes: int = 360
     downloads_dir: Path = Path("./data/downloads")
     downloads_max_bytes: int = 0
     downloads_cleanup_target_ratio: float = 0.8

@@ -23,7 +23,11 @@ class DiscoveryService:
         self.providers = providers
 
     async def discover_author(
-        self, author_id: int, *, trigger: str = "manual"
+        self,
+        author_id: int,
+        *,
+        trigger: str = "manual",
+        provider_names: set[str] | None = None,
     ) -> dict[str, int | str]:
         author = AuthorRepository(self.session).get(author_id)
         if author is None:
@@ -43,7 +47,11 @@ class DiscoveryService:
         excluded_total = 0
         errors: list[str] = []
         successful_providers = 0
-        providers = list(self.providers.all())
+        providers = [
+            provider
+            for provider in self.providers.all()
+            if provider_names is None or provider.name in provider_names
+        ]
         try:
             for provider in providers:
                 query_name = catalog.preferred_author_query_name(
@@ -136,9 +144,10 @@ class DiscoveryService:
 
         if successful_providers:
             aggregation.prune_pending_suggestions(author.id)
-            author = AuthorRepository(self.session).get(author_id)
-            if author:
-                author.last_checked_at = datetime.now(UTC)
+            if provider_names is None:
+                author = AuthorRepository(self.session).get(author_id)
+                if author:
+                    author.last_checked_at = datetime.now(UTC)
 
         run = self.session.get(DiscoveryRun, run_id)
         if run:
@@ -157,7 +166,7 @@ class DiscoveryService:
             )
         self.session.commit()
 
-        if errors and successful_providers == 0:
+        if errors and successful_providers == 0 and trigger != "provider_retry":
             raise RuntimeError("; ".join(errors))
         if errors:
             logger.warning("部分漫画来源查询失败: %s", "; ".join(errors))

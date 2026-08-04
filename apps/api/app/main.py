@@ -49,7 +49,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     social_scheduler_task = None
     if settings.worker_enabled:
         worker_task = asyncio.create_task(JobWorker(settings, providers).run())
-        catalog_scheduler_task = asyncio.create_task(CatalogScheduler(settings).run())
+        catalog_scheduler_task = asyncio.create_task(
+            CatalogScheduler(settings, providers).run()
+        )
     if settings.social_enabled:
         social_scheduler_task = asyncio.create_task(SocialScheduler(settings).run())
     yield
