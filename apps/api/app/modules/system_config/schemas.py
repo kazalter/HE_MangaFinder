@@ -1,4 +1,5 @@
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -67,6 +68,26 @@ class NotificationConfig(BaseModel):
     qq_client_secret: str | None = Field(default=None, max_length=1000)
     qq_client_secret_configured: bool = False
     qq_user_openid: str = Field(max_length=300)
+    webhook_enabled: bool
+    webhook_url: str = Field(max_length=1000)
+    webhook_secret: str | None = Field(default=None, max_length=1000)
+    webhook_secret_configured: bool = False
+
+    @model_validator(mode="after")
+    def webhook_is_complete_when_enabled(self) -> "NotificationConfig":
+        if not self.webhook_enabled:
+            return self
+        url = urlsplit(self.webhook_url.strip())
+        if (
+            url.scheme not in {"http", "https"}
+            or not url.hostname
+            or url.username is not None
+            or url.password is not None
+        ):
+            raise ValueError("Webhook URL 必须是无内嵌凭证的有效 HTTP(S) 地址")
+        if not (self.webhook_secret or self.webhook_secret_configured):
+            raise ValueError("启用 Webhook 前必须配置签名密钥")
+        return self
 
 
 class XSessionStatus(BaseModel):
@@ -127,6 +148,11 @@ class QqConnectionInput(BaseModel):
     app_id: str = Field(max_length=200)
     client_secret: str | None = Field(default=None, max_length=1000)
     user_openid: str = Field(max_length=300)
+
+
+class WebhookConnectionInput(BaseModel):
+    url: str = Field(max_length=1000)
+    secret: str | None = Field(default=None, max_length=1000)
 
 
 class XSessionImport(BaseModel):

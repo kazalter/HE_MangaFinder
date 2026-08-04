@@ -86,7 +86,8 @@ REST API -> Job repository -> Worker -> discovery service
 ### 阶段 B：可日常使用
 
 - [x] 定时刷新策略；失败来源按来源独立指数退避，不重复扫描健康来源；
-- [ ] Webhook/邮件通知（现已有站内通知、QQ Bot 与每日摘要）；
+- [x] 通用签名 Webhook，支持幂等投递、失败退避和多渠道部分成功续传；
+- [ ] SMTP 邮件通知（现已有站内通知、QQ Bot、Webhook 与每日摘要）；
 - [x] 作者别名与人工匹配，跨来源作品匹配审核；
 - 封面本地缓存、ETag/Last-Modified、数据导入导出；
 - 接入更多用户拥有访问权且允许下载的来源，并为 CBZ 写入 ComicInfo.xml；

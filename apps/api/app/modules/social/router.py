@@ -207,6 +207,7 @@ def social_status(session: SessionDep) -> SocialStatusRead:
         ),
         agent_configured=settings.social_agent_configured,
         qq_configured=settings.qq_bot_configured,
+        webhook_configured=settings.webhook_configured,
         auto_confirm_threshold=settings.social_auto_confirm_threshold,
         candidate_threshold=settings.social_candidate_threshold,
         pending_count=repository.count_signals("pending"),

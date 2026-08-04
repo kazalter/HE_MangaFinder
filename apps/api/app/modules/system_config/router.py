@@ -16,6 +16,7 @@ from app.modules.system_config.schemas import (
     SaveResult,
     SystemConfigRead,
     SystemConfigUpdate,
+    WebhookConnectionInput,
     XSessionImport,
 )
 from app.modules.system_config.security import (
@@ -36,6 +37,7 @@ from app.modules.system_config.service import (
     save_config,
     test_agent,
     test_qq,
+    test_webhook,
     test_x_session,
 )
 
@@ -121,6 +123,16 @@ async def test_qq_connection(
     payload: QqConnectionInput, _: AdminDep, __: CsrfDep, settings: SettingsDep
 ) -> ConnectionTestResult:
     return await test_qq(settings, payload)
+
+
+@router.post("/test/webhook", response_model=ConnectionTestResult)
+async def test_webhook_connection(
+    payload: WebhookConnectionInput,
+    _: AdminDep,
+    __: CsrfDep,
+    settings: SettingsDep,
+) -> ConnectionTestResult:
+    return await test_webhook(settings, payload)
 
 
 @router.put("/x-session", response_model=ConnectionTestResult)

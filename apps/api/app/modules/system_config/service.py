@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.db.models import AdminAccount
 from app.modules.social.collector import XBrowserCollector
-from app.modules.social.notifications import QqBotClient
+from app.modules.social.notifications import QqBotClient, WebhookClient
 from app.modules.system_config.repository import (
     RUNTIME_FIELDS,
     SECRET_FIELDS,
@@ -26,6 +26,7 @@ from app.modules.system_config.schemas import (
     SaveResult,
     SystemConfigRead,
     SystemConfigUpdate,
+    WebhookConnectionInput,
     XSessionImport,
     XSessionStatus,
 )
@@ -88,6 +89,10 @@ def _notifications(settings: Settings) -> NotificationConfig:
         qq_client_secret=None,
         qq_client_secret_configured=bool(settings.qq_bot_client_secret),
         qq_user_openid=settings.qq_bot_user_openid,
+        webhook_enabled=settings.webhook_enabled,
+        webhook_url=settings.webhook_url,
+        webhook_secret=None,
+        webhook_secret_configured=bool(settings.webhook_secret),
     )
 
 
@@ -181,6 +186,8 @@ def _values(payload: SystemConfigUpdate) -> dict[str, Any]:
         "qq_bot_enabled": payload.notifications.qq_enabled,
         "qq_bot_app_id": payload.notifications.qq_app_id.strip(),
         "qq_bot_user_openid": payload.notifications.qq_user_openid.strip(),
+        "webhook_enabled": payload.notifications.webhook_enabled,
+        "webhook_url": payload.notifications.webhook_url.strip(),
     }
 
 
@@ -204,6 +211,7 @@ async def save_config(
     secret_inputs = {
         "agent_api_key": payload.ai.api_key,
         "qq_bot_client_secret": payload.notifications.qq_client_secret,
+        "webhook_secret": payload.notifications.webhook_secret,
     }
     for key, value in secret_inputs.items():
         if value is None or key not in SECRET_FIELDS:
@@ -269,6 +277,30 @@ async def test_qq(settings: Settings, payload: QqConnectionInput) -> ConnectionT
     try:
         await QqBotClient(test_settings).send_text("MangaFinder 设置页连接测试成功。")
         return ConnectionTestResult(ok=True, message="测试消息已发送")
+    except Exception as exc:
+        return ConnectionTestResult(ok=False, message=f"QQ Bot 测试失败：{type(exc).__name__}")
+
+
+async def test_webhook(
+    settings: Settings, payload: WebhookConnectionInput
+) -> ConnectionTestResult:
+    secret = settings.webhook_secret if payload.secret is None else payload.secret
+    test_settings = settings.model_copy(
+        update={
+            "webhook_enabled": True,
+            "webhook_url": payload.url.strip(),
+            "webhook_secret": secret,
+        }
+    )
+    if not test_settings.webhook_configured:
+        return ConnectionTestResult(ok=False, message="Webhook 地址或签名密钥尚未配置")
+    try:
+        await WebhookClient(test_settings).send(
+            event="connection_test",
+            idempotency_key=f"webhook:test:{os.urandom(8).hex()}",
+            payload={"text": "MangaFinder 设置页连接测试成功。"},
+        )
+        return ConnectionTestResult(ok=True, message="Webhook 测试事件已发送")
     except RuntimeError as exc:
         return ConnectionTestResult(ok=False, message=str(exc))
 

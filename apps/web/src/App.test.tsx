@@ -54,6 +54,7 @@ vi.mock('./lib/api', () => ({
       collector_configured: false,
       agent_configured: false,
       qq_configured: false,
+      webhook_configured: false,
       auto_confirm_threshold: 0.92,
       candidate_threshold: 0.6,
       pending_count: 0,

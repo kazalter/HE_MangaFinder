@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -87,6 +88,10 @@ class Settings(BaseSettings):
     qq_bot_user_openid: str = ""
     qq_bot_api_base_url: str = "https://api.sgroup.qq.com"
     qq_bot_token_url: str = "https://bots.qq.com/app/getAppAccessToken"
+    webhook_enabled: bool = False
+    webhook_url: str = ""
+    webhook_secret: str = ""
+    webhook_timeout_seconds: float = 15.0
     system_secret_key_file: Path = Path("./data/system-secret.key")
     admin_session_hours: int = 12
     admin_cookie_secure: bool = False
@@ -124,6 +129,18 @@ class Settings(BaseSettings):
             and self.qq_bot_app_id.strip()
             and self.qq_bot_client_secret.strip()
             and self.qq_bot_user_openid.strip()
+        )
+
+    @property
+    def webhook_configured(self) -> bool:
+        url = urlsplit(self.webhook_url.strip())
+        return bool(
+            self.webhook_enabled
+            and url.scheme in {"http", "https"}
+            and url.hostname
+            and url.username is None
+            and url.password is None
+            and self.webhook_secret.strip()
         )
 
 

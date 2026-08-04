@@ -262,6 +262,7 @@ export interface SocialStatus {
   collector_configured: boolean
   agent_configured: boolean
   qq_configured: boolean
+  webhook_configured: boolean
   auto_confirm_threshold: number
   candidate_threshold: number
   pending_count: number
@@ -325,6 +326,10 @@ export interface NotificationConfig {
   qq_client_secret: string | null
   qq_client_secret_configured: boolean
   qq_user_openid: string
+  webhook_enabled: boolean
+  webhook_url: string
+  webhook_secret: string | null
+  webhook_secret_configured: boolean
 }
 
 export interface SystemConfig {

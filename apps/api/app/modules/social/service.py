@@ -390,7 +390,13 @@ class SocialSyncService:
             f"原帖：{post.url}\n"
             f"审核：{self.settings.public_base_url.rstrip('/')}/?radar={signal.id}"
         )
-        self.repository.enqueue_notification(signal, {"text": text})
+        channels: list[str] = []
+        if self.settings.qq_bot_enabled:
+            channels.append("qq")
+        if self.settings.webhook_enabled:
+            channels.append("webhook")
+        for channel in channels:
+            self.repository.enqueue_notification(signal, channel, {"text": text})
 
     def _next_interval(self, author_id: int) -> int:
         recent = datetime.now(UTC) - timedelta(days=45)

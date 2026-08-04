@@ -250,8 +250,13 @@ class SocialRepository:
     def author(self, author_id: int) -> Author | None:
         return self.session.get(Author, author_id)
 
-    def enqueue_notification(self, signal: ReleaseSignal, payload: dict[str, object]) -> None:
-        key = f"qq:signal:{signal.id}:{signal.kind}:{signal.status}"
+    def enqueue_notification(
+        self,
+        signal: ReleaseSignal,
+        channel: str,
+        payload: dict[str, object],
+    ) -> None:
+        key = f"{channel}:signal:{signal.id}:{signal.kind}:{signal.status}"
         exists = self.session.scalar(
             select(NotificationOutbox).where(NotificationOutbox.idempotency_key == key)
         )
@@ -259,7 +264,7 @@ class SocialRepository:
             self.session.add(
                 NotificationOutbox(
                     signal_id=signal.id,
-                    channel="qq",
+                    channel=channel,
                     idempotency_key=key,
                     payload=payload,
                     next_attempt_at=datetime.now(UTC),

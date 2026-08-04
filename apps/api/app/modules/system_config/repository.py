@@ -45,8 +45,10 @@ RUNTIME_FIELDS = {
     "qq_bot_enabled",
     "qq_bot_app_id",
     "qq_bot_user_openid",
+    "webhook_enabled",
+    "webhook_url",
 }
-SECRET_FIELDS = {"agent_api_key", "qq_bot_client_secret"}
+SECRET_FIELDS = {"agent_api_key", "qq_bot_client_secret", "webhook_secret"}
 
 
 class SecretBox:

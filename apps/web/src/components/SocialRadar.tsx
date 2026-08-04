@@ -184,7 +184,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
           <div><p className="eyebrow">AUTHOR / ACTIVITY CENTER</p><h2>作者动态中心</h2><p>汇总作者最近近况；新作与重要变更仍走独立高精度提醒。</p></div>
           <div className="radar-health">
             <span className={status.enabled ? 'ok' : 'off'}>{status.enabled ? '雷达已启用' : '雷达未启用'}</span>
-            <small>Agent {status.agent_configured ? '已连接' : '规则模式'} · QQ {status.qq_configured ? '已连接' : '未配置'}</small>
+            <small>Agent {status.agent_configured ? '已连接' : '规则模式'} · 外部通知 {status.qq_configured || status.webhook_configured ? '已连接' : '未配置'}</small>
           </div>
         </header>
 
@@ -258,7 +258,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
 
         {view === 'overview' && <>
           <section className="digest-card">
-            <div className="digest-heading"><div><span>ROLLING 7 DAYS</span><h3>最近 7 天摘要</h3>{status.daily_digest_enabled && <small>QQ 日报每天 {String(status.daily_digest_hour).padStart(2, '0')}:00（{status.daily_digest_timezone}）自动发送</small>}</div><div className="digest-buttons">{status.qq_configured && status.daily_digest_enabled && <button onClick={() => void sendDailyDigest()}>立即发送今日日报</button>}<button onClick={() => void act(async () => { setDigest(await api.refreshSocialDigest(activeAuthor.id)) })}>重新总结</button></div></div>
+            <div className="digest-heading"><div><span>ROLLING 7 DAYS</span><h3>最近 7 天摘要</h3>{status.daily_digest_enabled && <small>日报每天 {String(status.daily_digest_hour).padStart(2, '0')}:00（{status.daily_digest_timezone}）通过已启用渠道发送</small>}</div><div className="digest-buttons">{(status.qq_configured || status.webhook_configured) && status.daily_digest_enabled && <button onClick={() => void sendDailyDigest()}>立即发送今日日报</button>}<button onClick={() => void act(async () => { setDigest(await api.refreshSocialDigest(activeAuthor.id)) })}>重新总结</button></div></div>
             {digest ? <><p className="digest-summary">{digest.summary}</p><div className="digest-highlights">{digest.highlights.map((item, index) => <article className={`importance-${item.importance}`} key={`${item.text}-${index}`}><span>{activityLabels[item.category] ?? item.category} · {item.factuality === 'fact' ? '明确事实' : item.factuality === 'plan' ? '作者计划' : '推测'}</span><p>{item.text}</p><small>证据 {item.post_ids.map((id, evidenceIndex) => { const post = rawPosts.find((candidate) => candidate.id === id); return post ? <span key={id}>{evidenceIndex > 0 ? '、' : ''}<a href={post.url} target="_blank" rel="noreferrer">帖子 {id} ↗</a></span> : <span key={id}>{evidenceIndex > 0 ? '、' : ''}帖子 {id}</span> })}</small></article>)}</div>{digest.uncertainties.length > 0 && <div className="digest-uncertain"><strong>仍不确定</strong><ul>{digest.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></div>}<small className="digest-source">{digest.generated_by === 'agent' ? `Agent 总结 · ${digest.model ?? ''}` : '规则降级摘要'}{digest.error ? ` · Agent 暂不可用：${digest.error}` : ''}</small></> : <p className="review-empty">扫描到作者动态后，这里会生成最近 7 天摘要。</p>}
           </section>
           <section className="activity-list">

@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -16,7 +19,11 @@ from app.db.models import (
 )
 from app.modules.social.activity import ActivityService
 from app.modules.social.daily_digest import DailyDigestService
-from app.modules.social.notifications import NotificationService, QqBotClient
+from app.modules.social.notifications import (
+    NotificationService,
+    QqBotClient,
+    WebhookClient,
+)
 from app.modules.social.service import SocialSyncService
 
 
@@ -26,6 +33,65 @@ def session() -> Session:
     Base.metadata.create_all(engine)
     with Session(engine) as value:
         yield value
+
+
+@pytest.mark.asyncio
+async def test_webhook_client_signs_body_without_exposing_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            return None
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            content: bytes,
+            headers: dict[str, str],
+        ) -> FakeResponse:
+            captured.update(url=url, content=content, headers=headers)
+            return FakeResponse()
+
+    monkeypatch.setattr("app.modules.social.notifications.httpx.AsyncClient", FakeClient)
+    settings = Settings(
+        webhook_enabled=True,
+        webhook_url="https://hooks.example.test/mangafinder",
+        webhook_secret="signing-secret",
+    )
+
+    await WebhookClient(settings).send(
+        event="connection_test",
+        idempotency_key="test-key",
+        payload={"text": "测试消息"},
+    )
+
+    body = captured["content"]
+    headers = captured["headers"]
+    assert isinstance(body, bytes)
+    assert isinstance(headers, dict)
+    assert b"signing-secret" not in body
+    timestamp = headers["X-MangaFinder-Timestamp"]
+    expected = hmac.new(
+        b"signing-secret",
+        timestamp.encode() + b"." + body,
+        hashlib.sha256,
+    ).hexdigest()
+    assert headers["X-MangaFinder-Signature"] == f"sha256={expected}"
+    assert headers["Idempotency-Key"] == "test-key"
+    assert json.loads(body)["data"] == {"text": "测试消息"}
 
 
 def add_activity(
@@ -185,15 +251,26 @@ async def test_notification_service_delivers_daily_digest(
 
 
 @pytest.mark.asyncio
-async def test_signal_is_marked_notified_only_after_delivery(
+async def test_signal_fans_out_and_is_marked_notified_after_delivery(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    sent: list[str] = []
+    qq_sent: list[str] = []
+    webhook_sent: list[str] = []
 
-    async def fake_send(_: QqBotClient, content: str) -> None:
-        sent.append(content)
+    async def fake_qq_send(_: QqBotClient, content: str) -> None:
+        qq_sent.append(content)
 
-    monkeypatch.setattr(QqBotClient, "send_text", fake_send)
+    async def fake_webhook_send(
+        _: WebhookClient,
+        *,
+        event: str,
+        idempotency_key: str,
+        payload: dict[str, object],
+    ) -> None:
+        webhook_sent.append(f"{event}:{idempotency_key}:{payload['text']}")
+
+    monkeypatch.setattr(QqBotClient, "send_text", fake_qq_send)
+    monkeypatch.setattr(WebhookClient, "send", fake_webhook_send)
     author = Author(name="作者甲")
     session.add(author)
     session.flush()
@@ -233,15 +310,88 @@ async def test_signal_is_marked_notified_only_after_delivery(
         qq_bot_app_id="app",
         qq_bot_client_secret="secret",
         qq_bot_user_openid="openid",
+        webhook_enabled=True,
+        webhook_url="https://hooks.example.test/mangafinder",
+        webhook_secret="webhook-secret",
     )
     SocialSyncService(session, settings).queue_notification(signal, account, post)
     session.commit()
 
     assert signal.notified_at is None
-    assert session.scalar(select(NotificationOutbox)) is not None
+    outbox = list(session.scalars(select(NotificationOutbox)))
+    assert {item.channel for item in outbox} == {"qq", "webhook"}
 
     result = await NotificationService(session, settings).deliver_pending()
 
-    assert result["delivered"] == 1
-    assert sent
+    assert result["delivered"] == 2
+    assert qq_sent
+    assert webhook_sent and webhook_sent[0].startswith("signal_created:webhook:signal:")
     assert signal.notified_at is not None
+
+
+@pytest.mark.asyncio
+async def test_digest_retries_only_the_channel_that_failed(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    qq_attempts = 0
+    webhook_attempts = 0
+
+    async def flaky_qq(_: QqBotClient, _content: str) -> None:
+        nonlocal qq_attempts
+        qq_attempts += 1
+        if qq_attempts == 1:
+            raise RuntimeError("temporary QQ failure")
+
+    async def successful_webhook(
+        _: WebhookClient,
+        *,
+        event: str,
+        idempotency_key: str,
+        payload: dict[str, object],
+    ) -> None:
+        nonlocal webhook_attempts
+        webhook_attempts += 1
+        assert event == "daily_digest"
+        assert idempotency_key.startswith("webhook:daily_digest:")
+        assert payload["text"] == "日报内容"
+
+    monkeypatch.setattr(QqBotClient, "send_text", flaky_qq)
+    monkeypatch.setattr(WebhookClient, "send", successful_webhook)
+    delivery = DailyDigestDelivery(
+        local_date="2026-07-17",
+        timezone="Asia/Shanghai",
+        period_start=datetime.now(UTC) - timedelta(days=1),
+        period_end=datetime.now(UTC),
+        author_ids=[1],
+        content_hash="multi-channel-digest",
+        payload={"text": "日报内容"},
+        status="pending",
+        next_attempt_at=datetime.now(UTC),
+    )
+    session.add(delivery)
+    session.commit()
+    settings = Settings(
+        qq_bot_enabled=True,
+        qq_bot_app_id="app",
+        qq_bot_client_secret="secret",
+        qq_bot_user_openid="openid",
+        webhook_enabled=True,
+        webhook_url="https://hooks.example.test/mangafinder",
+        webhook_secret="webhook-secret",
+    )
+    service = NotificationService(session, settings)
+
+    first = await service.deliver_pending()
+    assert first["failed"] == 1
+    assert delivery.status == "pending"
+    assert delivery.payload["_delivered_channels"] == ["webhook"]
+    assert webhook_attempts == 1
+
+    delivery.next_attempt_at = datetime.now(UTC)
+    session.commit()
+    second = await service.deliver_pending()
+
+    assert second["delivered"] == 1
+    assert delivery.status == "delivered"
+    assert qq_attempts == 2
+    assert webhook_attempts == 1

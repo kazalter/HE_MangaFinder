@@ -183,6 +183,9 @@ export const api = {
   testQqConfig: (notifications: NotificationConfig) => request<ConnectionTestResult>('/system-config/test/qq', {
     method: 'POST', body: JSON.stringify({ app_id: notifications.qq_app_id, client_secret: notifications.qq_client_secret, user_openid: notifications.qq_user_openid }),
   }),
+  testWebhookConfig: (notifications: NotificationConfig) => request<ConnectionTestResult>('/system-config/test/webhook', {
+    method: 'POST', body: JSON.stringify({ url: notifications.webhook_url, secret: notifications.webhook_secret }),
+  }),
   importXCookie: (cookieHeader: string) =>
     request<ConnectionTestResult>('/system-config/x-session', { method: 'PUT', body: JSON.stringify({ cookie_header: cookieHeader }) }),
   importXStorageState: (storageState: Record<string, unknown>) =>

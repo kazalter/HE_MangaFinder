@@ -29,6 +29,7 @@ def test_secret_settings_are_encrypted_and_apply_as_runtime_overrides(tmp_path) 
         repository.set_value("agent_enabled", True)
         repository.set_value("agent_model", "private-model")
         repository.set_value("agent_api_key", "sk-secret-value", encrypted=True)
+        repository.set_value("webhook_secret", "hook-secret-value", encrypted=True)
         session.commit()
 
         stored = session.get(SystemSetting, "agent_api_key")
@@ -41,6 +42,7 @@ def test_secret_settings_are_encrypted_and_apply_as_runtime_overrides(tmp_path) 
         assert restored.agent_enabled is True
         assert restored.agent_model == "private-model"
         assert restored.agent_api_key == "sk-secret-value"
+        assert restored.webhook_secret == "hook-secret-value"
 
 
 def test_admin_password_uses_scrypt_and_verifies_without_plaintext() -> None:

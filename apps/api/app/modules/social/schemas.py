@@ -201,6 +201,7 @@ class SocialStatusRead(BaseModel):
     collector_configured: bool
     agent_configured: bool
     qq_configured: bool
+    webhook_configured: bool
     auto_confirm_threshold: float
     candidate_threshold: float
     pending_count: int
