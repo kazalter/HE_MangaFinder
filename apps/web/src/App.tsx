@@ -162,37 +162,55 @@ export default function App() {
   })
   const hasModal = Boolean(openedWork || reviewOpen || radarOpen || imageSearchOpen)
 
+  const loadGeneration = useRef(0)
   const load = useCallback(async () => {
-    try {
-      const activeAuthorId = libraryMode === 'works' ? selectedId : null
-      const [nextAuthors, nextWorks, nextJobs, nextSources, nextSuggestions, nextSeriesCandidates, nextAgentStatus, nextSocialStatus, nextSocialSignals, nextDashboard, nextDiscoveryEvents] = await Promise.all([
-        api.authors(), api.workGroups(activeAuthorId ?? undefined), api.jobs(), api.sources(), api.mergeSuggestions(), api.seriesCandidates(activeAuthorId ?? undefined), api.agentStatus(), api.socialStatus(), api.socialRadar(activeAuthorId ?? undefined), api.dashboard(), api.discoveryInbox(),
-      ])
-      setAuthors(nextAuthors)
-      setWorks(nextWorks)
-      setJobs(nextJobs)
-      setSources(nextSources)
-      setSuggestions(nextSuggestions)
-      setSeriesCandidates(nextSeriesCandidates)
-      setAgentStatus(nextAgentStatus)
-      setSocialStatus(nextSocialStatus)
-      setSocialSignals(nextSocialSignals)
-      setDashboard(nextDashboard)
-      setDiscoveryEvents(nextDiscoveryEvents)
-      if (selectedId !== null && !nextAuthors.some((author) => author.id === selectedId)) {
-        setSelectedId(null)
+    const generation = ++loadGeneration.current
+    const failed: string[] = []
+    const activeAuthorId = libraryMode === 'works' ? selectedId : null
+    const update = async <T,>(label: string, request: Promise<T>, apply: (value: T) => void) => {
+      try {
+        const value = await request
+        if (loadGeneration.current === generation) apply(value)
+      } catch {
+        failed.push(label)
       }
-      setPreviewAuthorId((current) => (
-        current !== null && nextAuthors.some((author) => author.id === current)
-          ? current
-          : nextAuthors[0]?.id ?? null
-      ))
-      setError(null)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '加载失败')
     }
-  }, [libraryMode, selectedId])
+    const tasks = [
+      update('作者', api.authors(), (nextAuthors) => {
+        setAuthors(nextAuthors)
+        if (selectedId !== null && !nextAuthors.some((author) => author.id === selectedId)) setSelectedId(null)
+        setPreviewAuthorId((current) => (
+          current !== null && nextAuthors.some((author) => author.id === current)
+            ? current : nextAuthors[0]?.id ?? null
+        ))
+      }),
+      update('作品', api.workGroups(activeAuthorId ?? undefined), setWorks),
+      update('任务', api.jobs(), setJobs),
+      update('来源', api.sources(), setSources),
+      update('聚合候选', api.mergeSuggestions(), setSuggestions),
+      update('来源状态', api.socialStatus(), setSocialStatus),
+    ]
+    if (libraryMode === 'works') {
+      tasks.push(update('系列候选', api.seriesCandidates(activeAuthorId ?? undefined), setSeriesCandidates))
+    }
+    if (libraryMode === 'overview') {
+      tasks.push(update('资料库总览', api.dashboard(), setDashboard))
+      tasks.push(update('新发现', api.discoveryInbox(), setDiscoveryEvents))
+    }
+    if (reviewOpen) tasks.push(update('聚合审核状态', api.agentStatus(), setAgentStatus))
+    if (radarOpen) tasks.push(update('动态雷达', api.socialRadar(activeAuthorId ?? undefined), setSocialSignals))
+    await Promise.all(tasks)
+    if (loadGeneration.current === generation) {
+      setError(failed.length ? `${failed.join('、')}加载失败，请重试` : null)
+    }
+  }, [libraryMode, selectedId, reviewOpen, radarOpen])
 
+  const worksScope = libraryMode === 'works' && selectedId !== null ? String(selectedId) : 'all'
+  const previousWorksScope = useRef(worksScope)
+  useEffect(() => {
+    if (previousWorksScope.current !== worksScope) setWorks([])
+    previousWorksScope.current = worksScope
+  }, [worksScope])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
     const openLogin = () => setSettingsOpen(true)
@@ -236,9 +254,23 @@ export default function App() {
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
   }, [libraryMode, selectedId])
   useEffect(() => {
-    if (!jobs.some((job) => job.status === 'pending' || job.status === 'running')) return
-    const timer = window.setInterval(() => void load(), 2000)
-    return () => window.clearInterval(timer)
+    const activeIds = jobs.filter((job) => job.status === 'pending' || job.status === 'running').map((job) => job.id)
+    if (!activeIds.length) return
+    let cancelled = false
+    let polling = false
+    const timer = window.setInterval(() => {
+      if (polling) return
+      polling = true
+      void api.jobs().then((nextJobs) => {
+        if (cancelled) return
+        setJobs(nextJobs)
+        const nextActive = new Set(nextJobs.filter((job) => job.status === 'pending' || job.status === 'running').map((job) => job.id))
+        if (activeIds.some((id) => !nextActive.has(id))) void load()
+      }).catch(() => {
+        if (!cancelled) setError('任务状态加载失败，请重试')
+      }).finally(() => { polling = false })
+    }, 2000)
+    return () => { cancelled = true; window.clearInterval(timer) }
   }, [jobs, load])
 
   const selectedAuthor = libraryMode === 'works'
@@ -445,6 +477,10 @@ export default function App() {
       />
 
       <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : libraryMode === 'overview' ? 'dashboard-main' : ''}>
+        {error && <div className="alert" role="alert">
+          <div className="alert-copy"><strong>操作失败</strong><span>{error}</span></div>
+          <button className="alert-close" onClick={() => setError(null)} aria-label="关闭错误提示">×</button>
+        </div>}
         {settingsOpen
           ? <SystemSettings onClose={() => setSettingsOpen(false)} />
           : libraryMode === 'overview'
@@ -486,10 +522,6 @@ export default function App() {
           </div>
         </header>
 
-        {error && <div className="alert" role="alert">
-          <div className="alert-copy"><strong>操作失败</strong><span>{error}</span></div>
-          <button className="alert-close" onClick={() => setError(null)} aria-label="关闭错误提示">×</button>
-        </div>}
         {failedJob && <div className="alert" role="alert">
           <div className="alert-copy">
             <strong>{JOB_LABELS[failedJob.kind] ?? '后台任务'}失败</strong>

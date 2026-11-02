@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App, { calculateCoverColumns } from './App'
+import { api } from './lib/api'
 
 const { jobsMock, workGroupsMock, works } = vi.hoisted(() => ({
   jobsMock: vi.fn(),
@@ -202,6 +203,40 @@ describe('catalog views', () => {
     }])
     render(<App />)
     expect(await screen.findByText('章节下载失败')).toBeInTheDocument()
+  })
+
+  it('keeps the catalog available if an unrelated endpoint fails', async () => {
+    vi.mocked(api.socialStatus).mockRejectedValueOnce(new Error('offline'))
+    render(<App />)
+    expect(await screen.findByText('作品甲')).toBeInTheDocument()
+    expect(await screen.findByText('来源状态加载失败，请重试')).toBeInTheDocument()
+  })
+
+  it('polls only jobs while a task is active, then refreshes on completion', async () => {
+    const running = { id: 72, kind: 'discover_author', payload: {}, status: 'running', attempts: 1, error: null, created_at: '', started_at: null, finished_at: null, next_attempt_at: null }
+    jobsMock.mockResolvedValue([running])
+    render(<App />)
+    expect(await screen.findByText('作品甲')).toBeInTheDocument()
+    await waitFor(() => expect(jobsMock.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 4000 })
+    expect(workGroupsMock).toHaveBeenCalledTimes(1)
+    jobsMock.mockResolvedValue([{ ...running, status: 'succeeded' }])
+    await waitFor(() => expect(workGroupsMock.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 4000 })
+  }, 10000)
+
+  it('ignores late results from the previously selected author', async () => {
+    window.history.replaceState(null, '', '/?view=works')
+    let resolveOld!: (value: typeof works) => void
+    workGroupsMock.mockImplementation((authorId?: number) => authorId === 2
+      ? Promise.resolve([works[1]])
+      : new Promise((resolve) => { resolveOld = resolve }))
+    render(<App />)
+    const author = (await screen.findAllByText('作者乙'))[0].closest('button')!
+    fireEvent.click(author)
+    expect(await screen.findByText('作品乙')).toBeInTheDocument()
+    resolveOld([works[0]])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.queryByText('作品甲')).not.toBeInTheDocument()
+    expect(screen.getByText('作品乙')).toBeInTheDocument()
   })
 
   it('stops showing an old failure after the same task subject recovers', async () => {
