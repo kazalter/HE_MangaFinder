@@ -133,6 +133,34 @@ ${MANGAFINDER_DATA_DIR:-./data}
 
 备份时停止 Stack，然后复制整个数据目录。更新或重新构建镜像不会删除这里的数据。
 
+## SQLite 一致性备份与恢复演练
+
+设置中心的 JSON/ZIP 是便携目录导出，排除了管理员会话、设置凭证及其他运行数据，
+不能单独用于完整恢复。需要完整恢复时，在 Stack 目录运行：
+
+```bash
+docker compose exec -T mangafinder mkdir -p /app/data/backups
+docker compose exec -T mangafinder python -m app.modules.backup.snapshot create \
+  --database /app/data/mangafinder.db --key /app/data/system-secret.key \
+  --destination /app/data/backups/backup-2026-11-02
+docker compose exec -T mangafinder python -m app.modules.backup.snapshot verify \
+  /app/data/backups/backup-2026-11-02
+docker compose exec -T mangafinder python -m app.modules.backup.snapshot restore \
+  /app/data/backups/backup-2026-11-02 --destination /app/data/backups/restore-drill
+```
+
+每次请改用新的目录名；创建和隔离恢复都不会覆盖已有目录。创建使用 SQLite 在线备份，
+校验文件 SHA-256、数据库完整性、外键和加密设置与密钥是否匹配。`compatibility` 会对照
+当前程序的数据表、字段和 SQLite `user_version`；结构不一致时需先在隔离环境检查迁移。
+字段一致并不能保证不同程序版本的业务语义完全兼容。恢复命令只生成隔离副本；若要替换
+正在使用的数据，先停止 Stack、另行保留当前数据和密钥，再由管理员安排切换。
+
+这个快照包含数据库中的管理员密码哈希、会话及加密设置，而且可能包含解密密钥，**未加密**；
+请只存放在受保护的位置并复制到另一块存储，目录和文件默认仅所有者可访问。数据库未使用
+加密设置且密钥尚未创建时允许没有密钥。`.env`、X 登录会话、社交媒体归档、下载的 CBZ
+和封面缓存位于独立文件或数据卷，不包含在快照中，需要按需另行备份。校验和用于发现
+损坏，不提供防篡改或加密保护。
+
 ## 反向代理
 
 如果通过 Nginx、Caddy 或 Traefik 暴露服务，代理目标为容器宿主机的 `MANGAFINDER_PORT`。应用前后端同源，不需要额外配置 WebSocket。
