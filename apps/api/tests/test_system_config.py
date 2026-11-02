@@ -110,8 +110,17 @@ def test_admin_bootstrap_session_and_csrf_logout() -> None:
 
         forbidden = client.post("/api/system-config/auth/logout")
         assert forbidden.status_code == 403
-        logged_out = client.post(
-            "/api/system-config/auth/logout", headers={"X-CSRF-Token": csrf}
-        )
+        logged_out = client.post("/api/system-config/auth/logout", headers={"X-CSRF-Token": csrf})
         assert logged_out.status_code == 204
         assert client.get("/api/system-config/auth").json()["authenticated"] is False
+
+
+def test_missing_key_is_not_replaced_when_decrypting(tmp_path) -> None:
+    import pytest
+
+    from app.modules.system_config.repository import SecretBox
+
+    key = tmp_path / "missing.key"
+    with pytest.raises(RuntimeError, match="加密密钥缺失"):
+        SecretBox(key).decrypt("encrypted-value")
+    assert not key.exists()

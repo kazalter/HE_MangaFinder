@@ -146,3 +146,28 @@ async def test_komga_and_kavita_scan_triggers_use_configured_credentials() -> No
     assert requests[0].headers["X-API-Key"] == "komga-secret"
     assert requests[1].url.params["libraryId"] == "34"
     assert requests[1].headers["Authorization"] == "Bearer kavita-secret"
+
+
+def test_backup_rejects_empty_manifest_and_non_catalog_payload() -> None:
+    import json
+    from hashlib import sha256
+
+    def archive_with(manifest, catalog):
+        output = BytesIO()
+        with ZipFile(output, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("catalog.json", catalog)
+        return output.getvalue()
+
+    with pytest.raises(ValueError, match="缺少 catalog.json"):
+        verify_backup(archive_with({"format": "mangafinder-backup-v1", "files": {}}, b"{}"))
+
+    payload = b"{}"
+    manifest = {
+        "format": "mangafinder-backup-v1",
+        "files": {
+            "catalog.json": {"byte_size": len(payload), "sha256": sha256(payload).hexdigest()}
+        },
+    }
+    with pytest.raises(ValueError, match="目录数据格式"):
+        verify_backup(archive_with(manifest, payload))

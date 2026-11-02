@@ -69,6 +69,8 @@ class SecretBox:
         return self._fernet().encrypt(value.encode()).decode()
 
     def decrypt(self, value: str) -> str:
+        if not self.path.is_file():
+            raise RuntimeError("系统设置加密密钥缺失，请从备份恢复原密钥")
         try:
             return self._fernet().decrypt(value.encode()).decode()
         except InvalidToken as exc:

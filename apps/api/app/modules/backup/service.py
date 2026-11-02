@@ -126,9 +126,7 @@ class CatalogExportService:
                     "relation_type": item.relation_type,
                     "is_manual": item.is_manual,
                 }
-                for item in self.session.scalars(
-                    select(WorkRelation).order_by(WorkRelation.id)
-                )
+                for item in self.session.scalars(select(WorkRelation).order_by(WorkRelation.id))
             ],
             "planned_releases": [
                 {
@@ -142,9 +140,7 @@ class CatalogExportService:
                     "linked_group_id": item.linked_group_id,
                     "suggested_group_id": item.suggested_group_id,
                 }
-                for item in self.session.scalars(
-                    select(PlannedRelease).order_by(PlannedRelease.id)
-                )
+                for item in self.session.scalars(select(PlannedRelease).order_by(PlannedRelease.id))
             ],
             "catalog_events": [
                 {
@@ -158,9 +154,7 @@ class CatalogExportService:
                     "state": item.state,
                     "created_at": _datetime(item.created_at),
                 }
-                for item in self.session.scalars(
-                    select(CatalogEvent).order_by(CatalogEvent.id)
-                )
+                for item in self.session.scalars(select(CatalogEvent).order_by(CatalogEvent.id))
             ],
         }
 
@@ -194,9 +188,7 @@ class CatalogExportService:
     def _work(self, work: Work) -> dict[str, Any]:
         sources = list(
             self.session.scalars(
-                select(WorkSource)
-                .where(WorkSource.work_id == work.id)
-                .order_by(WorkSource.id)
+                select(WorkSource).where(WorkSource.work_id == work.id).order_by(WorkSource.id)
             )
         )
         return {
@@ -254,30 +246,46 @@ def verify_backup(data: bytes) -> dict[str, Any]:
         raise ValueError("备份为空或超过 100 MB")
     try:
         with ZipFile(BytesIO(data)) as archive:
-            if sum(item.file_size for item in archive.infolist()) > 200 * 1024 * 1024:
+            entries = archive.infolist()
+            names = [item.filename for item in entries]
+            if sum(item.file_size for item in entries) > 200 * 1024 * 1024:
                 raise ValueError("备份解压后体积过大")
-            if any(
-                item.filename.startswith("/") or ".." in item.filename.split("/")
-                for item in archive.infolist()
-            ):
-                raise ValueError("备份包含不安全路径")
+            if sorted(names) != ["catalog.json", "manifest.json"]:
+                raise ValueError("备份文件清单不完整或包含多余文件")
             manifest = json.loads(archive.read("manifest.json"))
-            if manifest.get("format") != BACKUP_FORMAT:
+            if not isinstance(manifest, dict) or manifest.get("format") != BACKUP_FORMAT:
                 raise ValueError("备份格式不受支持")
-            verified: list[str] = []
-            for name, expected in manifest.get("files", {}).items():
-                payload = archive.read(name)
-                if len(payload) != expected.get("byte_size"):
-                    raise ValueError(f"{name} 文件大小校验失败")
-                if sha256(payload).hexdigest() != expected.get("sha256"):
-                    raise ValueError(f"{name} SHA-256 校验失败")
-                verified.append(name)
-    except (BadZipFile, KeyError, json.JSONDecodeError) as exc:
+            files = manifest.get("files")
+            if not isinstance(files, dict) or set(files) != {"catalog.json"}:
+                raise ValueError("备份清单缺少 catalog.json")
+            expected = files["catalog.json"]
+            if not isinstance(expected, dict):
+                raise ValueError("备份清单格式无效")
+            payload = archive.read("catalog.json")
+            if len(payload) != expected.get("byte_size"):
+                raise ValueError("catalog.json 文件大小校验失败")
+            if sha256(payload).hexdigest() != expected.get("sha256"):
+                raise ValueError("catalog.json SHA-256 校验失败")
+            catalog = json.loads(payload)
+            if not isinstance(catalog, dict) or catalog.get("format") != BACKUP_FORMAT:
+                raise ValueError("目录数据格式不受支持")
+            for key in (
+                "authors",
+                "works",
+                "work_groups",
+                "series",
+                "work_relations",
+                "planned_releases",
+                "catalog_events",
+            ):
+                if not isinstance(catalog.get(key), list):
+                    raise ValueError(f"目录数据缺少有效的 {key}")
+    except (BadZipFile, KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError("不是有效的 MangaFinder 备份") from exc
     return {
         "valid": True,
         "format": manifest["format"],
         "created_at": manifest.get("created_at"),
-        "verified_files": verified,
+        "verified_files": ["catalog.json"],
         "sensitive_data_included": manifest.get("sensitive_data_included", False),
     }
