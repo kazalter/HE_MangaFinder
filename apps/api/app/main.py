@@ -25,7 +25,7 @@ from app.modules.dashboard.router import router as dashboard_router
 from app.modules.integrations.router import router as integrations_router
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.router import router as jobs_router
-from app.modules.jobs.worker import DownloadWorker, JobWorker
+from app.modules.jobs.worker import CoverWorkerThread, DownloadWorker, JobWorker
 from app.modules.media.router import router as media_router
 from app.modules.media.service import CoverCacheService
 from app.modules.social.router import router as social_router
@@ -51,13 +51,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.cover_cache = CoverCacheService(settings.cover_cache_dir, providers)
     worker_task = None
     download_worker_task = None
+    cover_worker = None
     catalog_scheduler_task = None
     social_scheduler_task = None
     if settings.worker_enabled:
         worker_task = asyncio.create_task(
-            JobWorker(settings, providers, exclude_downloads=True).run()
+            JobWorker(settings, providers, exclude_downloads=True, exclude_covers=True).run()
         )
         download_worker_task = asyncio.create_task(DownloadWorker(settings, providers).run())
+        cover_worker = CoverWorkerThread(settings)
+        cover_worker.start()
         catalog_scheduler_task = asyncio.create_task(CatalogScheduler(settings, providers).run())
     if settings.social_enabled:
         social_scheduler_task = asyncio.create_task(SocialScheduler(settings).run())
@@ -76,6 +79,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    if cover_worker:
+        await cover_worker.stop()
     await providers.close()
 
 

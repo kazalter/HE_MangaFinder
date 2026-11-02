@@ -1,6 +1,6 @@
 import asyncio
 
-from sqlalchemy import select
+from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session
 
 from app.db.models import MergeSuggestion, Work, WorkFingerprint, WorkGroup
@@ -33,33 +33,54 @@ class CoverFingerprintRefreshService:
         pending = all_pending if force else all_pending[: max(1, batch_size)]
         refreshed = 0
         failed = 0
+        stale = 0
         hasher = CoverHasher(providers=self.providers)
         try:
             for start in range(0, len(pending), self.concurrency):
                 batch = pending[start : start + self.concurrency]
+                inputs = [self._fingerprint_input(item) for item in batch]
                 results = await asyncio.gather(
-                    *(self._fingerprint(hasher, item) for item in batch),
+                    *(hasher.fingerprint_url(*args) for args in inputs),
                     return_exceptions=True,
                 )
-                for item, result in zip(batch, results, strict=True):
+                for item, args, result in zip(batch, inputs, results, strict=True):
                     if isinstance(result, BaseException) or result is None:
                         failed += 1
                         continue
-                    result["source_url"] = item.work.cover_url
-                    item.cover_fingerprint = result
+                    url = args[0]
+                    result["source_url"] = url
                     variants = result.get("variants", [])
-                    item.cover_hash = variants[0].get("dhash") if variants else None
-                    refreshed += 1
+                    updated = self.session.execute(
+                        update(WorkFingerprint)
+                        .where(
+                            WorkFingerprint.work_id == item.work_id,
+                            exists(
+                                select(Work.id).where(
+                                    Work.id == item.work_id, Work.cover_url == url
+                                )
+                            ),
+                        )
+                        .values(
+                            cover_fingerprint=result,
+                            cover_hash=variants[0].get("dhash") if variants else None,
+                        )
+                        .execution_options(synchronize_session=False)
+                    )
+                    if updated.rowcount:
+                        refreshed += 1
+                    else:
+                        stale += 1
                 self.session.commit()
         finally:
             await hasher.close()
+        self.session.expire_all()
         changed_suggestions = self._refresh_suggestion_reasons()
         self.session.commit()
         return {
             "eligible": len(rows),
             "pending": len(all_pending),
             "processed": len(pending),
-            "remaining": max(0, len(all_pending) - len(pending)),
+            "remaining": max(0, len(all_pending) - len(pending)) + stale,
             "refreshed": refreshed,
             "failed": failed,
             "suggestions_updated": changed_suggestions,
@@ -73,11 +94,9 @@ class CoverFingerprintRefreshService:
         ) != fingerprint.work.cover_url
 
     @staticmethod
-    async def _fingerprint(
-        hasher: CoverHasher, fingerprint: WorkFingerprint
-    ) -> dict[str, object] | None:
+    def _fingerprint_input(fingerprint: WorkFingerprint) -> tuple[str, str | None, str | None]:
         source = next(iter(fingerprint.work.sources), None)
-        return await hasher.fingerprint_url(
+        return (
             fingerprint.work.cover_url,
             source.provider if source else None,
             source.external_id if source else None,

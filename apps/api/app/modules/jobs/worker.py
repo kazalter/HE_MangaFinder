@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 from dataclasses import asdict
 
 from sqlalchemy.exc import OperationalError
@@ -24,18 +25,21 @@ from app.modules.jobs.repository import (
 from app.modules.social.daily_digest import DailyDigestService
 from app.modules.social.notifications import NotificationService
 from app.modules.social.service import SocialSyncService
-from app.providers.registry import ProviderRegistry
+from app.providers.registry import ProviderRegistry, build_registry
 
 logger = logging.getLogger(__name__)
 
 
 class JobWorker:
     def __init__(
-        self, settings: Settings, providers: ProviderRegistry, *, exclude_downloads: bool = False
+        self, settings: Settings, providers: ProviderRegistry, *, exclude_downloads: bool = False,
+        exclude_covers: bool = False, covers_only: bool = False,
     ) -> None:
         self.settings = settings
         self.providers = providers
         self.exclude_downloads = exclude_downloads
+        self.exclude_covers = exclude_covers
+        self.covers_only = covers_only
 
     async def run(self) -> None:
         while True:
@@ -53,7 +57,9 @@ class JobWorker:
         with SessionLocal() as session:
             jobs = JobRepository(session)
             job = jobs.claim_next(
-                exclude_kinds={DOWNLOAD_CHAPTER} if self.exclude_downloads else None,
+                kinds={REFRESH_COVER_FINGERPRINTS} if self.covers_only else None,
+                exclude_kinds=({DOWNLOAD_CHAPTER} if self.exclude_downloads else set())
+                | ({REFRESH_COVER_FINGERPRINTS} if self.exclude_covers else set()),
                 prioritize_notifications=self.exclude_downloads,
             )
             if job is None:
@@ -136,8 +142,60 @@ class JobWorker:
                 job = session.get(type(job), job_id)
                 if job is None:
                     raise RuntimeError(f"任务 {job_id} 在失败处理期间被删除") from exc
-                jobs.fail(job, str(exc), self.settings.max_job_attempts)
+                if self.covers_only:
+                    while True:
+                        try:
+                            if job.status == JobStatus.RUNNING:
+                                jobs.fail(job, str(exc), self.settings.max_job_attempts)
+                            break
+                        except OperationalError as lock_error:
+                            if not any(
+                                word in str(lock_error).lower() for word in ("locked", "busy")
+                            ):
+                                raise
+                            session.rollback()
+                            await asyncio.sleep(max(0.1, self.settings.poll_interval_seconds))
+                            job = session.get(Job, job_id)
+                            if job is None:
+                                break
+                else:
+                    jobs.fail(job, str(exc), self.settings.max_job_attempts)
             return True
+
+
+class CoverWorkerThread:
+    """Keep indexing and its synchronous database work off the API event loop."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="cover-index", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _run(self) -> None:
+        async def serve() -> None:
+            providers = build_registry(self.settings)
+            worker = JobWorker(self.settings, providers, covers_only=True)
+            try:
+                while not self.stop_event.is_set():
+                    try:
+                        processed = await worker.run_once()
+                        if not processed:
+                            await asyncio.sleep(self.settings.poll_interval_seconds)
+                    except Exception:
+                        logger.exception("Cover index worker loop failed")
+                        await asyncio.sleep(self.settings.poll_interval_seconds)
+            finally:
+                await providers.close()
+        asyncio.run(serve())
+
+    async def stop(self) -> None:
+        self.stop_event.set()
+        await asyncio.to_thread(self.thread.join, 5)
+        if self.thread.is_alive():
+            logger.warning("Cover index worker still stopping; interrupted jobs recover on restart")
 
 
 class DownloadWorker:
