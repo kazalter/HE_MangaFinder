@@ -22,6 +22,7 @@ from app.modules.agent_review.schemas import CandidateEvidence
 from app.modules.catalog.aggregation import AggregationService
 from app.modules.catalog.exclusions import WorkExclusionService
 from app.modules.catalog.group_repository import WorkGroupRepository
+from app.modules.catalog.operation_history import lock_catalog_write, record_operation
 from app.modules.catalog.pair_identity import candidate_key
 from app.modules.catalog.schemas import (
     EditionRead,
@@ -299,6 +300,7 @@ def list_suggestions(
 
 @router.post("/suggestions/{suggestion_id}/accept", response_model=WorkGroupDetail)
 def accept_suggestion(suggestion_id: int, session: SessionDep) -> WorkGroupDetail:
+    lock_catalog_write(session)
     repository = WorkGroupRepository(session)
     item = repository.suggestion(suggestion_id)
     if item is None or item.status != "pending":
@@ -307,8 +309,15 @@ def accept_suggestion(suggestion_id: int, session: SessionDep) -> WorkGroupDetai
     target = repository.get(item.target_group_id)
     if source is None or target is None:
         raise HTTPException(status_code=409, detail="候选作品已发生变化")
+    if source.id == target.id:
+        raise HTTPException(status_code=409, detail="不能将作品与自身合并")
     try:
-        merged = AggregationService(session).merge_groups(target, source)
+        with record_operation(
+            session, "merge", [target.id, source.id], f"合并《{source.title}》到《{target.title}》"
+        ) as journal:
+            merged = AggregationService(session).merge_groups(target, source)
+            if journal:
+                journal.operation.after_group_ids = [merged.id]
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
@@ -317,6 +326,7 @@ def accept_suggestion(suggestion_id: int, session: SessionDep) -> WorkGroupDetai
 
 @router.post("/suggestions/{suggestion_id}/reject", response_model=MergeSuggestionRead)
 def reject_suggestion(suggestion_id: int, session: SessionDep) -> MergeSuggestionRead:
+    lock_catalog_write(session)
     repository = WorkGroupRepository(session)
     item = repository.suggestion(suggestion_id)
     if item is None or item.status != "pending":
@@ -347,6 +357,7 @@ def get_work_group(group_id: int, session: SessionDep) -> WorkGroupDetail:
 
 @router.patch("/{group_id}/metadata", response_model=WorkGroupDetail)
 def update_metadata(group_id: int, payload: MetadataUpdate, session: SessionDep) -> WorkGroupDetail:
+    lock_catalog_write(session)
     group = WorkGroupRepository(session).get(group_id)
     if group is None:
         raise HTTPException(status_code=404, detail="聚合作品不存在")
@@ -381,13 +392,21 @@ def update_metadata(group_id: int, payload: MetadataUpdate, session: SessionDep)
 def merge_work_groups(
     target_group_id: int, payload: GroupMergeCreate, session: SessionDep
 ) -> WorkGroupDetail:
+    lock_catalog_write(session)
     repository = WorkGroupRepository(session)
     target = repository.get(target_group_id)
     source = repository.get(payload.source_group_id)
     if target is None or source is None:
         raise HTTPException(status_code=404, detail="待合并作品不存在")
+    if source.id == target.id:
+        raise HTTPException(status_code=409, detail="不能将作品与自身合并")
     try:
-        merged = AggregationService(session).merge_groups(target, source)
+        with record_operation(
+            session, "merge", [target.id, source.id], f"合并《{source.title}》到《{target.title}》"
+        ) as journal:
+            merged = AggregationService(session).merge_groups(target, source)
+            if journal:
+                journal.operation.after_group_ids = [merged.id]
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
@@ -396,6 +415,7 @@ def merge_work_groups(
 
 @router.delete("/{group_id}/authors/{author_id}", status_code=status.HTTP_204_NO_CONTENT)
 def exclude_work_group_for_author(group_id: int, author_id: int, session: SessionDep) -> Response:
+    lock_catalog_write(session)
     repository = WorkGroupRepository(session)
     group = repository.get(group_id)
     author = session.get(Author, author_id)
@@ -408,9 +428,19 @@ def exclude_work_group_for_author(group_id: int, author_id: int, session: Sessio
     ]
     if not works:
         raise HTTPException(status_code=404, detail="该作品不属于所选作者")
-    service = WorkExclusionService(session)
-    for work in works:
-        service.exclude_work(author, work)
+    try:
+        with record_operation(
+            session, "exclude", [group_id], f"从 {author.name} 名下排除《{group.title}》"
+        ) as journal:
+            service = WorkExclusionService(session)
+            for work in works:
+                service.exclude_work(author, work)
+            if journal:
+                journal.operation.after_group_ids = (
+                    [group_id] if session.get(WorkGroup, group_id) else []
+                )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -422,6 +452,7 @@ def exclude_work_group_for_author(group_id: int, author_id: int, session: Sessio
 def exclude_work_group_member_for_author(
     group_id: int, work_id: int, author_id: int, session: SessionDep
 ) -> Response:
+    lock_catalog_write(session)
     group = WorkGroupRepository(session).get(group_id)
     author = session.get(Author, author_id)
     if group is None or author is None:
@@ -430,21 +461,40 @@ def exclude_work_group_member_for_author(
     if member is None:
         raise HTTPException(status_code=404, detail="版本不属于该作品")
     try:
-        WorkExclusionService(session).exclude_work(author, member.work)
+        with record_operation(
+            session, "exclude", [group_id], f"从 {author.name} 名下排除版本《{member.work.title}》"
+        ) as journal:
+            WorkExclusionService(session).exclude_work(author, member.work)
+            if journal:
+                journal.operation.after_group_ids = (
+                    [group_id] if session.get(WorkGroup, group_id) else []
+                )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{group_id}/members/{work_id}/split", response_model=WorkGroupDetail)
 def split_work_group_member(group_id: int, work_id: int, session: SessionDep) -> WorkGroupDetail:
+    lock_catalog_write(session)
     repository = WorkGroupRepository(session)
     group = repository.get(group_id)
     if group is None:
         raise HTTPException(status_code=404, detail="聚合作品不存在")
+    member = next((item for item in group.members if item.work_id == work_id), None)
+    if member is None:
+        raise HTTPException(status_code=404, detail="版本不属于该作品")
     try:
-        new_group = AggregationService(session).split_member(group, work_id)
+        with record_operation(
+            session, "split", [group_id], f"从《{group.title}》拆出版本《{member.work.title}》"
+        ) as journal:
+            new_group = AggregationService(session).split_member(group, work_id)
+            if journal:
+                journal.operation.group_ids = [group_id, new_group.id]
+                journal.operation.after_group_ids = [group_id, new_group.id]
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

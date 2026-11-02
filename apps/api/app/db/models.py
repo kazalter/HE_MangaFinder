@@ -211,6 +211,23 @@ class WorkGroupMember(Base):
     work: Mapped[Work] = relationship(back_populates="group_membership", lazy="selectin")
 
 
+class CatalogOperation(Base):
+    """Reversible user catalog operation; change records are private internal data."""
+
+    __tablename__ = "catalog_operations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    group_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    before_group_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    after_group_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    summary: Mapped[str] = mapped_column(Text)
+    changes: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    reference_state: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    undone_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
 class WorkFingerprint(Base):
     __tablename__ = "work_fingerprints"
 

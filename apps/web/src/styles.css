@@ -1025,3 +1025,10 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
   .discovery-inbox-list > article { grid-template-columns: 48px minmax(0, 1fr); }
   .inbox-actions { grid-column: 1 / -1; padding-left: 62px; }
 }
+
+.operation-history { width: min(720px, 100%); }
+.operation-list { display: grid; gap: 8px; }
+.operation-list article { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid #ded5c8; background: #fffdfa; }
+.operation-list article strong, .operation-list article small { display: block; }
+.operation-list article small { margin-top: 5px; color: #777066; }
+.operation-list button { border: 1px solid #a89e8e; padding: 7px 11px; color: #334a3f; background: transparent; }

@@ -4,6 +4,7 @@ import { AuthorSidebar } from './components/AuthorSidebar'
 import { Dashboard } from './components/Dashboard'
 import { ImageSearch } from './components/ImageSearch'
 import { MergeReview } from './components/MergeReview'
+import { OperationHistory } from './components/OperationHistory'
 import { PageSelector } from './components/PageSelector'
 import { SocialRadar } from './components/SocialRadar'
 import { SystemSettings } from './components/SystemSettings'
@@ -129,6 +130,7 @@ export default function App() {
   const [discoveryEvents, setDiscoveryEvents] = useState<CatalogEvent[]>([])
   const [openedWork, setOpenedWork] = useState<WorkGroupDetail | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [imageSearchOpen, setImageSearchOpen] = useState(false)
   const [radarOpen, setRadarOpen] = useState(() => new URLSearchParams(window.location.search).has('radar'))
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -160,7 +162,7 @@ export default function App() {
     try { return Number(window.sessionStorage.getItem('mangafinder:dismissed-job-through') ?? 0) || 0 }
     catch { return 0 }
   })
-  const hasModal = Boolean(openedWork || reviewOpen || radarOpen || imageSearchOpen)
+  const hasModal = !settingsOpen && Boolean(openedWork || reviewOpen || radarOpen || imageSearchOpen || historyOpen)
 
   const loadGeneration = useRef(0)
   const load = useCallback(async () => {
@@ -489,6 +491,7 @@ export default function App() {
         settingsActive={settingsOpen}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenRadar={() => setRadarOpen(true)}
+        onOpenHistory={() => { setSettingsOpen(false); setHistoryOpen(true) }}
       />
 
       <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : libraryMode === 'overview' ? 'dashboard-main' : ''}>
@@ -600,6 +603,7 @@ export default function App() {
         )}
             </>}
       </main>
+      {!settingsOpen && historyOpen && <OperationHistory onClose={() => setHistoryOpen(false)} onChanged={async () => { setOpenedWork(null); await load() }} />}
       {!settingsOpen && imageSearchOpen && <ImageSearch onClose={() => setImageSearchOpen(false)} onOpenWork={(id) => { setImageSearchOpen(false); void openWork(id) }} />}
       {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} activeAuthorId={selectedId} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onUpdateMetadata={updateMetadata} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)} onExcludeGroup={(authorId) => void excludeGroup(authorId)} />}
       {!settingsOpen && reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}

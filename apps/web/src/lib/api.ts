@@ -1,4 +1,4 @@
-import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, ImageSearchMatch, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail, WorkMetadataPatch } from '../types'
+import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, CatalogOperation, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, ImageSearchMatch, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail, WorkMetadataPatch } from '../types'
 
 function cookie(name: string): string | undefined {
   return document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -64,6 +64,10 @@ export const api = {
   workGroups: (authorId?: number) =>
     request<WorkGroup[]>(`/work-groups${authorId ? `?author_id=${authorId}` : ''}`),
   workGroup: (id: number) => request<WorkGroupDetail>(`/work-groups/${id}`),
+  catalogOperations: (beforeId?: number) =>
+    request<CatalogOperation[]>(`/catalog-operations?limit=50${beforeId ? `&before_id=${beforeId}` : ''}`),
+  undoCatalogOperation: (id: number) =>
+    request<CatalogOperation>(`/catalog-operations/${id}/undo`, { method: 'POST' }),
   updateWorkMetadata: (id: number, patch: WorkMetadataPatch) =>
     request<WorkGroupDetail>(`/work-groups/${id}/metadata`, { method: 'PATCH', body: JSON.stringify(patch) }),
   mergeGroups: (targetGroupId: number, sourceGroupId: number) =>

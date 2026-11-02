@@ -86,6 +86,17 @@ export interface WorkRelation {
   direction: 'outgoing' | 'incoming'
 }
 
+export interface CatalogOperation {
+  id: number
+  kind: 'merge' | 'split' | 'exclude'
+  group_ids: number[]
+  before_group_ids: number[]
+  after_group_ids: number[]
+  summary: string
+  created_at: string
+  undone_at: string | null
+}
+
 export interface WorkMetadataPatch {
   title?: string | null
   description?: string | null

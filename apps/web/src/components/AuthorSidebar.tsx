@@ -4,6 +4,7 @@ import {
   CaretDoubleLeft,
   CaretDoubleRight,
   ChartBar,
+  ClockCounterClockwise,
   Check,
   Crosshair,
   GearSix,
@@ -57,6 +58,7 @@ interface Props {
   settingsActive?: boolean
   onOpenSettings: () => void
   onOpenRadar: () => void
+  onOpenHistory?: () => void
 }
 
 export function AuthorSidebar({
@@ -73,6 +75,7 @@ export function AuthorSidebar({
   settingsActive = false,
   onOpenSettings,
   onOpenRadar,
+  onOpenHistory,
 }: Props) {
   const [query, setQuery] = useState('')
   const [name, setName] = useState('')
@@ -331,6 +334,7 @@ export function AuthorSidebar({
           </div>
 
           <footer className="library-sidebar-footer">
+            {onOpenHistory && <button onClick={() => { onOpenHistory(); setMobileOpen(false) }}><ClockCounterClockwise size={19} /><span><b>整理记录</b><small>查看与撤销整理操作</small></span><CaretDoubleRight size={16} /></button>}
             <button className={settingsActive ? 'active' : ''} onClick={() => { onOpenSettings(); setMobileOpen(false) }}>
               <GearSix size={19} /><span><b>系统设置</b><small>连接、模型与通知</small></span><CaretDoubleRight size={16} />
             </button>
@@ -348,6 +352,7 @@ export function AuthorSidebar({
             <button className={libraryMode === 'works' && selectedId === null && !settingsActive ? 'active' : ''} onClick={() => selectAuthor(null)} aria-label="全部作品" title="全部作品"><SquaresFour size={21} /></button>
             <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={focusAuthors} aria-label="作者" title="作者"><User size={22} /></button>
             <button onClick={onOpenRadar} aria-label="动态雷达" title="动态雷达"><Crosshair size={22} /></button>
+            {onOpenHistory && <button onClick={onOpenHistory} aria-label="整理记录" title="整理记录"><ClockCounterClockwise size={21} /></button>}
           </nav>
           <div>
             <button className={settingsActive ? 'active' : ''} onClick={onOpenSettings} aria-label="系统设置" title="系统设置"><GearSix size={22} /></button>

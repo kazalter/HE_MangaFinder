@@ -17,6 +17,7 @@ from app.modules.catalog.discovery_repository import DiscoveryRepository
 from app.modules.catalog.downloads_router import router as downloads_router
 from app.modules.catalog.groups_router import router as groups_router
 from app.modules.catalog.image_search_router import router as image_search_router
+from app.modules.catalog.operations_router import router as operations_router
 from app.modules.catalog.router import router as catalog_router
 from app.modules.catalog.scheduler import CatalogScheduler
 from app.modules.catalog.series_router import router as series_router
@@ -104,6 +105,7 @@ app.include_router(backup_router, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(downloads_router, prefix="/api")
 app.include_router(groups_router, prefix="/api")
+app.include_router(operations_router, prefix="/api")
 app.include_router(image_search_router, prefix="/api")
 app.include_router(series_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
