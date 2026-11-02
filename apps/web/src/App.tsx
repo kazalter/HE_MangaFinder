@@ -195,6 +195,11 @@ export default function App() {
 
   useEffect(() => { void load() }, [load])
   useEffect(() => {
+    const openLogin = () => setSettingsOpen(true)
+    window.addEventListener('mangafinder:login-required', openLogin)
+    return () => window.removeEventListener('mangafinder:login-required', openLogin)
+  }, [])
+  useEffect(() => {
     document.body.classList.toggle('modal-open', hasModal)
     return () => document.body.classList.remove('modal-open')
   }, [hasModal])

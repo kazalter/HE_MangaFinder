@@ -139,7 +139,7 @@ export function SystemSettings({ onClose }: { onClose: () => void }) {
     <div className="admin-gate-card">
       <p className="eyebrow">ADMIN / PROTECTED</p>
       <h1>{auth.initialized ? '管理员登录' : '创建管理员'}</h1>
-      <p>{auth.initialized ? '敏感凭证和采集会话只对管理员开放。' : '首次使用需要创建管理员密码，密码至少 12 位。'}</p>
+      <p>{auth.initialized ? '登录后可以管理作品、任务和设置；请返回并重新执行之前的操作。' : '首次使用需要创建管理员密码，密码至少 12 位。'}</p>
       <form onSubmit={authenticate}>
         <label htmlFor="admin-password">管理员密码</label>
         <input id="admin-password" type="password" autoComplete={auth.initialized ? 'current-password' : 'new-password'} minLength={12} value={password} onChange={(event) => setPassword(event.target.value)} autoFocus />

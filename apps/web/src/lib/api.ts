@@ -16,6 +16,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     },
   })
   if (!response.ok) {
+    if (response.status === 401 && options?.method && options.method !== 'GET'
+      && !path.startsWith('/system-config/auth/')) {
+      window.dispatchEvent(new Event('mangafinder:login-required'))
+    }
     const body = await response.json().catch(() => null)
     throw new Error(body?.detail ?? `请求失败（${response.status}）`)
   }

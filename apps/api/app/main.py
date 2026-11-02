@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +30,7 @@ from app.modules.social.scheduler import SocialScheduler
 from app.modules.sources.router import router as sources_router
 from app.modules.system_config.repository import apply_runtime_overrides
 from app.modules.system_config.router import router as system_config_router
+from app.modules.system_config.security import protect_api_writes
 from app.providers.registry import build_registry
 
 settings = get_settings()
@@ -67,7 +68,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await providers.close()
 
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name, version="0.1.0", lifespan=lifespan,
+    dependencies=[Depends(protect_api_writes)],
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

@@ -6,7 +6,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import Cookie, Depends, Header, HTTPException, Response
+from fastapi import Cookie, Depends, Header, HTTPException, Request, Response
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -116,3 +116,26 @@ def require_csrf(
 ) -> None:
     if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
         raise HTTPException(status_code=403, detail="安全校验已失效，请刷新页面后重试")
+
+
+_PUBLIC_POSTS = frozenset({
+    "/api/system-config/auth/bootstrap",
+    "/api/system-config/auth/login",
+    "/api/image-search",
+    "/api/backup/verify",
+    "/api/downloads/verify",
+})
+
+
+def protect_api_writes(request: Request, session: SessionDep) -> None:
+    """Require an administrator session and CSRF token for state-changing API calls."""
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    if request.method == "POST" and request.url.path in _PUBLIC_POSTS:
+        return
+    account = optional_admin(session, request.cookies.get(SESSION_COOKIE))
+    require_csrf(
+        require_admin(account),
+        request.cookies.get(CSRF_COOKIE),
+        request.headers.get("X-CSRF-Token"),
+    )
