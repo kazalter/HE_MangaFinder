@@ -20,7 +20,7 @@ from app.providers.base import (
     RemoteImage,
     sort_discovered_works,
 )
-from app.providers.errors import AuthorNotFoundError, ProviderError
+from app.providers.errors import AuthorNotFoundError, ProviderError, describe_http_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,13 +315,12 @@ class NhentaiProvider:
         except ProviderError:
             raise
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in {403, 429, 503}:
-                raise ProviderError(
-                    "nHentai 拒绝访问或触发 Cloudflare，请配置可用代理或 Cookie"
-                ) from exc
-            raise ProviderError(f"nHentai 请求失败: HTTP {exc.response.status_code}") from exc
+            detail = describe_http_error(exc)
+            if exc.response.status_code in {403, 503}:
+                detail += "；可能需要 Cloudflare 验证"
+            raise ProviderError(f"nHentai 请求失败: {detail}") from exc
         except httpx.HTTPError as exc:
-            raise ProviderError(f"nHentai 请求失败: {exc}") from exc
+            raise ProviderError(f"nHentai 请求失败: {describe_http_error(exc)}") from exc
 
     @classmethod
     def parse_listing(
@@ -336,7 +335,7 @@ class NhentaiProvider:
             None,
         )
         if payload is None:
-            return [], 1
+            raise ProviderError("nHentai 列表数据缺失，页面结构可能已变化")
         raw_results = payload.get("result")
         if not isinstance(raw_results, list):
             return [], 1

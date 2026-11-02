@@ -92,7 +92,7 @@ export function Dashboard({ data, events, busy, onReload, onOpenWork, onOpenRada
 
       <section className="dashboard-panel source-health-panel">
         <header><div><span>PROVIDERS</span><h2>来源健康度</h2></div><Pulse size={21} /></header>
-        <div>{data.source_health.map((source) => <article key={source.provider}><span className={`source-health-dot ${source.failed && source.success_rate < 1 ? 'warn' : 'ok'}`} /><div><strong>{sourceLabels[source.provider] ?? source.provider}</strong><small>{source.scans} 次扫描 · 新增 {source.new_items} 项 · 最近成功 {relativeTime(source.last_success_at)}</small>{source.last_error && <em>{source.last_error}</em>}</div><b>{Math.round(source.success_rate * 100)}%</b></article>)}{!data.source_health.length && <div className="dashboard-empty compact"><Pulse size={25} /><p>完成一次作品扫描后显示来源健康度。</p></div>}</div>
+        <div>{data.source_health.map((source) => <article key={source.provider}><span className={`source-health-dot ${source.current_failed_authors > 0 ? 'warn' : 'ok'}`} /><div><strong>{sourceLabels[source.provider] ?? source.provider}</strong><small>{source.scans} 次扫描（含重试） · 新增 {source.new_items} 项 · 最近成功 {relativeTime(source.last_success_at)}{source.current_failed_authors > 0 ? ` · ${source.current_failed_authors} 位作者最近扫描失败（统计周期内）` : ''}</small>{source.last_error && <em>{source.last_error}</em>}</div><b>{Math.round(source.success_rate * 100)}%</b></article>)}{!data.source_health.length && <div className="dashboard-empty compact"><Pulse size={25} /><p>完成一次作品扫描后显示来源健康度。</p></div>}</div>
       </section>
 
       <section className="dashboard-panel upcoming-panel">

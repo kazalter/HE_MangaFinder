@@ -16,15 +16,38 @@ class DiscoveryRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def recover_interrupted(self, now: datetime) -> int:
+        """Finish scans abandoned by an interrupted single-worker process."""
+        runs = list(
+            self.session.scalars(select(DiscoveryRun).where(DiscoveryRun.status == "running"))
+        )
+        for run in runs:
+            scans = list(
+                self.session.scalars(
+                    select(ProviderScanRun).where(ProviderScanRun.discovery_run_id == run.id)
+                )
+            )
+            for scan in scans:
+                if scan.status == "running":
+                    scan.status = "failed"
+                    scan.error = "服务重启中断了来源扫描，将按重试策略重新检查"
+                    scan.finished_at = now
+            run.status = (
+                "partial" if any(scan.status == "succeeded" for scan in scans) else "failed"
+            )
+            run.error = "服务重启中断了本次扫描"
+            run.finished_at = now
+        if runs:
+            self.session.commit()
+        return len(runs)
+
     def start_run(self, author_id: int, trigger: str) -> DiscoveryRun:
         run = DiscoveryRun(author_id=author_id, trigger=trigger, status="running")
         self.session.add(run)
         self.session.flush()
         return run
 
-    def start_provider(
-        self, run_id: int, provider: str, query_name: str
-    ) -> ProviderScanRun:
+    def start_provider(self, run_id: int, provider: str, query_name: str) -> ProviderScanRun:
         result = ProviderScanRun(
             discovery_run_id=run_id,
             provider=provider,

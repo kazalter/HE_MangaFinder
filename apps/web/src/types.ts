@@ -384,6 +384,8 @@ export interface SourceHealth {
   success_rate: number
   new_items: number
   average_duration_ms: number
+  current_failed_authors: number
+  current_checked_authors: number
   last_success_at: string | null
   last_error: string | null
 }

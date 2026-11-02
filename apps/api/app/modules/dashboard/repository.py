@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.models import (
     Author,
     CatalogEvent,
+    DiscoveryRun,
     MergeSuggestion,
     PlannedRelease,
     ProviderScanRun,
@@ -142,21 +143,27 @@ class DashboardRepository:
 
     def _source_health(self, since: datetime) -> list[SourceHealth]:
         rows = list(
-            self.session.scalars(
-                select(ProviderScanRun)
+            self.session.execute(
+                select(ProviderScanRun, DiscoveryRun.author_id)
+                .join(DiscoveryRun, ProviderScanRun.discovery_run_id == DiscoveryRun.id)
                 .where(ProviderScanRun.started_at >= since)
-                .order_by(ProviderScanRun.started_at.desc())
+                .order_by(ProviderScanRun.started_at.desc(), ProviderScanRun.id.desc())
             )
         )
         grouped: dict[str, list[ProviderScanRun]] = defaultdict(list)
-        for row in rows:
+        current: dict[str, dict[int, ProviderScanRun]] = defaultdict(dict)
+        for row, author_id in rows:
             grouped[row.provider].append(row)
+            if row.status in {"succeeded", "failed"}:
+                current[row.provider].setdefault(author_id, row)
         result: list[SourceHealth] = []
         for provider, scans in sorted(grouped.items()):
             succeeded = [item for item in scans if item.status == "succeeded"]
             failed = [item for item in scans if item.status == "failed"]
             finished = succeeded + failed
-            last_error = next((item.error for item in scans if item.error), None)
+            current_scans = list(current[provider].values())
+            current_failures = [item for item in current_scans if item.status == "failed"]
+            last_error = next((item.error for item in current_failures if item.error), None)
             result.append(
                 SourceHealth(
                     provider=provider,
@@ -175,6 +182,8 @@ class DashboardRepository:
                         None,
                     ),
                     last_error=last_error,
+                    current_failed_authors=len(current_failures),
+                    current_checked_authors=len(current_scans),
                 )
             )
         return result

@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,7 @@ from app.db.session import SessionLocal, init_db
 from app.modules.agent_review.router import router as agent_reviews_router
 from app.modules.authors.router import router as authors_router
 from app.modules.backup.router import router as backup_router
+from app.modules.catalog.discovery_repository import DiscoveryRepository
 from app.modules.catalog.downloads_router import router as downloads_router
 from app.modules.catalog.groups_router import router as groups_router
 from app.modules.catalog.image_search_router import router as image_search_router
@@ -42,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     with SessionLocal() as session:
         apply_runtime_overrides(session, settings)
         JobRepository(session).recover_interrupted()
+        DiscoveryRepository(session).recover_interrupted(datetime.now(UTC))
     providers = build_registry(settings)
     app.state.providers = providers
     app.state.cover_cache = CoverCacheService(settings.cover_cache_dir, providers)

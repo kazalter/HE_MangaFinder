@@ -18,7 +18,7 @@ from app.providers.base import (
     RemoteImage,
     sort_discovered_works,
 )
-from app.providers.errors import AuthorNotFoundError, ProviderError
+from app.providers.errors import AuthorNotFoundError, ProviderError, describe_http_error
 
 
 class WnacgProvider:
@@ -258,7 +258,8 @@ class WnacgProvider:
                 self._active_base_url = base_url
                 return response, base_url
             except httpx.HTTPError as exc:
-                errors.append(f"{base_url}: {exc}")
+                host = urlsplit(base_url).hostname or "未知域名"
+                errors.append(f"{host}: {describe_http_error(exc)}")
         raise ProviderError("WNACG 所有候选域名均不可用；" + "; ".join(errors))
 
     @classmethod

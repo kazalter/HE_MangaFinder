@@ -33,6 +33,8 @@ class SourceHealth(BaseModel):
     average_duration_ms: int
     last_success_at: datetime | None = None
     last_error: str | None = None
+    current_failed_authors: int = 0
+    current_checked_authors: int = 0
 
 
 class UpcomingRelease(BaseModel):

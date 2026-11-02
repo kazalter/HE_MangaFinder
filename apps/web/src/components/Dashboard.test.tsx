@@ -13,7 +13,7 @@ const data = {
   source_health: [{
     provider: 'wnacg', scans: 4, succeeded: 3, failed: 1, success_rate: 0.75,
     new_items: 3, average_duration_ms: 800, last_success_at: '2026-07-24T10:00:00Z',
-    last_error: '暂时不可达',
+    last_error: '暂时不可达', current_failed_authors: 1, current_checked_authors: 2,
   }],
   upcoming: [{
     id: 4, author_id: 2, author_name: '作者乙', title: '八月新刊', kind: 'new_release',
