@@ -1,4 +1,4 @@
-import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, ImageSearchMatch, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail } from '../types'
+import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, ImageSearchMatch, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail, WorkMetadataPatch } from '../types'
 
 function cookie(name: string): string | undefined {
   return document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -64,6 +64,8 @@ export const api = {
   workGroups: (authorId?: number) =>
     request<WorkGroup[]>(`/work-groups${authorId ? `?author_id=${authorId}` : ''}`),
   workGroup: (id: number) => request<WorkGroupDetail>(`/work-groups/${id}`),
+  updateWorkMetadata: (id: number, patch: WorkMetadataPatch) =>
+    request<WorkGroupDetail>(`/work-groups/${id}/metadata`, { method: 'PATCH', body: JSON.stringify(patch) }),
   mergeGroups: (targetGroupId: number, sourceGroupId: number) =>
     request<WorkGroupDetail>(`/work-groups/${targetGroupId}/merge`, {
       method: 'POST', body: JSON.stringify({ source_group_id: sourceGroupId }),

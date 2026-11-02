@@ -57,7 +57,8 @@ def test_backup_is_verifiable_and_excludes_sensitive_records() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        _catalog(session)
+        _, _, group = _catalog(session)
+        group.manual_metadata = {"title": "用户修正"}
         session.add_all(
             [
                 SystemSetting(key="agent_api_key", value="encrypted-secret", encrypted=True),
@@ -77,6 +78,7 @@ def test_backup_is_verifiable_and_excludes_sensitive_records() -> None:
         assert "encrypted-secret" not in catalog
         assert "password-hash" not in catalog
         assert "Alias" in catalog
+        assert "用户修正" in catalog
 
 
 def test_backup_verification_detects_tampering() -> None:

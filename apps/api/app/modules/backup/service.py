@@ -113,6 +113,7 @@ class CatalogExportService:
                     "language": item.language,
                     "tags": item.tags or [],
                     "member_work_ids": [member.work_id for member in item.members],
+                    "manual_metadata": item.manual_metadata or {},
                     "created_at": _datetime(item.created_at),
                     "updated_at": _datetime(item.updated_at),
                 }

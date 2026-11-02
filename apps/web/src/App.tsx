@@ -13,7 +13,7 @@ import { WorkCoverTile } from './components/WorkCoverTile'
 import { WorkDetail } from './components/WorkDetail'
 import { WorkListRow } from './components/WorkListRow'
 import { api } from './lib/api'
-import type { AgentStatus, Author, CatalogEvent, DashboardData, Edition, Job, MergeSuggestion, ReleaseSignal, SeriesCandidate, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkSource } from './types'
+import type { AgentStatus, Author, CatalogEvent, DashboardData, Edition, Job, MergeSuggestion, ReleaseSignal, SeriesCandidate, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkMetadataPatch, WorkSource } from './types'
 
 type ViewMode = 'cards' | 'covers' | 'list'
 type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
@@ -377,6 +377,21 @@ export default function App() {
     }
   }
 
+  async function updateMetadata(patch: WorkMetadataPatch): Promise<boolean> {
+    if (!openedWork) return false
+    setBusy(true)
+    setError(null)
+    try {
+      const updated = await api.updateWorkMetadata(openedWork.id, patch)
+      setOpenedWork(updated)
+      await load()
+      return true
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '保存作品资料失败')
+      return false
+    } finally { setBusy(false) }
+  }
+
   async function splitEdition(workId: number) {
     if (!openedWork || !window.confirm('确认把这个版本拆成一部独立作品？')) return
     await act(() => api.splitEdition(openedWork.id, workId))
@@ -586,7 +601,7 @@ export default function App() {
             </>}
       </main>
       {!settingsOpen && imageSearchOpen && <ImageSearch onClose={() => setImageSearchOpen(false)} onOpenWork={(id) => { setImageSearchOpen(false); void openWork(id) }} />}
-      {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} activeAuthorId={selectedId} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)} onExcludeGroup={(authorId) => void excludeGroup(authorId)} />}
+      {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} activeAuthorId={selectedId} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onUpdateMetadata={updateMetadata} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)} onExcludeGroup={(authorId) => void excludeGroup(authorId)} />}
       {!settingsOpen && reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
       {!settingsOpen && radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
     </div>

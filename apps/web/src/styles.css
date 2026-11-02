@@ -277,6 +277,21 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
 .edition-correction-actions { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; }
 .split-link, .exclude-link { border: 0; padding: 0; color: #989087; background: transparent; font-size: 12px; text-decoration: underline; }
 .exclude-link { color: #a14d37; }
+.metadata-panel { padding: 18px 34px; border-top: 1px solid #ddd5c8; background: #f2eee6; }
+.metadata-panel header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.metadata-panel header strong, .metadata-panel header small { display: block; }
+.metadata-panel header small, .metadata-editor p { color: #716b62; font-size: 12px; margin-top: 4px; }
+.metadata-panel button { border: 1px solid #bcb4a8; padding: 7px 10px; color: #334a3f; background: #fffdfa; font-size: 13px; }
+.metadata-sources { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 12px; color: #615c54; font-size: 12px; }
+.metadata-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+.metadata-editor .metadata-field { display: grid; gap: 5px; color: #4d4942; font-size: 13px; }
+.metadata-editor .metadata-field > input, .metadata-editor textarea, .metadata-editor select { width: 100%; min-width: 0; border: 1px solid #cfc6b8; padding: 8px; color: #252922; background: #fffdfa; font: inherit; }
+.metadata-editor textarea { min-height: 72px; resize: vertical; }
+.metadata-editor input:disabled, .metadata-editor textarea:disabled, .metadata-editor select:disabled { opacity: .55; }
+.metadata-editor p { grid-column: 1 / -1; margin: 0; }
+.metadata-editor > button { justify-self: start; color: white; background: #334a3f; }
+.metadata-error { color: #a03f2a; font-size: 13px; }
+@media (max-width: 600px) { .metadata-panel { padding-inline: 20px; } .metadata-editor { grid-template-columns: 1fr; } }
 .exclusion-panel { display: flex; align-items: center; gap: 12px; border-top: 1px solid #dfd4c9; padding: 17px 34px; background: #f4e8e2; }
 .exclusion-panel > div { margin-right: auto; }
 .exclusion-panel strong, .exclusion-panel small { display: block; }

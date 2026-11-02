@@ -61,6 +61,7 @@ export interface Edition {
   language: string | null
   tags: string[]
   variant_labels: string[]
+  page_count?: number | null
   latest_source_at: string | null
   confidence: number
   match_method: string
@@ -85,7 +86,26 @@ export interface WorkRelation {
   direction: 'outgoing' | 'incoming'
 }
 
+export interface WorkMetadataPatch {
+  title?: string | null
+  description?: string | null
+  year?: number | null
+  status?: 'ongoing' | 'completed' | 'hiatus' | 'cancelled' | null
+  language?: string | null
+  tags?: string[] | null
+  cover_work_id?: number | null
+  preferred_work_id?: number | null
+}
+
+export interface MetadataSource {
+  locked: boolean
+  edition_ids: number[]
+  providers: string[]
+}
+
 export interface WorkGroupDetail extends WorkGroup {
+  metadata_overrides?: WorkMetadataPatch
+  metadata_sources?: Record<string, MetadataSource>
   editions: Edition[]
   series?: WorkSeries | null
   relations?: WorkRelation[]

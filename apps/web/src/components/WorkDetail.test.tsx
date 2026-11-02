@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkDetail } from './WorkDetail'
 
 const group = {
@@ -36,6 +36,25 @@ const group = {
 }
 
 describe('WorkDetail correction actions', () => {
+  afterEach(cleanup)
+  it('saves locked metadata and selects the preferred version', async () => {
+    const onUpdateMetadata = vi.fn().mockResolvedValue(true)
+    const detailed = { ...group, metadata_overrides: {}, metadata_sources: { title: { locked: false, edition_ids: [20], providers: ['wnacg'] } } }
+    render(<WorkDetail
+      group={detailed} allGroups={[detailed]} busy={false} enabledProviders={['wnacg']} activeAuthorId={2}
+      onClose={vi.fn()} onDownload={vi.fn()} onUpdateMetadata={onUpdateMetadata}
+      onSplit={vi.fn()} onMerge={vi.fn()} onExcludeEdition={vi.fn()} onExcludeGroup={vi.fn()}
+    />)
+    expect(screen.getByText(/标题：版本 20 · wnacg/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '编辑资料' }))
+    fireEvent.click(screen.getByText('固定标题').closest('label')!.querySelector('input[type=checkbox]')!)
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: '我选的名称' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存资料' }))
+    await waitFor(() => expect(onUpdateMetadata).toHaveBeenCalledWith(expect.objectContaining({ title: '我选的名称', year: null })))
+    fireEvent.click(screen.getByRole('button', { name: '设为首选版本' }))
+    await waitFor(() => expect(onUpdateMetadata).toHaveBeenCalledWith({ preferred_work_id: 20 }))
+  })
+
   it('can exclude one edition or the whole group for the selected author', () => {
     const onExcludeEdition = vi.fn()
     const onExcludeGroup = vi.fn()
@@ -47,6 +66,7 @@ describe('WorkDetail correction actions', () => {
       activeAuthorId={2}
       onClose={vi.fn()}
       onDownload={vi.fn()}
+      onUpdateMetadata={vi.fn().mockResolvedValue(true)}
       onSplit={vi.fn()}
       onMerge={vi.fn()}
       onExcludeEdition={onExcludeEdition}

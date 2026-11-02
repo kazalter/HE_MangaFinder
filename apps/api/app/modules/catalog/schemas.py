@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.agent_review.schemas import AgentReviewRead
 
@@ -54,6 +55,7 @@ class EditionRead(BaseModel):
     language: str | None
     tags: list[str]
     variant_labels: list[str]
+    page_count: int | None = None
     latest_source_at: datetime | None
     confidence: float
     match_method: str
@@ -94,7 +96,28 @@ class WorkRelationSummary(BaseModel):
     direction: str
 
 
+class MetadataSourceRead(BaseModel):
+    locked: bool
+    edition_ids: list[int] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
+
+
+class MetadataUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    description: str | None = Field(default=None, max_length=50000)
+    year: int | None = Field(default=None, ge=1, le=3000, strict=True)
+    status: Literal["ongoing", "completed", "hiatus", "cancelled"] | None = None
+    language: str | None = Field(default=None, min_length=1, max_length=20)
+    tags: list[str] | None = Field(default=None, max_length=100)
+    cover_work_id: int | None = Field(default=None, gt=0, strict=True)
+    preferred_work_id: int | None = Field(default=None, gt=0, strict=True)
+
+
 class WorkGroupDetail(WorkGroupRead):
+    metadata_overrides: dict[str, Any] = Field(default_factory=dict)
+    metadata_sources: dict[str, MetadataSourceRead] = Field(default_factory=dict)
     editions: list[EditionRead]
     series: WorkSeriesRead | None = None
     relations: list[WorkRelationSummary] = Field(default_factory=list)

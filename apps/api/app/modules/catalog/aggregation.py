@@ -52,9 +52,7 @@ _VERSION_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bincomplete\b|未完成", "不完整版"),
     (r"v\s*\d+\b", "修订版"),
 )
-_STATUS_NOISE_RE = re.compile(
-    r"完[结結]|连载|連載|ongoing|completed|incomplete", re.IGNORECASE
-)
+_STATUS_NOISE_RE = re.compile(r"完[结結]|连载|連載|ongoing|completed|incomplete", re.IGNORECASE)
 _EVENT_PREFIX_RE = re.compile(
     r"^\s*[（(](?:"
     r"c\d+[a-z]?|comiket\s*\d+|comic\s*market\s*\d+|"
@@ -109,8 +107,7 @@ def normalize_title(title: str, author_name: str = "") -> str:
         compact_content = _compact(content)
         is_leading = match.start() <= 1
         is_version = any(
-            re.search(pattern, content, re.IGNORECASE)
-            for pattern, _ in _VERSION_PATTERNS
+            re.search(pattern, content, re.IGNORECASE) for pattern, _ in _VERSION_PATTERNS
         ) or bool(_STATUS_NOISE_RE.search(content))
         is_creator = is_leading and bool(
             (normalized_author and normalized_author in compact_content)
@@ -250,6 +247,7 @@ class AggregationService:
         if (
             membership
             and not any(member.is_manual for member in membership.group.members)
+            and not membership.group.manual_metadata
             and not self._group_numbering_matches(
                 fingerprint, membership.group, excluding_work_id=work.id
             )
@@ -259,10 +257,8 @@ class AggregationService:
 
         if membership:
             group = membership.group
-            if not any(member.is_manual for member in group.members):
-                group = self._reconcile_existing(
-                    work, author, fingerprint, group
-                )
+            if not any(member.is_manual for member in group.members) and not group.manual_metadata:
+                group = self._reconcile_existing(work, author, fingerprint, group)
             self.recompute(group)
             return group
 
@@ -299,9 +295,7 @@ class AggregationService:
         ):
             confidence = min(
                 0.98,
-                0.78
-                + title_score * 0.15
-                + (_TITLE_WITH_COVER_DISTANCE - cover_distance) * 0.006,
+                0.78 + title_score * 0.15 + (_TITLE_WITH_COVER_DISTANCE - cover_distance) * 0.006,
             )
             return self._attach(work, best_group, confidence, "title_fuzzy_cover")
 
@@ -317,16 +311,11 @@ class AggregationService:
             and cover_distance is not None
             and cover_distance <= _STRONG_COVER_DISTANCE
             and self._page_counts_compatible(fingerprint, cover_fingerprint)
-            and (
-                cover_mode != "crop"
-                or self._page_counts_match(fingerprint, cover_fingerprint)
-            )
+            and (cover_mode != "crop" or self._page_counts_match(fingerprint, cover_fingerprint))
             and self._years_match(work, cover_fingerprint.work)
         ):
             confidence = 0.96 - cover_distance * 0.01
-            return self._attach(
-                work, cover_group, confidence, "cover_number_author"
-            )
+            return self._attach(work, cover_group, confidence, "cover_number_author")
 
         group = self._create_group(work, fingerprint, "new")
         if best_group and title_score >= 0.68:
@@ -365,6 +354,18 @@ class AggregationService:
     ) -> WorkGroup:
         if target.id == source.id:
             return target
+        target_overrides = dict(target.manual_metadata or {})
+        source_overrides = dict(source.manual_metadata or {})
+        conflicts = [
+            key
+            for key, value in source_overrides.items()
+            if key in target_overrides and target_overrides[key] != value
+        ]
+        if conflicts:
+            if not manual:
+                return source
+            raise ValueError("两部作品存在不同的手工设置，请先解除冲突后合并")
+        target.manual_metadata = {**source_overrides, **target_overrides}
         for member in list(source.members):
             source.members.remove(member)
             member.group = target
@@ -397,36 +398,65 @@ class AggregationService:
         self.session.delete(member)
         self.session.flush()
         new_group = self._create_group(work, fingerprint, "manual", is_manual=True)
+        old_metadata = dict(group.manual_metadata or {})
+        moved = {
+            key: old_metadata.pop(key)
+            for key in ("cover_work_id", "preferred_work_id")
+            if old_metadata.get(key) == work_id
+        }
+        group.manual_metadata = old_metadata
+        new_group.manual_metadata = moved
         self.recompute(group)
+        self.recompute(new_group)
         return new_group
 
     def recompute(self, group: WorkGroup) -> None:
         works = [member.work for member in group.members]
         if not works:
             return
+        overrides = dict(group.manual_metadata or {})
+        valid_ids = {work.id for work in works}
+        for key in ("cover_work_id", "preferred_work_id"):
+            if key in overrides and overrides[key] not in valid_ids:
+                overrides.pop(key)
+        group.manual_metadata = overrides
+        preferred = next(
+            (work for work in works if work.id == overrides.get("preferred_work_id")), None
+        )
+        preferred_works = sorted(
+            works, key=lambda work: (work is not preferred, work.cover_url is None)
+        )
         fingerprints = [work.fingerprint for work in works if work.fingerprint]
-        title_candidates = [
-            fingerprint.normalized_title
-            for fingerprint in fingerprints
-            if fingerprint.normalized_title
-        ]
-        if title_candidates:
+        title_candidates = [item.normalized_title for item in fingerprints if item.normalized_title]
+        if preferred:
+            group.title = (
+                preferred.fingerprint.normalized_title
+                if preferred.fingerprint and preferred.fingerprint.normalized_title
+                else preferred.title
+            )
+        elif title_candidates:
             group.title = min(title_candidates, key=lambda value: (len(value), value))
         else:
             group.title = min((work.title for work in works), key=len)
         descriptions = [work.description for work in works if work.description]
-        group.description = max(descriptions, key=len, default=None)
-        preferred_works = sorted(
-            works,
-            key=lambda work: work.cover_url is None,
+        group.description = (
+            preferred.description
+            if preferred and preferred.description
+            else max(descriptions, key=len, default=None)
         )
-        group.cover_url = next(
-            (work.cover_url for work in preferred_works if work.cover_url), None
+        cover = next((work for work in works if work.id == overrides.get("cover_work_id")), None)
+        group.cover_url = (
+            cover.cover_url
+            if cover and cover.cover_url
+            else next((work.cover_url for work in preferred_works if work.cover_url), None)
         )
         group.status = next((work.status for work in preferred_works if work.status), None)
         group.year = next((work.year for work in preferred_works if work.year), None)
         group.language = next((work.language for work in preferred_works if work.language), None)
         group.tags = sorted({tag for work in works for tag in (work.tags or [])})
+        for field in ("title", "description", "year", "status", "language", "tags"):
+            if field in overrides:
+                setattr(group, field, overrides[field])
         dates = [
             as_utc(source.source_updated_at)
             for work in works
@@ -568,9 +598,7 @@ class AggregationService:
         return best_group, best_fingerprint, best_distance, best_mode
 
     @staticmethod
-    def _numbering_matches(
-        left: WorkFingerprint, right: WorkFingerprint
-    ) -> bool:
+    def _numbering_matches(left: WorkFingerprint, right: WorkFingerprint) -> bool:
         left_numbers = identity_number_signature(left.normalized_title)
         right_numbers = identity_number_signature(right.normalized_title)
         return not left_numbers or not right_numbers or left_numbers == right_numbers
@@ -609,13 +637,9 @@ class AggregationService:
         current_group: WorkGroup,
     ) -> WorkGroup:
         candidates = [
-            group
-            for group in self._candidate_groups(author.id)
-            if group.id != current_group.id
+            group for group in self._candidate_groups(author.id) if group.id != current_group.id
         ]
-        target, title_score, exact = self._best_title_candidate(
-            fingerprint, candidates
-        )
+        target, title_score, exact = self._best_title_candidate(fingerprint, candidates)
         if target and not any(member.is_manual for member in target.members):
             if exact:
                 return self.merge_groups(
@@ -624,19 +648,14 @@ class AggregationService:
                     manual=False,
                     method="title_exact_reconcile",
                 )
-            if (
-                title_score >= _TITLE_FUZZY_THRESHOLD
-                and self._identity_length(fingerprint) >= 6
-            ):
+            if title_score >= _TITLE_FUZZY_THRESHOLD and self._identity_length(fingerprint) >= 6:
                 return self.merge_groups(
                     target,
                     current_group,
                     manual=False,
                     method="title_fuzzy_reconcile",
                 )
-        return self._reconcile_by_cover(
-            work, author, fingerprint, current_group
-        )
+        return self._reconcile_by_cover(work, author, fingerprint, current_group)
 
     def _reconcile_by_cover(
         self,
@@ -648,9 +667,7 @@ class AggregationService:
         candidates = [
             group for group in self._candidate_groups(author.id) if group.id != current_group.id
         ]
-        target, candidate, distance, mode = self._best_cover_candidate(
-            fingerprint, candidates
-        )
+        target, candidate, distance, mode = self._best_cover_candidate(fingerprint, candidates)
         if not target or not candidate or distance is None:
             return current_group
         has_manual_members = any(
@@ -707,9 +724,7 @@ class AggregationService:
         self.recompute(group)
         return group
 
-    def _attach(
-        self, work: Work, group: WorkGroup, confidence: float, method: str
-    ) -> WorkGroup:
+    def _attach(self, work: Work, group: WorkGroup, confidence: float, method: str) -> WorkGroup:
         group.members.append(
             WorkGroupMember(
                 work=work,
@@ -769,9 +784,7 @@ class AggregationService:
             )
         )
         suggestions = list(
-            self.session.scalars(
-                select(MergeSuggestion).where(MergeSuggestion.status == "pending")
-            )
+            self.session.scalars(select(MergeSuggestion).where(MergeSuggestion.status == "pending"))
         )
         removed = 0
         for suggestion in suggestions:
@@ -833,9 +846,7 @@ class AggregationService:
         return abs(left.page_count - right.page_count) <= tolerance
 
     @classmethod
-    def _page_counts_compatible(
-        cls, left: WorkFingerprint, right: WorkFingerprint
-    ) -> bool:
+    def _page_counts_compatible(cls, left: WorkFingerprint, right: WorkFingerprint) -> bool:
         if left.page_count is None or right.page_count is None:
             return True
         return cls._page_counts_match(left, right)

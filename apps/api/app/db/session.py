@@ -86,6 +86,11 @@ def _apply_additive_migrations() -> None:
             )
 
     group_columns = {item["name"] for item in inspect(engine).get_columns("work_groups")}
+    if "manual_metadata" not in group_columns:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE work_groups ADD COLUMN manual_metadata JSON NOT NULL DEFAULT '{}'"
+            )
     if "first_source_at" not in group_columns:
         with engine.begin() as connection:
             connection.exec_driver_sql(
