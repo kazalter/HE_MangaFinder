@@ -243,7 +243,8 @@ class NhentaiProvider:
         parsed = urlsplit(cover_url)
         if (
             parsed.scheme != "https"
-            or parsed.hostname != "t.nhentai.net"
+            or not parsed.hostname
+            or not (parsed.hostname == "nhentai.net" or parsed.hostname.endswith(".nhentai.net"))
             or not parsed.path.startswith("/galleries/")
         ):
             raise ProviderError("nHentai 封面地址不受信任")

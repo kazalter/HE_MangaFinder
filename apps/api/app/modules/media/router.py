@@ -11,7 +11,7 @@ from app.providers.errors import ProviderError
 
 router = APIRouter(prefix="/works", tags=["media"])
 SessionDep = Annotated[Session, Depends(get_session)]
-_SUPPORTED_PROVIDERS = frozenset({"nhentai", "wnacg"})
+_SUPPORTED_PROVIDERS = frozenset({"nhentai", "wnacg", "hanimeone"})
 
 
 @router.get("/{work_id}/cover", response_class=FileResponse)
@@ -33,7 +33,8 @@ async def work_cover(
         raise HTTPException(status_code=409, detail="该历史来源不支持封面缓存")
     service: CoverCacheService = request.app.state.cover_cache
     try:
-        cached = await service.get(source.provider, source.external_id, work.cover_url)
+        provider = "nhentai" if source.provider == "hanimeone" else source.provider
+        cached = await service.get(provider, source.external_id, work.cover_url)
     except ProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return FileResponse(

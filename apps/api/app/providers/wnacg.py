@@ -153,16 +153,34 @@ class WnacgProvider:
             )
         ]
 
+    _trusted_cover_domains: tuple[str, ...] = (
+        ".wnacgimg.date",
+        ".qy0.ru",
+        ".wnimg2.cfd",
+    )
+
+    def _is_trusted_cover_url(self, cover_url: str) -> bool:
+        parsed = urlsplit(cover_url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            return False
+        hostname = parsed.hostname.lower()
+        if any(
+            hostname == domain.lstrip(".") or hostname.endswith(domain)
+            for domain in self._trusted_cover_domains
+        ):
+            return True
+        base_hosts = {
+            urlsplit(base_url).hostname.lower()
+            for base_url in self._base_urls
+            if urlsplit(base_url).hostname
+        }
+        return hostname in base_hosts
+
     async def fetch_cover(
         self, work_external_id: str, cover_url: str
     ) -> RemoteImage:
         self._validate_id(work_external_id)
-        parsed = urlsplit(cover_url)
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or not parsed.hostname.endswith(".wnacgimg.date")
-        ):
+        if not self._is_trusted_cover_url(cover_url):
             raise ProviderError("WNACG 封面地址不受信任")
         try:
             response = await self._client.get(

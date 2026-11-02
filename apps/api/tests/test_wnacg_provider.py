@@ -2,7 +2,9 @@ import zipfile
 from pathlib import Path
 
 import httpx
+import pytest
 
+from app.providers.errors import ProviderError
 from app.providers.wnacg import WnacgProvider
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -92,4 +94,54 @@ async def test_downloads_gallery_to_cbz_and_filters_promo(tmp_path: Path) -> Non
     with zipfile.ZipFile(output) as archive:
         assert archive.namelist() == ["0001.jpg", "0002.png"]
         assert archive.read("0001.jpg").startswith(b"image:")
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "cover_url",
+    [
+        "https://t4.qy0.ru/data/t/1455/55/1647052179708.gif",
+        "https://t3.wnacgimg.date/data/t/1332/29/cover.jpg",
+        "https://mirror.example.test/data/t/123/cover.jpg",
+    ],
+)
+async def test_fetches_cover_from_trusted_domains(cover_url: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"fake-image-bytes",
+            headers={"content-type": "image/jpeg"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = WnacgProvider(
+        user_agent="test",
+        base_urls=["https://www.wnacg.com", "https://mirror.example.test"],
+        client=client,
+    )
+
+    image = await provider.fetch_cover("145555", cover_url)
+    assert image.content == b"fake-image-bytes"
+    assert image.content_type == "image/jpeg"
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "cover_url",
+    [
+        "https://attacker.example/cover.jpg",
+        "http://t4.qy0.ru/data/t/cover.jpg",  # insecure http
+        "https://evil-qy0.ru/cover.jpg",
+    ],
+)
+async def test_rejects_untrusted_wnacg_cover(cover_url: str) -> None:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
+    provider = WnacgProvider(
+        user_agent="test",
+        base_urls=["https://www.wnacg.com"],
+        client=client,
+    )
+
+    with pytest.raises(ProviderError, match="不受信任"):
+        await provider.fetch_cover("145555", cover_url)
     await client.aclose()
