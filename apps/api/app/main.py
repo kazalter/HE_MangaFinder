@@ -24,7 +24,7 @@ from app.modules.dashboard.router import router as dashboard_router
 from app.modules.integrations.router import router as integrations_router
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.router import router as jobs_router
-from app.modules.jobs.worker import JobWorker
+from app.modules.jobs.worker import DownloadWorker, JobWorker
 from app.modules.media.router import router as media_router
 from app.modules.media.service import CoverCacheService
 from app.modules.social.router import router as social_router
@@ -49,19 +49,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.providers = providers
     app.state.cover_cache = CoverCacheService(settings.cover_cache_dir, providers)
     worker_task = None
+    download_worker_task = None
     catalog_scheduler_task = None
     social_scheduler_task = None
     if settings.worker_enabled:
-        worker_task = asyncio.create_task(JobWorker(settings, providers).run())
-        catalog_scheduler_task = asyncio.create_task(
-            CatalogScheduler(settings, providers).run()
+        worker_task = asyncio.create_task(
+            JobWorker(settings, providers, exclude_downloads=True).run()
         )
+        download_worker_task = asyncio.create_task(DownloadWorker(settings, providers).run())
+        catalog_scheduler_task = asyncio.create_task(CatalogScheduler(settings, providers).run())
     if settings.social_enabled:
         social_scheduler_task = asyncio.create_task(SocialScheduler(settings).run())
     yield
     tasks = [
         task
-        for task in (worker_task, catalog_scheduler_task, social_scheduler_task)
+        for task in (
+            worker_task,
+            download_worker_task,
+            catalog_scheduler_task,
+            social_scheduler_task,
+        )
         if task
     ]
     for task in tasks:
@@ -72,7 +79,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title=settings.app_name, version="0.1.0", lifespan=lifespan,
+    title=settings.app_name,
+    version="0.1.0",
+    lifespan=lifespan,
     dependencies=[Depends(protect_api_writes)],
 )
 app.add_middleware(

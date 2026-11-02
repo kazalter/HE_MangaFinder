@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db.models import DailyDigestDelivery, Job, JobStatus, NotificationOutbox
@@ -31,16 +31,13 @@ class JobRepository:
                 Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
             )
         )
-        existing = next(
-            (job for job in active if job.payload.get("author_id") == author_id), None
-        )
+        existing = next((job for job in active if job.payload.get("author_id") == author_id), None)
         if existing:
             existing_trigger = str(existing.payload.get("trigger", "manual"))
             if trigger == "provider_retry":
                 if existing_trigger == "provider_retry":
                     retry_providers = {
-                        str(provider)
-                        for provider in existing.payload.get("providers", [])
+                        str(provider) for provider in existing.payload.get("providers", [])
                     }
                     retry_providers.update(providers or [])
                     existing.payload = {
@@ -173,31 +170,54 @@ class JobRepository:
         self.session.flush()
         return job
 
-    def claim_next(self) -> Job | None:
+    def claim_next(
+        self,
+        *,
+        kinds: set[str] | None = None,
+        exclude_kinds: set[str] | None = None,
+        prioritize_notifications: bool = False,
+    ) -> Job | None:
         now = datetime.now(UTC)
-        job = self.session.scalar(
-            select(Job)
+        statement = select(Job.id).where(
+            Job.status == JobStatus.PENDING,
+            or_(Job.next_attempt_at.is_(None), Job.next_attempt_at <= now),
+        )
+        if kinds is not None:
+            statement = statement.where(Job.kind.in_(kinds))
+        if exclude_kinds:
+            statement = statement.where(Job.kind.not_in(exclude_kinds))
+        if prioritize_notifications:
+            statement = statement.order_by(case((Job.kind == DELIVER_NOTIFICATIONS, 0), else_=1))
+        job_id = self.session.scalar(statement.order_by(Job.created_at, Job.id).limit(1))
+        if job_id is None:
+            return None
+        result = self.session.execute(
+            update(Job)
             .where(
+                Job.id == job_id,
                 Job.status == JobStatus.PENDING,
                 or_(Job.next_attempt_at.is_(None), Job.next_attempt_at <= now),
             )
-            .order_by(Job.created_at, Job.id)
-            .limit(1)
+            .values(
+                status=JobStatus.RUNNING,
+                attempts=Job.attempts + 1,
+                started_at=now,
+                next_attempt_at=None,
+                error=None,
+            )
         )
-        if job:
-            job.status = JobStatus.RUNNING
-            job.attempts += 1
-            job.started_at = now
-            job.next_attempt_at = None
-            job.error = None
-            self.session.commit()
+        if result.rowcount != 1:
+            self.session.rollback()
+            return None
+        self.session.commit()
+        job = self.session.get(Job, job_id)
+        if job is not None:
+            self.session.refresh(job)
         return job
 
     def recover_interrupted(self) -> int:
         """Requeue jobs left RUNNING when the previous process stopped unexpectedly."""
-        interrupted = list(
-            self.session.scalars(select(Job).where(Job.status == JobStatus.RUNNING))
-        )
+        interrupted = list(self.session.scalars(select(Job).where(Job.status == JobStatus.RUNNING)))
         for job in interrupted:
             job.status = JobStatus.PENDING
             job.started_at = None
@@ -226,6 +246,4 @@ class JobRepository:
         self.session.commit()
 
     def list_recent(self, limit: int = 20) -> list[Job]:
-        return list(
-            self.session.scalars(select(Job).order_by(Job.created_at.desc()).limit(limit))
-        )
+        return list(self.session.scalars(select(Job).order_by(Job.created_at.desc()).limit(limit)))

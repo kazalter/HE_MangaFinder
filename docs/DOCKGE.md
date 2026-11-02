@@ -161,6 +161,13 @@ docker compose exec -T mangafinder python -m app.modules.backup.snapshot restore
 和封面缓存位于独立文件或数据卷，不包含在快照中，需要按需另行备份。校验和用于发现
 损坏，不提供防篡改或加密保护。
 
+## 后台任务进程
+
+主应用在单个进程内运行一条下载队列和一条普通队列；下载和 CBZ 校验不会占住
+普通队列，普通队列优先处理通知。同一队列仍按顺序处理，SQLite 的写入也仍会串行。
+恢复逻辑会在启动时重新排队所有未完成任务，因此不要将多个 API 实例或多个 worker
+指向同一个数据库；扩容前需要引入任务租约和跨实例恢复机制。
+
 ## 反向代理
 
 如果通过 Nginx、Caddy 或 Traefik 暴露服务，代理目标为容器宿主机的 `MANGAFINDER_PORT`。应用前后端同源，不需要额外配置 WebSocket。

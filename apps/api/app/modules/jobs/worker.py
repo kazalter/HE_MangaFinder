@@ -2,7 +2,10 @@ import asyncio
 import logging
 from dataclasses import asdict
 
+from sqlalchemy.exc import OperationalError
+
 from app.core.config import Settings
+from app.db.models import Job, JobStatus
 from app.db.session import SessionLocal
 from app.modules.agent_review.service import AgentReviewService
 from app.modules.catalog.cover_maintenance import CoverFingerprintRefreshService
@@ -27,9 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 class JobWorker:
-    def __init__(self, settings: Settings, providers: ProviderRegistry) -> None:
+    def __init__(
+        self, settings: Settings, providers: ProviderRegistry, *, exclude_downloads: bool = False
+    ) -> None:
         self.settings = settings
         self.providers = providers
+        self.exclude_downloads = exclude_downloads
 
     async def run(self) -> None:
         while True:
@@ -46,7 +52,10 @@ class JobWorker:
     async def run_once(self) -> bool:
         with SessionLocal() as session:
             jobs = JobRepository(session)
-            job = jobs.claim_next()
+            job = jobs.claim_next(
+                exclude_kinds={DOWNLOAD_CHAPTER} if self.exclude_downloads else None,
+                prioritize_notifications=self.exclude_downloads,
+            )
             if job is None:
                 return False
             try:
@@ -54,21 +63,16 @@ class JobWorker:
                     discovery = DiscoveryService(session, self.providers)
                     trigger = str(job.payload.get("trigger", "manual"))
                     if trigger == "manual":
-                        result = await discovery.discover_author(
-                            int(job.payload["author_id"])
-                        )
+                        result = await discovery.discover_author(int(job.payload["author_id"]))
                     else:
                         provider_names = {
-                            str(provider)
-                            for provider in job.payload.get("providers", [])
+                            str(provider) for provider in job.payload.get("providers", [])
                         }
                         result = await discovery.discover_author(
                             int(job.payload["author_id"]),
                             trigger=trigger,
                             provider_names=(
-                                provider_names
-                                if trigger == "provider_retry"
-                                else None
+                                provider_names if trigger == "provider_retry" else None
                             ),
                         )
                     job.payload = {**job.payload, **result}
@@ -91,21 +95,19 @@ class JobWorker:
                         "verification": asdict(verification),
                     }
                 elif job.kind == REFRESH_COVER_FINGERPRINTS:
-                    result = await CoverFingerprintRefreshService(
-                        session, self.providers
-                    ).run(
+                    result = await CoverFingerprintRefreshService(session, self.providers).run(
                         bool(job.payload.get("force", False))
                     )
                     job.payload = {**job.payload, **result}
                 elif job.kind == AGENT_REVIEW_SUGGESTIONS:
-                    result = await AgentReviewService(
-                        session, self.settings
-                    ).run_pending(job.payload.get("max_reviews"))
+                    result = await AgentReviewService(session, self.settings).run_pending(
+                        job.payload.get("max_reviews")
+                    )
                     job.payload = {**job.payload, **result}
                 elif job.kind == SOCIAL_SYNC_ACCOUNT:
-                    result = await SocialSyncService(
-                        session, self.settings
-                    ).sync_account(int(job.payload["account_id"]))
+                    result = await SocialSyncService(session, self.settings).sync_account(
+                        int(job.payload["account_id"])
+                    )
                     job.payload = {**job.payload, **result}
                     jobs.enqueue_notification_delivery_if_needed()
                 elif job.kind == BUILD_DAILY_DIGEST:
@@ -115,9 +117,7 @@ class JobWorker:
                     job.payload = {**job.payload, **result}
                     jobs.enqueue_notification_delivery_if_needed()
                 elif job.kind == DELIVER_NOTIFICATIONS:
-                    result = await NotificationService(
-                        session, self.settings
-                    ).deliver_pending()
+                    result = await NotificationService(session, self.settings).deliver_pending()
                     job.payload = {**job.payload, **result}
                 else:
                     raise ValueError(f"未知任务类型: {job.kind}")
@@ -138,3 +138,70 @@ class JobWorker:
                     raise RuntimeError(f"任务 {job_id} 在失败处理期间被删除") from exc
                 jobs.fail(job, str(exc), self.settings.max_job_attempts)
             return True
+
+
+class DownloadWorker:
+    """One download lane; network and archive work do not hold up other jobs."""
+
+    def __init__(self, settings: Settings, providers: ProviderRegistry) -> None:
+        self.settings = settings
+        self.providers = providers
+
+    @staticmethod
+    def _claim() -> tuple[int, dict] | None:
+        with SessionLocal() as session:
+            job = JobRepository(session).claim_next(kinds={DOWNLOAD_CHAPTER})
+            return (job.id, dict(job.payload)) if job else None
+
+    def _finish(self, job_id: int, payload: dict, error: str | None) -> None:
+        with SessionLocal() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.status != JobStatus.RUNNING:
+                return
+            jobs = JobRepository(session)
+            if error is None:
+                job.payload = payload
+                jobs.succeed(job)
+            else:
+                jobs.fail(job, error, self.settings.max_job_attempts)
+
+    async def _finish_with_retry(self, job_id: int, payload: dict, error: str | None) -> None:
+        while True:
+            try:
+                await asyncio.to_thread(self._finish, job_id, payload, error)
+                return
+            except OperationalError as exc:
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
+                await asyncio.sleep(max(0.1, self.settings.poll_interval_seconds))
+
+    async def run_once(self) -> bool:
+        claimed = await asyncio.to_thread(self._claim)
+        if claimed is None:
+            return False
+        job_id, payload = claimed
+        error = None
+        try:
+            with SessionLocal() as session:
+                path, verification = await DownloadService(
+                    session, self.providers, self.settings
+                ).download(
+                    int(payload["work_id"]), str(payload["provider"]), str(payload["chapter_id"])
+                )
+                payload = {**payload, "output_path": path, "verification": asdict(verification)}
+        except Exception as exc:
+            logger.warning("Download job %s failed: %s", job_id, exc)
+            error = str(exc)
+        await self._finish_with_retry(job_id, payload, error)
+        return True
+
+    async def run(self) -> None:
+        while True:
+            try:
+                if not await self.run_once():
+                    await asyncio.sleep(self.settings.poll_interval_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Download worker loop failed")
+                await asyncio.sleep(self.settings.poll_interval_seconds)

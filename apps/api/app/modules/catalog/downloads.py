@@ -1,3 +1,4 @@
+import asyncio
 import re
 import shutil
 from dataclasses import asdict, dataclass
@@ -38,9 +39,7 @@ class DownloadStorageStats:
 
 
 class DownloadService:
-    def __init__(
-        self, session: Session, providers: ProviderRegistry, settings: Settings
-    ) -> None:
+    def __init__(self, session: Session, providers: ProviderRegistry, settings: Settings) -> None:
         self.session = session
         self.providers = providers
         self.settings = settings
@@ -60,14 +59,13 @@ class DownloadService:
         work_folder = f"work-{work_id}"
         identity = sha256(f"{provider_name}\0{chapter_id}".encode()).hexdigest()[:24]
         destination = self.settings.downloads_dir / work_folder / f"{identity}.cbz"
-        output = await provider.download_chapter(
-            source.external_id, chapter_id, str(destination)
-        )
+        output = await provider.download_chapter(source.external_id, chapter_id, str(destination))
         path = safe_download_path(output, self.settings)
         if path is None:
             raise ValueError("下载来源返回了无效的文件路径")
-        self._write_comic_info(path, source.work, chapter_id, source.source_url)
-        verification = verify_cbz(path, self.settings)
+        fields = self._comic_info_fields(source.work, chapter_id, source.source_url)
+        await asyncio.to_thread(self._write_comic_info, path, fields)
+        verification = await asyncio.to_thread(verify_cbz, path, self.settings)
         return str(path), verification
 
     @staticmethod
@@ -75,16 +73,10 @@ class DownloadService:
         cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", value).strip(" .")
         return (cleaned or fallback)[:120]
 
-    def _write_comic_info(
-        self, path: Path, work: Work, chapter_id: str, source_url: str
-    ) -> None:
-        with ZipFile(path) as archive:
-            entries = archive.namelist()
-            page_count = sum(
-                Path(name).suffix.casefold() in _IMAGE_SUFFIXES for name in entries
-            )
-        root = ElementTree.Element("ComicInfo")
-        fields: dict[str, object] = {
+    @staticmethod
+    def _comic_info_fields(work: Work, chapter_id: str, source_url: str) -> dict[str, object]:
+        # Resolve ORM relationships on the event-loop thread before archive I/O.
+        return {
             "Title": work.title,
             "Series": (
                 work.group_membership.group.title
@@ -98,10 +90,17 @@ class DownloadService:
             "Genre": ", ".join(work.tags or []),
             "LanguageISO": work.language,
             "Web": source_url,
-            "PageCount": page_count,
             "Manga": "Yes",
         }
-        for key, value in fields.items():
+
+    @staticmethod
+    def _write_comic_info(path: Path, fields: dict[str, object]) -> None:
+        with ZipFile(path) as archive:
+            page_count = sum(
+                Path(name).suffix.casefold() in _IMAGE_SUFFIXES for name in archive.namelist()
+            )
+        root = ElementTree.Element("ComicInfo")
+        for key, value in {**fields, "PageCount": page_count}.items():
             if value is None or value == "":
                 continue
             ElementTree.SubElement(root, key).text = str(value)
@@ -163,9 +162,7 @@ class DownloadArchiveService:
             "after_bytes": remaining,
             "reclaimed_bytes": size - remaining,
             "files": [str(path.relative_to(self.root)) for path in selected],
-            "policy": (
-                "超过配额时按最早修改时间删除，直到达到目标比例；无限配额不自动选择文件"
-            ),
+            "policy": ("超过配额时按最早修改时间删除，直到达到目标比例；无限配额不自动选择文件"),
         }
 
     def verify_all(self, limit: int = 200) -> dict[str, object]:
@@ -175,18 +172,17 @@ class DownloadArchiveService:
             try:
                 valid.append(asdict(verify_cbz(path, self.settings)))
             except ValueError as exc:
-                invalid.append(
-                    {"path": str(path.relative_to(self.root)), "error": str(exc)}
-                )
+                invalid.append({"path": str(path.relative_to(self.root)), "error": str(exc)})
         return {"checked": len(valid) + len(invalid), "valid": valid, "invalid": invalid}
 
 
 def _replace_zip_entry(path: Path, name: str, payload: bytes) -> None:
     temporary = path.with_suffix(".metadata.tmp")
     try:
-        with ZipFile(path, "r") as source, ZipFile(
-            temporary, "w", compression=ZIP_DEFLATED
-        ) as target:
+        with (
+            ZipFile(path, "r") as source,
+            ZipFile(temporary, "w", compression=ZIP_DEFLATED) as target,
+        ):
             for item in source.infolist():
                 if item.filename != name:
                     target.writestr(item, source.read(item.filename))
@@ -205,9 +201,7 @@ def verify_cbz(path: Path, settings: Settings) -> DownloadVerification:
             if archive.testzip() is not None:
                 raise ValueError("CBZ CRC 校验失败")
             names = archive.namelist()
-            if any(
-                Path(name).is_absolute() or ".." in Path(name).parts for name in names
-            ):
+            if any(Path(name).is_absolute() or ".." in Path(name).parts for name in names):
                 raise ValueError("CBZ 包含不安全路径")
             pages = sum(Path(name).suffix.casefold() in _IMAGE_SUFFIXES for name in names)
             if pages == 0:
