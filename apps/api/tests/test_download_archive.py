@@ -109,3 +109,21 @@ def test_verification_rejects_cbz_without_pages(tmp_path: Path) -> None:
         archive.writestr("readme.txt", "empty")
     with pytest.raises(ValueError, match="没有可识别的图片页"):
         verify_cbz(path, Settings(downloads_dir=tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_same_title_and_chapter_do_not_overwrite(tmp_path: Path) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        works = [Work(title="漫画" * 150), Work(title="漫画" * 150)]
+        session.add_all([WorkSource(work=work, provider="test", external_id=str(i),
+                                   source_url="https://example.test/")
+                         for i, work in enumerate(works)])
+        session.commit()
+        service = DownloadService(session, ProviderRegistry([DownloadProvider()]),
+                                  Settings(downloads_dir=tmp_path))
+        first, _ = await service.download(works[0].id, "test", "1")
+        second, _ = await service.download(works[1].id, "test", "1")
+        assert first != second
+        assert Path(first).is_file() and Path(second).is_file()

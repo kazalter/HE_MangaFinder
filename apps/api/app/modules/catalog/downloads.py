@@ -57,9 +57,9 @@ class DownloadService:
         if ProviderCapability.DOWNLOAD not in provider.capabilities:
             raise ValueError("该来源不支持下载")
 
-        work_folder = self._safe_name(source.work.title, f"work-{work_id}")
-        chapter_name = self._safe_name(chapter_id, "chapter")
-        destination = self.settings.downloads_dir / work_folder / f"{chapter_name}.cbz"
+        work_folder = f"work-{work_id}"
+        identity = sha256(f"{provider_name}\0{chapter_id}".encode()).hexdigest()[:24]
+        destination = self.settings.downloads_dir / work_folder / f"{identity}.cbz"
         output = await provider.download_chapter(
             source.external_id, chapter_id, str(destination)
         )
