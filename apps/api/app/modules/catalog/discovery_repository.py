@@ -103,6 +103,38 @@ class DiscoveryRepository:
         )
         return {author_id: started_at for author_id, started_at in rows if started_at}
 
+    def provider_pause_until(
+        self, provider: str, base_delay_minutes: int, max_delay_minutes: int
+    ) -> datetime | None:
+        """Pause repeated source-wide failures; a later successful scan resets the circuit."""
+        scans = self.session.execute(
+            select(ProviderScanRun.status, ProviderScanRun.finished_at, ProviderScanRun.error)
+            .where(
+                ProviderScanRun.provider == provider,
+                ProviderScanRun.status.in_(["succeeded", "failed"]),
+                ProviderScanRun.finished_at.is_not(None),
+            )
+            .order_by(ProviderScanRun.finished_at.desc(), ProviderScanRun.id.desc())
+            .limit(64)
+        )
+        count = 0
+        latest = None
+        for status, finished_at, error in scans:
+            # Process restarts say nothing about the source's actual health.
+            if error and "服务重启" in error:
+                continue
+            if status == "succeeded":
+                break
+            if latest is None:
+                latest = finished_at
+            count += 1
+        if count < 3 or latest is None:
+            return None
+        base = max(1, base_delay_minutes)
+        maximum = max(base, max_delay_minutes)
+        delay = min(base * (1 << min(count - 3, 12)), maximum)
+        return latest + timedelta(minutes=delay)
+
     def due_provider_retries(
         self,
         now: datetime,

@@ -16,6 +16,11 @@ const sourceLabels: Record<string, string> = {
   nhentai: 'nHentai',
 }
 
+const failureLabels: Record<string, string> = {
+  timeout: '超时', proxy: '代理', forbidden: '访问受限', rate_limit: '限流',
+  connection: '连接 / 域名', unavailable: '来源不可用', parse: '页面解析', other: '其他',
+}
+
 function relativeTime(value: string | null): string {
   if (!value) return '尚无成功记录'
   const time = new Date(value).getTime()
@@ -92,7 +97,7 @@ export function Dashboard({ data, events, busy, onReload, onOpenWork, onOpenRada
 
       <section className="dashboard-panel source-health-panel">
         <header><div><span>PROVIDERS</span><h2>来源健康度</h2></div><Pulse size={21} /></header>
-        <div>{data.source_health.map((source) => <article key={source.provider}><span className={`source-health-dot ${source.current_failed_authors > 0 ? 'warn' : 'ok'}`} /><div><strong>{sourceLabels[source.provider] ?? source.provider}</strong><small>{source.scans} 次扫描（含重试） · 新增 {source.new_items} 项 · 最近成功 {relativeTime(source.last_success_at)}{source.current_failed_authors > 0 ? ` · ${source.current_failed_authors} 位作者最近扫描失败（统计周期内）` : ''}</small>{source.last_error && <em>{source.last_error}</em>}</div><b>{Math.round(source.success_rate * 100)}%</b></article>)}{!data.source_health.length && <div className="dashboard-empty compact"><Pulse size={25} /><p>完成一次作品扫描后显示来源健康度。</p></div>}</div>
+        <div>{data.source_health.map((source) => <article key={source.provider}><span className={`source-health-dot ${source.current_failed_authors > 0 ? 'warn' : 'ok'}`} /><div><strong>{sourceLabels[source.provider] ?? source.provider}</strong><small>{source.scans} 次扫描（含重试） · 新增 {source.new_items} 项 · 最近成功 {relativeTime(source.last_success_at)}{source.current_failed_authors > 0 ? ` · ${source.current_failed_authors} 位作者最近扫描失败（统计周期内）` : ''}</small>{Object.keys(source.failure_categories ?? {}).length > 0 && <small>失败分类（含重试）：{Object.entries(source.failure_categories).map(([category, count]) => `${failureLabels[category] ?? category} ${count}`).join(' · ')}</small>}{source.retry_paused_until && new Date(source.retry_paused_until).getTime() > Date.now() && <small>自动重试暂缓至 {new Date(source.retry_paused_until).toLocaleString('zh-CN')}，随后自动探测；手动刷新不受影响</small>}{source.last_error && <em>{source.last_error}</em>}</div><b>{Math.round(source.success_rate * 100)}%</b></article>)}{!data.source_health.length && <div className="dashboard-empty compact"><Pulse size={25} /><p>完成一次作品扫描后显示来源健康度。</p></div>}</div>
       </section>
 
       <section className="dashboard-panel upcoming-panel">

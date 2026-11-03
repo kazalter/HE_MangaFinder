@@ -47,7 +47,19 @@ class CatalogScheduler:
                 self.settings.catalog_provider_retry_max_minutes,
                 {provider.name for provider in self.providers.all()},
             )
+            paused = {
+                provider.name
+                for provider in self.providers.all()
+                if (until := DiscoveryRepository(session).provider_pause_until(
+                    provider.name,
+                    self.settings.catalog_provider_retry_base_minutes,
+                    self.settings.catalog_provider_retry_max_minutes,
+                )) is not None and until > now
+            }
             for author_id, provider_names in retries.items():
+                provider_names = [name for name in provider_names if name not in paused]
+                if not provider_names:
+                    continue
                 jobs.enqueue_discovery(
                     author_id,
                     trigger="provider_retry",

@@ -35,6 +35,8 @@ class SourceHealth(BaseModel):
     last_error: str | None = None
     current_failed_authors: int = 0
     current_checked_authors: int = 0
+    failure_categories: dict[str, int] = Field(default_factory=dict)
+    retry_paused_until: datetime | None = None
 
 
 class UpcomingRelease(BaseModel):

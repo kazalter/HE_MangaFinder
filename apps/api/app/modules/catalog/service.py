@@ -4,6 +4,7 @@ from time import monotonic
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.models import DiscoveryRun, ProviderScanRun
 from app.modules.authors.repository import AuthorRepository
 from app.modules.catalog.aggregation import AggregationService, CoverHasher
@@ -28,7 +29,7 @@ class DiscoveryService:
         *,
         trigger: str = "manual",
         provider_names: set[str] | None = None,
-    ) -> dict[str, int | str]:
+    ) -> dict[str, int | str | list[str]]:
         author = AuthorRepository(self.session).get(author_id)
         if author is None:
             return {"run_id": 0, "found": 0, "new": 0, "updated": 0, "excluded": 0}
@@ -47,6 +48,7 @@ class DiscoveryService:
         excluded_total = 0
         errors: list[str] = []
         successful_providers = 0
+        skipped_providers: list[str] = []
         providers = [
             provider
             for provider in self.providers.all()
@@ -54,6 +56,16 @@ class DiscoveryService:
         ]
         try:
             for provider in providers:
+                if trigger in {"scheduled", "provider_retry"}:
+                    settings = get_settings()
+                    pause_until = discovery.provider_pause_until(
+                        provider.name,
+                        settings.catalog_provider_retry_base_minutes,
+                        settings.catalog_provider_retry_max_minutes,
+                    )
+                    if pause_until and pause_until > datetime.now(UTC):
+                        skipped_providers.append(provider.name)
+                        continue
                 query_name = catalog.preferred_author_query_name(
                     author.id, provider.name, author.name
                 )
@@ -158,7 +170,9 @@ class DiscoveryService:
             run.finished_at = datetime.now(UTC)
             run.error = "; ".join(errors)[:4000] or None
             run.status = (
-                "failed"
+                "skipped"
+                if skipped_providers and not errors and successful_providers == 0
+                else "failed"
                 if errors and successful_providers == 0
                 else "partial"
                 if errors
@@ -178,4 +192,5 @@ class DiscoveryService:
             "updated": updated_total,
             "excluded": excluded_total,
             "status": run.status if run else "succeeded",
+            "skipped_providers": skipped_providers,
         }

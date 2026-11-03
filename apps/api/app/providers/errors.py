@@ -26,3 +26,23 @@ def describe_http_error(exc: httpx.HTTPError) -> str:
         }.get(status)
         return f"HTTP {status}" + (f"（{explanation}）" if explanation else "")
     return f"网络请求失败（{type(exc).__name__}）"
+
+
+def classify_provider_error(message: str | None) -> str:
+    """Classify recorded source errors conservatively; old free-text errors remain supported."""
+    value = (message or "").lower()
+    if "超时" in value or "timeout" in value or "timed out" in value:
+        return "timeout"
+    if "代理" in value or "proxy" in value:
+        return "proxy"
+    if "403" in value or "cloudflare" in value or "访问被拒绝" in value:
+        return "forbidden"
+    if "429" in value or "过于频繁" in value:
+        return "rate_limit"
+    if "结构" in value or "解析" in value or "数据缺失" in value or "缺少作品数据" in value:
+        return "parse"
+    if "候选域名" in value or "dns" in value or "连接失败" in value or "connect" in value:
+        return "connection"
+    if any(f"http {code}" in value for code in (500, 502, 503, 504)):
+        return "unavailable"
+    return "other"

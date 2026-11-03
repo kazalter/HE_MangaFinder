@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.config import get_settings
 from app.db.models import (
     Author,
     CatalogEvent,
@@ -16,6 +17,7 @@ from app.db.models import (
     WorkGroup,
     WorkGroupMember,
 )
+from app.modules.catalog.discovery_repository import DiscoveryRepository
 from app.modules.dashboard.schemas import (
     CatalogEventRead,
     DashboardRead,
@@ -25,6 +27,7 @@ from app.modules.dashboard.schemas import (
     UpcomingRelease,
 )
 from app.modules.media.urls import group_cover_url
+from app.providers.errors import classify_provider_error
 
 
 class DashboardRepository:
@@ -164,6 +167,16 @@ class DashboardRepository:
             current_scans = list(current[provider].values())
             current_failures = [item for item in current_scans if item.status == "failed"]
             last_error = next((item.error for item in current_failures if item.error), None)
+            categories: dict[str, int] = {}
+            for item in failed:
+                category = classify_provider_error(item.error)
+                categories[category] = categories.get(category, 0) + 1
+            settings = get_settings()
+            pause_until = DiscoveryRepository(self.session).provider_pause_until(
+                provider,
+                settings.catalog_provider_retry_base_minutes,
+                settings.catalog_provider_retry_max_minutes,
+            )
             result.append(
                 SourceHealth(
                     provider=provider,
@@ -184,6 +197,8 @@ class DashboardRepository:
                     last_error=last_error,
                     current_failed_authors=len(current_failures),
                     current_checked_authors=len(current_scans),
+                    failure_categories=categories,
+                    retry_paused_until=pause_until,
                 )
             )
         return result

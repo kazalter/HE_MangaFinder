@@ -417,6 +417,8 @@ export interface SourceHealth {
   average_duration_ms: number
   current_failed_authors: number
   current_checked_authors: number
+  failure_categories: Record<string, number>
+  retry_paused_until: string | null
   last_success_at: string | null
   last_error: string | null
 }

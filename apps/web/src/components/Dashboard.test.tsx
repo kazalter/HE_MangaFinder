@@ -14,6 +14,7 @@ const data = {
     provider: 'wnacg', scans: 4, succeeded: 3, failed: 1, success_rate: 0.75,
     new_items: 3, average_duration_ms: 800, last_success_at: '2026-07-24T10:00:00Z',
     last_error: '暂时不可达', current_failed_authors: 1, current_checked_authors: 2,
+    failure_categories: { timeout: 1 }, retry_paused_until: '2099-01-01T00:00:00Z',
   }],
   upcoming: [{
     id: 4, author_id: 2, author_name: '作者乙', title: '八月新刊', kind: 'new_release',
@@ -50,6 +51,8 @@ describe('Dashboard', () => {
     expect(screen.getByRole('heading', { name: '资料库总览' })).toBeInTheDocument()
     expect(screen.getByText('新发现作品')).toBeInTheDocument()
     expect(screen.getByText('75%')).toBeInTheDocument()
+    expect(screen.getByText('失败分类（含重试）：超时 1')).toBeInTheDocument()
+    expect(screen.getByText(/自动重试暂缓至/)).toBeInTheDocument()
     expect(screen.getByText('八月新刊')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '标为已读' }))
