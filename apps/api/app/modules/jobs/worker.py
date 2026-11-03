@@ -34,12 +34,15 @@ class JobWorker:
     def __init__(
         self, settings: Settings, providers: ProviderRegistry, *, exclude_downloads: bool = False,
         exclude_covers: bool = False, covers_only: bool = False,
+        exclude_notifications: bool = False, notifications_only: bool = False,
     ) -> None:
         self.settings = settings
         self.providers = providers
         self.exclude_downloads = exclude_downloads
         self.exclude_covers = exclude_covers
         self.covers_only = covers_only
+        self.exclude_notifications = exclude_notifications
+        self.notifications_only = notifications_only
 
     async def run(self) -> None:
         while True:
@@ -57,9 +60,13 @@ class JobWorker:
         with SessionLocal() as session:
             jobs = JobRepository(session)
             job = jobs.claim_next(
-                kinds={REFRESH_COVER_FINGERPRINTS} if self.covers_only else None,
+                kinds=(
+                    {REFRESH_COVER_FINGERPRINTS} if self.covers_only
+                    else {DELIVER_NOTIFICATIONS} if self.notifications_only else None
+                ),
                 exclude_kinds=({DOWNLOAD_CHAPTER} if self.exclude_downloads else set())
-                | ({REFRESH_COVER_FINGERPRINTS} if self.exclude_covers else set()),
+                | ({REFRESH_COVER_FINGERPRINTS} if self.exclude_covers else set())
+                | ({DELIVER_NOTIFICATIONS} if self.exclude_notifications else set()),
                 prioritize_notifications=self.exclude_downloads,
             )
             if job is None:
@@ -142,7 +149,7 @@ class JobWorker:
                 job = session.get(type(job), job_id)
                 if job is None:
                     raise RuntimeError(f"任务 {job_id} 在失败处理期间被删除") from exc
-                if self.covers_only:
+                if self.covers_only or self.notifications_only:
                     while True:
                         try:
                             if job.status == JobStatus.RUNNING:
@@ -174,10 +181,13 @@ class CoverWorkerThread:
     def start(self) -> None:
         self.thread.start()
 
+    def _make_worker(self, providers: ProviderRegistry) -> JobWorker:
+        return JobWorker(self.settings, providers, covers_only=True)
+
     def _run(self) -> None:
         async def serve() -> None:
             providers = build_registry(self.settings)
-            worker = JobWorker(self.settings, providers, covers_only=True)
+            worker = self._make_worker(providers)
             try:
                 while not self.stop_event.is_set():
                     try:
@@ -185,7 +195,9 @@ class CoverWorkerThread:
                         if not processed:
                             await asyncio.sleep(self.settings.poll_interval_seconds)
                     except Exception:
-                        logger.exception("Cover index worker loop failed")
+                        logger.exception(
+                            "Background lane %s failed", threading.current_thread().name
+                        )
                         await asyncio.sleep(self.settings.poll_interval_seconds)
             finally:
                 await providers.close()
@@ -195,7 +207,20 @@ class CoverWorkerThread:
         self.stop_event.set()
         await asyncio.to_thread(self.thread.join, 5)
         if self.thread.is_alive():
-            logger.warning("Cover index worker still stopping; interrupted jobs recover on restart")
+            logger.warning(
+                "%s still stopping; interrupted jobs recover on restart", self.thread.name
+            )
+
+
+class NotificationWorkerThread(CoverWorkerThread):
+    """Deliver notifications independently of long-running discovery jobs."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.thread.name = "notification-delivery"
+
+    def _make_worker(self, providers: ProviderRegistry) -> JobWorker:
+        return JobWorker(self.settings, providers, notifications_only=True)
 
 
 class DownloadWorker:

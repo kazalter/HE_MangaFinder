@@ -1,10 +1,13 @@
+import asyncio
 import hashlib
 import hmac
 import json
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import inspect, or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -134,6 +137,34 @@ class NotificationService:
             return
         raise ValueError(f"未知通知渠道：{channel}")
 
+    async def _commit_delivery(self) -> None:
+        """Retry locked writes without sending the already delivered message again."""
+        changes = []
+        for instance in self.session.dirty:
+            state = inspect(instance)
+            values = {
+                attr.key: deepcopy(getattr(instance, attr.key))
+                for attr in state.mapper.column_attrs
+                if state.attrs[attr.key].history.has_changes()
+            }
+            if values:
+                changes.append((type(instance), state.identity, values))
+        while True:
+            try:
+                self.session.commit()
+                return
+            except OperationalError as exc:
+                if not any(word in str(exc).lower() for word in ("locked", "busy")):
+                    raise
+                self.session.rollback()
+                await asyncio.sleep(max(0.1, self.settings.poll_interval_seconds))
+                for model, identity, values in changes:
+                    row = self.session.get(model, identity)
+                    if row is None:
+                        raise RuntimeError("通知记录在保存结果时被删除") from exc
+                    for key, value in values.items():
+                        setattr(row, key, deepcopy(value))
+
     async def deliver_pending(self, limit: int = 20) -> dict[str, int]:
         now = datetime.now(UTC)
         signal_rows = list(
@@ -167,84 +198,88 @@ class NotificationService:
         delivered = 0
         failed = 0
         for item in signal_rows:
-            item.attempts += 1
-            try:
-                await self._send(
-                    item.channel,
-                    event=item.event,
-                    idempotency_key=item.idempotency_key,
-                    payload=item.payload,
-                )
-            except ValueError as exc:
-                item.status = "failed"
-                item.error = str(exc)[:2000]
-                failed += 1
-            except Exception as exc:
-                item.error = str(exc)[:2000]
-                item.next_attempt_at = self._retry_at(now, item.attempts)
-                failed += 1
-            else:
-                item.status = "delivered"
-                item.delivered_at = now
-                item.next_attempt_at = None
-                item.error = None
-                signal = self.session.get(ReleaseSignal, item.signal_id)
-                if signal is not None:
-                    signal.notified_at = now
-                delivered += 1
+            with self.session.no_autoflush:
+                item.attempts += 1
+                try:
+                    await self._send(
+                        item.channel,
+                        event=item.event,
+                        idempotency_key=item.idempotency_key,
+                        payload=item.payload,
+                    )
+                except ValueError as exc:
+                    item.status = "failed"
+                    item.error = str(exc)[:2000]
+                    failed += 1
+                except Exception as exc:
+                    item.error = str(exc)[:2000]
+                    item.next_attempt_at = self._retry_at(now, item.attempts)
+                    failed += 1
+                else:
+                    item.status = "delivered"
+                    item.delivered_at = now
+                    item.next_attempt_at = None
+                    item.error = None
+                    signal = self.session.get(ReleaseSignal, item.signal_id)
+                    if signal is not None:
+                        signal.notified_at = now
+                    delivered += 1
+            await self._commit_delivery()
 
         channels = self._enabled_channels()
         for item in digest_rows:
-            item.attempts += 1
-            if not channels:
-                item.error = "尚未启用外部通知渠道，日报保留在站内"
-                item.next_attempt_at = now + timedelta(hours=6)
-                failed += 1
-                continue
-
-            delivered_channels = {
-                str(channel)
-                for channel in item.payload.get("_delivered_channels", [])
-            }
-            public_payload = {
-                str(key): value
-                for key, value in item.payload.items()
-                if not str(key).startswith("_")
-            }
-            errors: list[str] = []
-            for channel in channels:
-                if channel in delivered_channels:
+            with self.session.no_autoflush:
+                item.attempts += 1
+                if not channels:
+                    item.error = "尚未启用外部通知渠道，日报保留在站内"
+                    item.next_attempt_at = now + timedelta(hours=6)
+                    failed += 1
+                    await self._commit_delivery()
                     continue
-                try:
-                    await self._send(
-                        channel,
-                        event="daily_digest",
-                        idempotency_key=(
-                            f"{channel}:daily_digest:{item.local_date}:{item.content_hash}"
-                        ),
-                        payload=public_payload,
-                    )
-                except Exception as exc:
-                    errors.append(f"{channel}: {str(exc)[:1000]}")
+
+                delivered_channels = {
+                    str(channel)
+                    for channel in item.payload.get("_delivered_channels", [])
+                }
+                public_payload = {
+                    str(key): value
+                    for key, value in item.payload.items()
+                    if not str(key).startswith("_")
+                }
+                errors: list[str] = []
+                for channel in channels:
+                    if channel in delivered_channels:
+                        continue
+                    try:
+                        await self._send(
+                            channel,
+                            event="daily_digest",
+                            idempotency_key=(
+                                f"{channel}:daily_digest:{item.local_date}:{item.content_hash}"
+                            ),
+                            payload=public_payload,
+                        )
+                    except Exception as exc:
+                        errors.append(f"{channel}: {str(exc)[:1000]}")
+                    else:
+                        delivered_channels.add(channel)
+
+                item.payload = {
+                    **public_payload,
+                    "_delivered_channels": sorted(delivered_channels),
+                }
+                if set(channels).issubset(delivered_channels):
+                    item.status = "delivered"
+                    item.delivered_at = now
+                    item.next_attempt_at = None
+                    item.error = None
+                    delivered += 1
                 else:
-                    delivered_channels.add(channel)
+                    item.error = "; ".join(errors)[:2000] or "部分通知渠道尚未送达"
+                    item.next_attempt_at = self._retry_at(now, item.attempts)
+                    failed += 1
+            await self._commit_delivery()
 
-            item.payload = {
-                **public_payload,
-                "_delivered_channels": sorted(delivered_channels),
-            }
-            if set(channels).issubset(delivered_channels):
-                item.status = "delivered"
-                item.delivered_at = now
-                item.next_attempt_at = None
-                item.error = None
-                delivered += 1
-            else:
-                item.error = "; ".join(errors)[:2000] or "部分通知渠道尚未送达"
-                item.next_attempt_at = self._retry_at(now, item.attempts)
-                failed += 1
-
-        self.session.commit()
         return {
             "processed": len(signal_rows) + len(digest_rows),
             "signal_processed": len(signal_rows),
