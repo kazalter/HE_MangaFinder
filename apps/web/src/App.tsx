@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AuthorDirectory } from './components/AuthorDirectory'
+import { AssistantChat } from './components/AssistantChat'
 import { AuthorSidebar } from './components/AuthorSidebar'
 import { Dashboard } from './components/Dashboard'
 import { ImageSearch } from './components/ImageSearch'
@@ -132,6 +133,7 @@ export default function App() {
   const [reviewOpen, setReviewOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [imageSearchOpen, setImageSearchOpen] = useState(false)
+  const [assistantOpen, setAssistantOpen] = useState(false)
   const [radarOpen, setRadarOpen] = useState(() => new URLSearchParams(window.location.search).has('radar'))
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [focusSignalId] = useState<number | null>(() => {
@@ -162,7 +164,7 @@ export default function App() {
     try { return Number(window.sessionStorage.getItem('mangafinder:dismissed-job-through') ?? 0) || 0 }
     catch { return 0 }
   })
-  const hasModal = !settingsOpen && Boolean(openedWork || reviewOpen || radarOpen || imageSearchOpen || historyOpen)
+  const hasModal = !settingsOpen && Boolean(openedWork || reviewOpen || radarOpen || imageSearchOpen || historyOpen || assistantOpen)
 
   const loadGeneration = useRef(0)
   const load = useCallback(async () => {
@@ -215,7 +217,7 @@ export default function App() {
   }, [worksScope])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
-    const openLogin = () => setSettingsOpen(true)
+    const openLogin = () => { setAssistantOpen(false); setSettingsOpen(true) }
     window.addEventListener('mangafinder:login-required', openLogin)
     return () => window.removeEventListener('mangafinder:login-required', openLogin)
   }, [])
@@ -489,8 +491,9 @@ export default function App() {
           await act(() => api.deleteAuthor(id))
         }}
         settingsActive={settingsOpen}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => { setAssistantOpen(false); setSettingsOpen(true) }}
         onOpenRadar={() => setRadarOpen(true)}
+        onOpenAssistant={() => setAssistantOpen(true)}
         onOpenHistory={() => { setSettingsOpen(false); setHistoryOpen(true) }}
       />
 
@@ -608,6 +611,7 @@ export default function App() {
       {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} activeAuthorId={selectedId} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onUpdateMetadata={updateMetadata} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)} onExcludeGroup={(authorId) => void excludeGroup(authorId)} />}
       {!settingsOpen && reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
       {!settingsOpen && radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
+      <AssistantChat open={assistantOpen} onClose={() => setAssistantOpen(false)} />
     </div>
   )
 }

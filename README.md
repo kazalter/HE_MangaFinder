@@ -24,6 +24,7 @@
 - 可选的聚合 Agent：对规则无法确定的候选做结构化证据复核，默认只读并保留人工确认。
 - 可选的作者动态雷达：绑定人工确认的 X 账号，区分转推、参展、新刊、再版与取消，
   通过站内雷达、QQ 官方 Bot 或签名 Webhook 提醒。
+- DeepSeek AI 助手：基于已采集的作者动态与作品资料回答、提供来源链接；支持的资料修改先预览，需管理员再次确认。
 
 > 只应连接你有权访问和下载的来源。适配器必须遵守来源的 API 条款、robots、限流和版权要求。本项目不会绕过登录、付费墙或反爬验证。
 
@@ -79,6 +80,8 @@ make build
 [docs/AGENT_AGGREGATION_PLAN.md](docs/AGENT_AGGREGATION_PLAN.md)。
 
 当前服务器可用 `./scripts/sync-dockge.sh --build-web` 将工作区安全同步到 `/opt/stacks/mangafinder`；脚本保留 Dockge 中的 `.env` 和持久数据。
+
+AI 助手的数据范围、修改确认流程和安全边界见 [docs/AI_ASSISTANT.md](docs/AI_ASSISTANT.md)。
 
 作者动态雷达的设计边界见 [docs/SOCIAL_RADAR_PLAN.md](docs/SOCIAL_RADAR_PLAN.md)，Dockge、X 会话和
 QQ Bot 配置见 [docs/SOCIAL_RADAR.md](docs/SOCIAL_RADAR.md)，Webhook 请求格式与验签方式见

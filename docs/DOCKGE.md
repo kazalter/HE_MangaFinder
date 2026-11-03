@@ -76,7 +76,7 @@ DeepSeek API 使用独立适配模式：
 ```dotenv
 MANGAFINDER_AGENT_PROVIDER=deepseek
 MANGAFINDER_AGENT_BASE_URL=https://api.deepseek.com
-MANGAFINDER_AGENT_MODEL=deepseek-v4-flash
+MANGAFINDER_AGENT_MODEL=deepseek-flash
 MANGAFINDER_AGENT_API_KEY=你的密钥
 ```
 

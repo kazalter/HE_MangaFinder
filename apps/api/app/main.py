@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import get_settings
 from app.db.session import SessionLocal, init_db
 from app.modules.agent_review.router import router as agent_reviews_router
+from app.modules.assistant.router import router as assistant_router
 from app.modules.authors.router import router as authors_router
 from app.modules.backup.router import router as backup_router
 from app.modules.catalog.discovery_repository import DiscoveryRepository
@@ -119,6 +120,7 @@ def health() -> dict[str, str]:
 
 app.include_router(authors_router, prefix="/api")
 app.include_router(agent_reviews_router, prefix="/api")
+app.include_router(assistant_router, prefix="/api")
 app.include_router(backup_router, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(downloads_router, prefix="/api")

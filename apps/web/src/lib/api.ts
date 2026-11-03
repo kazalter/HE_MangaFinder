@@ -1,4 +1,4 @@
-import type { ActivityItem, AgentStatus, AiConfig, Author, AuthorDigest, CatalogEvent, CatalogOperation, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, ImageSearchMatch, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail, WorkMetadataPatch } from '../types'
+import type { ActivityItem, AgentStatus, AssistantMessage, AssistantReply, AiConfig, Author, AuthorDigest, CatalogEvent, CatalogOperation, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, ImageSearchMatch, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail, WorkMetadataPatch } from '../types'
 
 function cookie(name: string): string | undefined {
   return document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -97,6 +97,15 @@ export const api = {
     request<WorkGroupDetail>(`/work-groups/suggestions/${id}/accept`, { method: 'POST' }),
   rejectSuggestion: (id: number) =>
     request<MergeSuggestion>(`/work-groups/suggestions/${id}/reject`, { method: 'POST' }),
+  assistantChat: (messages: AssistantMessage[]) =>
+    request<AssistantReply>('/assistant/chat', {
+      method: 'POST', body: JSON.stringify({ messages }),
+    }),
+  confirmAssistantProposal: (proposalId: string) =>
+    request<{ message: string, target_type: 'work' | 'planned_release', target_id: number }>(
+      '/assistant/proposals/' + encodeURIComponent(proposalId) + '/confirm',
+      { method: 'POST' },
+    ),
   agentStatus: () => request<AgentStatus>('/agent-reviews/status'),
   runAgentReviews: (maxReviews?: number) =>
     request<Job>('/agent-reviews/run', {

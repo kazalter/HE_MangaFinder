@@ -367,8 +367,9 @@ def get_work_group(group_id: int, session: SessionDep) -> WorkGroupDetail:
     return _detail(group)
 
 
-@router.patch("/{group_id}/metadata", response_model=WorkGroupDetail)
-def update_metadata(group_id: int, payload: MetadataUpdate, session: SessionDep) -> WorkGroupDetail:
+def apply_group_metadata_update(
+    group_id: int, payload: MetadataUpdate, session: Session
+) -> WorkGroup:
     lock_catalog_write(session)
     group = WorkGroupRepository(session).get(group_id)
     if group is None:
@@ -397,7 +398,12 @@ def update_metadata(group_id: int, payload: MetadataUpdate, session: SessionDep)
     group.manual_metadata = overrides
     AggregationService(session).recompute(group)
     session.commit()
-    return _detail(group)
+    return group
+
+
+@router.patch("/{group_id}/metadata", response_model=WorkGroupDetail)
+def update_metadata(group_id: int, payload: MetadataUpdate, session: SessionDep) -> WorkGroupDetail:
+    return _detail(apply_group_metadata_update(group_id, payload, session))
 
 
 @router.post("/{target_group_id}/merge", response_model=WorkGroupDetail)

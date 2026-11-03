@@ -187,6 +187,31 @@ export interface AgentReview {
   is_stale: boolean
 }
 
+export interface AssistantMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface AssistantCitation {
+  label: string
+  url: string
+}
+
+export interface AssistantProposal {
+  id: string
+  title: string
+  reason: string
+  changes: Array<{ field: string, before: string, after: string }>
+  expires_at: string
+}
+
+export interface AssistantReply {
+  answer: string
+  citations: AssistantCitation[]
+  proposal: AssistantProposal | null
+  model: string
+}
+
 export interface AgentStatus {
   enabled: boolean
   configured: boolean
