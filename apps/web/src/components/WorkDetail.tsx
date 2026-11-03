@@ -56,13 +56,13 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, activeAut
             <p>{group.description?.replace(/\[[^\]]+\]\([^\)]+\)/g, '') || '暂无简介'}</p>
             <div className="source-badges large">
               {providers.map((item) => <span className={`source-badge source-${item}`} key={item}>{item}</span>)}
-              <small>{group.edition_count} 个版本 · 作品时间 {displayDate(group.first_source_at)} · 最近版本 {displayDate(group.latest_source_at)}</small>
+              <small>{group.edition_count} 个版本 · 作品年份 {group.year ?? '未知'} · 最早来源时间 {displayDate(group.first_source_at)} · 最近来源时间 {displayDate(group.latest_source_at)} · 收录发现 {displayDate(group.first_discovered_at ?? null)}</small>
             </div>
           </div>
         </header>
 
         <section className="metadata-panel">
-          <header><div><strong>作品资料</strong><small>查看字段来源，手工固定后会保留你的选择。</small></div><button onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? '收起' : '编辑资料'}</button></header>
+          <header><div><strong>作品资料</strong><small>年份表示作品年份，来源时间来自站点；收录发现时间取当前作者关联记录中的最早时间。</small></div><button onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? '收起' : '编辑资料'}</button></header>
           {group.metadata_sources && <div className="metadata-sources">
             {([['title', '标题'], ['cover_url', '封面'], ['year', '年份'], ['description', '简介'], ['status', '状态'], ['language', '语言'], ['tags', '标签']] as const).map(([key, label]) => {
               const source = group.metadata_sources?.[key]
@@ -103,7 +103,7 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, activeAut
               <CoverImage src={edition.cover_url} alt={`${edition.title} 封面`} loading="lazy" fallback={<div className="edition-cover-empty">冊</div>} />
               <div className="edition-copy">
                 <h3>{edition.title}</h3>
-                <p>来源更新 {displayDate(edition.latest_source_at)}{edition.language ? ` · ${edition.language.toUpperCase()}` : ''}{edition.year ? ` · 发行年 ${edition.year}` : ''}{edition.page_count ? ` · ${edition.page_count} 页` : ''}</p>
+                <p>来源时间 {displayDate(edition.latest_source_at)} · 收录发现 {displayDate(edition.first_discovered_at ?? null)}{edition.language ? ` · ${edition.language.toUpperCase()}` : ''}{edition.year ? ` · 作品年份 ${edition.year}` : ''}{edition.page_count ? ` · ${edition.page_count} 页` : ''}</p>
                 {edition.tags.length > 0 && <p>标签：{edition.tags.join('、')}</p>}
                 <div className="variant-labels">
                   {edition.variant_labels.length ? edition.variant_labels.map((label) => <span key={label}>{label}</span>) : <span>普通版</span>}
@@ -178,7 +178,7 @@ function MetadataEditor({ group, busy, onSave }: { group: WorkGroupDetail, busy:
   }
   return <form className="metadata-editor" onSubmit={submit}>
     <div className="metadata-field"><label><input type="checkbox" checked={locked.title} onChange={() => toggle('title')} /> 固定标题</label><input aria-label="标题" value={title} disabled={!locked.title} required={locked.title} maxLength={500} onChange={(e) => setTitle(e.target.value)} /></div>
-    <div className="metadata-field"><label><input type="checkbox" checked={locked.year} onChange={() => toggle('year')} /> 固定发行年</label><input aria-label="发行年" type="number" min="1" max="3000" value={year} disabled={!locked.year} required={locked.year} onChange={(e) => setYear(e.target.value)} /></div>
+    <div className="metadata-field"><label><input type="checkbox" checked={locked.year} onChange={() => toggle('year')} /> 固定作品年份</label><input aria-label="作品年份" type="number" min="1" max="3000" value={year} disabled={!locked.year} required={locked.year} onChange={(e) => setYear(e.target.value)} /></div>
     <div className="metadata-field"><label><input type="checkbox" checked={locked.description} onChange={() => toggle('description')} /> 固定简介</label><textarea aria-label="简介" value={description} disabled={!locked.description} maxLength={50000} onChange={(e) => setDescription(e.target.value)} /></div>
     <div className="metadata-field"><label><input type="checkbox" checked={locked.status} onChange={() => toggle('status')} /> 固定状态</label><select aria-label="状态" value={status} disabled={!locked.status} onChange={(e) => setStatus(e.target.value as typeof status)}><option value="ongoing">连载中</option><option value="completed">已完结</option><option value="hiatus">暂停</option><option value="cancelled">已取消</option></select></div>
     <div className="metadata-field"><label><input type="checkbox" checked={locked.language} onChange={() => toggle('language')} /> 固定语言</label><input aria-label="语言" value={language} disabled={!locked.language} required={locked.language} maxLength={20} onChange={(e) => setLanguage(e.target.value)} /></div>

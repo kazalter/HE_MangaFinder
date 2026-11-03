@@ -63,7 +63,7 @@ const workFilterOptions: readonly { value: WorkFilter, label: string }[] = [
   { value: 'review', label: '待整理' },
 ]
 const workSortOptions: readonly { value: WorkSort, label: string }[] = [
-  { value: 'first', label: '作品时间' }, { value: 'updated', label: '最近有新版本' },
+  { value: 'first', label: '最早来源时间' }, { value: 'updated', label: '最近有新版本' },
   { value: 'title', label: '标题' }, { value: 'year', label: '年份' },
   { value: 'editions', label: '版本数' },
 ]

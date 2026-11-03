@@ -12,7 +12,8 @@ const group = {
   language: 'zh-hans',
   tags: [],
   first_source_at: null,
-  latest_source_at: null,
+  latest_source_at: '2025-03-03T00:00:00Z',
+  first_discovered_at: '2026-01-02T00:00:00Z',
   edition_count: 1,
   providers: ['wnacg'],
   authors: [{ id: 2, name: 'YD' }],
@@ -46,6 +47,8 @@ describe('WorkDetail correction actions', () => {
       onSplit={vi.fn()} onMerge={vi.fn()} onExcludeEdition={vi.fn()} onExcludeGroup={vi.fn()}
     />)
     expect(screen.getByText(/标题：版本 20 · wnacg/)).toBeInTheDocument()
+    expect(screen.getByText(/最早来源时间.*最近来源时间.*收录发现/)).toBeInTheDocument()
+    expect(screen.getByText(/当前作者关联记录中的最早时间/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '编辑资料' }))
     fireEvent.click(screen.getByText('固定标题').closest('label')!.querySelector('input[type=checkbox]')!)
     fireEvent.change(screen.getByLabelText('标题'), { target: { value: '我选的名称' } })

@@ -67,7 +67,7 @@ function supportsHoverPreview() {
 function displayDate(value: string | null) {
   return value
     ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(value))
-    : '作品时间未知'
+    : '来源时间未知'
 }
 
 export function WorkListRow({

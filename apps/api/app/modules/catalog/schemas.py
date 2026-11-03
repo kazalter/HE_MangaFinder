@@ -57,6 +57,7 @@ class EditionRead(BaseModel):
     variant_labels: list[str]
     page_count: int | None = None
     latest_source_at: datetime | None
+    first_discovered_at: datetime | None = None
     confidence: float
     match_method: str
     is_manual: bool
@@ -116,6 +117,7 @@ class MetadataUpdate(BaseModel):
 
 
 class WorkGroupDetail(WorkGroupRead):
+    first_discovered_at: datetime | None = None
     metadata_overrides: dict[str, Any] = Field(default_factory=dict)
     metadata_sources: dict[str, MetadataSourceRead] = Field(default_factory=dict)
     editions: list[EditionRead]

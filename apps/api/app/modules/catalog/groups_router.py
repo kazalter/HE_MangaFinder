@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, object_session
 
 from app.core.time import utc_timestamp
@@ -143,7 +143,18 @@ def _detail(group: WorkGroup) -> WorkGroupDetail:
     session = object_session(group)
     series_read = None
     relations: list[WorkRelationSummary] = []
+    first_discovered_at = None
     if session:
+        discovery_dates = dict(
+            session.execute(
+                select(AuthorWork.work_id, func.min(AuthorWork.discovered_at))
+                .where(AuthorWork.work_id.in_([edition.work_id for edition in editions]))
+                .group_by(AuthorWork.work_id)
+            ).all()
+        )
+        for edition in editions:
+            edition.first_discovered_at = discovery_dates.get(edition.work_id)
+        first_discovered_at = min(discovery_dates.values(), default=None)
         membership = session.scalar(select(SeriesMember).where(SeriesMember.group_id == group.id))
         if membership:
             series = session.get(Series, membership.series_id)
@@ -196,6 +207,7 @@ def _detail(group: WorkGroup) -> WorkGroupDetail:
     return WorkGroupDetail(
         **summary.model_dump(),
         editions=editions,
+        first_discovered_at=first_discovered_at,
         metadata_overrides=group.manual_metadata or {},
         metadata_sources=_metadata_sources(group),
         series=series_read,

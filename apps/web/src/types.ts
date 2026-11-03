@@ -63,6 +63,7 @@ export interface Edition {
   variant_labels: string[]
   page_count?: number | null
   latest_source_at: string | null
+  first_discovered_at?: string | null
   confidence: number
   match_method: string
   is_manual: boolean
@@ -115,6 +116,7 @@ export interface MetadataSource {
 }
 
 export interface WorkGroupDetail extends WorkGroup {
+  first_discovered_at?: string | null
   metadata_overrides?: WorkMetadataPatch
   metadata_sources?: Record<string, MetadataSource>
   editions: Edition[]
