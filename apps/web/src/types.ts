@@ -93,6 +93,7 @@ export interface CatalogOperation {
   group_ids: number[]
   before_group_ids: number[]
   after_group_ids: number[]
+  changes_summary: string[]
   summary: string
   created_at: string
   undone_at: string | null

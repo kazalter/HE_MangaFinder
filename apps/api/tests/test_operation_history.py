@@ -221,6 +221,8 @@ def test_manual_merge_endpoint_records_and_undoes_without_exposing_rows(session)
         records = client.get("/api/catalog-operations").json()
         assert len(records) == 1 and records[0]["kind"] == "merge"
         assert "changes" not in records[0]
+        assert any("版本" in change for change in records[0]["changes_summary"])
+        assert any("作品组" in change for change in records[0]["changes_summary"])
         operation_id = records[0]["id"]
         assert client.post(f"/api/catalog-operations/{operation_id}/undo").status_code == 200
         assert client.get(f"/api/work-groups/{source_id}").status_code == 200

@@ -62,7 +62,7 @@ export function OperationHistory({ onClose, onChanged }: { onClose: () => void, 
       {error && <div className="settings-error" role="alert">{error}</div>}
       {loading ? <p>正在读取记录…</p> : items.length ? <div className="operation-list">
         {items.map((item) => <article key={item.id}>
-          <div><strong>{item.summary}</strong><small>{new Date(item.created_at).toLocaleString('zh-CN')} · 整理前 {item.before_group_ids.length} 部 → 整理后 {item.after_group_ids.length} 部{item.undone_at ? ' · 已撤销' : ''}</small></div>
+          <div><strong>{item.summary}</strong><small>{new Date(item.created_at).toLocaleString('zh-CN')} · 整理前 {item.before_group_ids.length} 部 → 整理后 {item.after_group_ids.length} 部{item.undone_at ? ' · 已撤销' : ''}</small>{item.changes_summary?.length > 0 && <ul>{item.changes_summary.map((change, index) => <li key={index}>{change}</li>)}</ul>}</div>
           {!item.undone_at && <button disabled={busy} onClick={() => void undo(item)}>撤销</button>}
         </article>)}
         {more && <button disabled={busy} onClick={() => void loadMore()}>加载更多</button>}

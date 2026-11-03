@@ -9,7 +9,7 @@ describe('OperationHistory', () => {
   afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
   it('shows before and after and marks an undone operation', async () => {
-    const row = { id: 1, kind: 'merge', group_ids: [1, 2], before_group_ids: [1, 2], after_group_ids: [1], summary: '合并作品', created_at: '2026-11-01T10:00:00Z', undone_at: null }
+    const row = { id: 1, kind: 'merge', group_ids: [1, 2], before_group_ids: [1, 2], after_group_ids: [1], summary: '合并作品', changes_summary: ['版本 20：作品组 2 → 1'], created_at: '2026-11-01T10:00:00Z', undone_at: null }
     list.mockResolvedValue([row])
     undo.mockResolvedValue({ ...row, undone_at: '2026-11-02T10:00:00Z' })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
@@ -17,6 +17,7 @@ describe('OperationHistory', () => {
     render(<OperationHistory onClose={vi.fn()} onChanged={changed} />)
     expect(await screen.findByText('合并作品')).toBeInTheDocument()
     expect(screen.getByText(/整理前 2 部 → 整理后 1 部/)).toBeInTheDocument()
+    expect(screen.getByText('版本 20：作品组 2 → 1')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '撤销' }))
     await waitFor(() => expect(undo).toHaveBeenCalledWith(1))
     expect(await screen.findByText(/已撤销/)).toBeInTheDocument()

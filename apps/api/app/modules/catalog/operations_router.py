@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,54 @@ class OperationRead(BaseModel):
     summary: str
     created_at: datetime
     undone_at: datetime | None
+    changes_summary: list[str] = Field(default_factory=list, validation_alias="changes")
+
+    @field_validator("changes_summary", mode="before")
+    @classmethod
+    def describe_changes(cls, changes: list[dict]) -> list[str]:
+        """Expose useful catalog differences without returning raw undo records."""
+        descriptions: list[str] = []
+        for change in changes or []:
+            table = change.get("table")
+            before, after = change.get("before"), change.get("after")
+            row = after or before or {}
+            if table == "work_groups":
+                if before is None:
+                    descriptions.append(f"新增作品组 {row.get('id')}：《{row.get('title', '')}》")
+                elif after is None:
+                    descriptions.append(f"移除作品组 {row.get('id')}：《{row.get('title', '')}》")
+                elif before.get("title") != after.get("title"):
+                    descriptions.append(
+                        f"作品组 {row.get('id')} 标题：{before.get('title', '')} → "
+                        f"{after.get('title', '')}"
+                    )
+            elif table == "work_group_members":
+                if before is None:
+                    descriptions.append(
+                        f"版本 {row.get('work_id')} 加入作品组 {row.get('group_id')}"
+                    )
+                elif after is None:
+                    descriptions.append(
+                        f"版本 {row.get('work_id')} 移出作品组 {row.get('group_id')}"
+                    )
+                elif before.get("group_id") != after.get("group_id"):
+                    descriptions.append(
+                        f"版本 {row.get('work_id')}：作品组 {before.get('group_id')} → "
+                        f"{after.get('group_id')}"
+                    )
+            elif table == "author_works":
+                if before is None:
+                    descriptions.append(
+                        f"作者 {row.get('author_id')} 关联版本 {row.get('work_id')}"
+                    )
+                elif after is None:
+                    descriptions.append(
+                        f"作者 {row.get('author_id')} 取消关联版本 {row.get('work_id')}"
+                    )
+            if len(descriptions) == 100:
+                descriptions.append("其余变化已省略")
+                break
+        return descriptions
 
 
 @router.get("", response_model=list[OperationRead])
