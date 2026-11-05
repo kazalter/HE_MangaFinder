@@ -18,7 +18,9 @@ class PlannedWorkProvider:
     display_name = "Planned"
     capabilities = set()
 
-    async def discover_by_author(self, author_name: str) -> list[DiscoveredWork]:
+    async def discover_by_author(
+        self, author_name: str, *, author_names: set[str] | None = None
+    ) -> list[DiscoveredWork]:
         return [
             DiscoveredWork(
                 external_id="release-1",

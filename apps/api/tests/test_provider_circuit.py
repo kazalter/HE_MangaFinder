@@ -22,7 +22,7 @@ class Provider:
         self.calls = 0
         self.error = "请求超时"
 
-    async def discover_by_author(self, author_name):
+    async def discover_by_author(self, author_name, *, author_names=None):
         self.calls += 1
         if self.error:
             raise RuntimeError(self.error)

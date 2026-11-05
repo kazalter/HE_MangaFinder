@@ -184,7 +184,8 @@ export function AuthorSidebar({
       .split(/[,，、\n]+/)
       .map((s) => s.trim())
       .filter(Boolean)
-    await onAdd(name.trim(), aliases)
+    try { await onAdd(name.trim(), aliases) }
+    catch { return }
     setName('')
     setAliasesText('')
     setAddOpen(false)

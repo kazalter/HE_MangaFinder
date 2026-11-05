@@ -71,7 +71,7 @@ class DiscoveryService:
                 )
                 # Build the full set of names for multi-alias search and
                 # cross-name verification.
-                all_names = {author.name}
+                all_names = {author.name, query_name}
                 if author.aliases:
                     all_names.update(author.aliases)
                 search_names: list[str] = [query_name]
@@ -89,12 +89,9 @@ class DiscoveryService:
                     merged: dict[str, DiscoveredWork] = {}
                     for search_name in search_names:
                         try:
-                            try:
-                                found = await provider.discover_by_author(
-                                    search_name, author_names=all_names,
-                                )
-                            except TypeError:
-                                found = await provider.discover_by_author(search_name)
+                            found = await provider.discover_by_author(
+                                search_name, author_names=all_names,
+                            )
                             for work in found:
                                 if work.external_id not in merged:
                                     merged[work.external_id] = work

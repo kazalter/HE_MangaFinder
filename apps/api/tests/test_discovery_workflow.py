@@ -22,7 +22,9 @@ class FakeProvider:
         self.error = error
         self.calls = 0
 
-    async def discover_by_author(self, author_name: str) -> list[DiscoveredWork]:
+    async def discover_by_author(
+        self, author_name: str, *, author_names: set[str] | None = None
+    ) -> list[DiscoveredWork]:
         self.calls += 1
         if self.error:
             raise RuntimeError(self.error)
@@ -87,9 +89,7 @@ async def test_partial_provider_failure_is_visible_without_failing_whole_scan() 
         assert result["status"] == "partial"
         run = session.scalars(select(DiscoveryRun).order_by(DiscoveryRun.id.desc())).first()
         assert run is not None and "source unavailable" in (run.error or "")
-        broken = session.scalar(
-            select(ProviderScanRun).where(ProviderScanRun.provider == "broken")
-        )
+        broken = session.scalar(select(ProviderScanRun).where(ProviderScanRun.provider == "broken"))
         assert broken is not None and broken.status == "failed"
 
 
@@ -144,15 +144,14 @@ async def test_provider_retry_scans_only_failed_source_without_delaying_full_sca
         assert healthy.calls == 1
         assert broken.calls == 2
         assert author.last_checked_at == full_scan_time
-        retry_run = session.scalars(
-            select(DiscoveryRun).order_by(DiscoveryRun.id.desc())
-        ).first()
+        retry_run = session.scalars(select(DiscoveryRun).order_by(DiscoveryRun.id.desc())).first()
         assert retry_run is not None and retry_run.trigger == "provider_retry"
-        assert [item.provider for item in session.scalars(
-            select(ProviderScanRun).where(
-                ProviderScanRun.discovery_run_id == retry_run.id
+        assert [
+            item.provider
+            for item in session.scalars(
+                select(ProviderScanRun).where(ProviderScanRun.discovery_run_id == retry_run.id)
             )
-        )] == ["broken"]
+        ] == ["broken"]
 
 
 def test_failed_provider_retries_use_independent_exponential_backoff() -> None:
@@ -194,12 +193,11 @@ def test_failed_provider_retries_use_independent_exponential_backoff() -> None:
         session.commit()
 
         repository = DiscoveryRepository(session)
-        assert repository.due_provider_retries(now, 15, 360, {"fake"}) == {
-            first.id: ["fake"]
+        assert repository.due_provider_retries(now, 15, 360, {"fake"}) == {first.id: ["fake"]}
+        assert repository.due_provider_retries(now + timedelta(minutes=11), 15, 360, {"fake"}) == {
+            first.id: ["fake"],
+            second.id: ["fake"],
         }
-        assert repository.due_provider_retries(
-            now + timedelta(minutes=11), 15, 360, {"fake"}
-        ) == {first.id: ["fake"], second.id: ["fake"]}
         assert repository.due_provider_retries(now, 15, 360, {"disabled"}) == {}
 
 
@@ -229,3 +227,62 @@ def test_due_author_selection_and_dashboard_inbox_state() -> None:
         dashboard = DashboardRepository(session).dashboard(30)
         assert dashboard.summary.authors == 2
         assert dashboard.summary.unread_discoveries == 0
+
+
+@pytest.mark.asyncio
+async def test_discovery_searches_aliases_deduplicates_and_verifies_override() -> None:
+    from app.providers.errors import AuthorNotFoundError
+
+    class AliasProvider(FakeProvider):
+        def __init__(self):
+            self.queries = []
+            self.identities = []
+
+        async def discover_by_author(self, author_name, *, author_names=None):
+            self.queries.append(author_name)
+            self.identities.append(author_names)
+            if author_name == "missing":
+                raise AuthorNotFoundError("no results")
+            ids = ["shared", "alias-only"] if author_name == "alias" else ["shared"]
+            return [
+                DiscoveredWork(external_id=i, title=i, source_url=f"https://example.test/{i}")
+                for i in ids
+            ]
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        author = Author(
+            name="main", aliases=["missing", "alias"], provider_query_names={"fake": "override"}
+        )
+        session.add(author)
+        session.commit()
+        provider = AliasProvider()
+        result = await DiscoveryService(session, ProviderRegistry([provider])).discover_author(
+            author.id
+        )
+        assert provider.queries == ["override", "missing", "alias", "main"]
+        assert all(
+            names == {"override", "main", "missing", "alias"} for names in provider.identities
+        )
+        assert result["found"] == 2
+        assert result["new"] == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_type_error_is_not_retried_or_hidden() -> None:
+    class BrokenProvider(FakeProvider):
+        async def discover_by_author(self, author_name, *, author_names=None):
+            self.calls += 1
+            raise TypeError("provider bug")
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        author = Author(name="main")
+        session.add(author)
+        session.commit()
+        provider = BrokenProvider()
+        with pytest.raises(RuntimeError, match="provider bug"):
+            await DiscoveryService(session, ProviderRegistry([provider])).discover_author(author.id)
+        assert provider.calls == 1

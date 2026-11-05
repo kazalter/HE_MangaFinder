@@ -85,7 +85,8 @@ export function AuthorDirectory({
       .split(/[,，、\n]+/)
       .map((s) => s.trim())
       .filter(Boolean)
-    await onUpdateAuthor(previewAuthor.id, { name: previewAuthor.name, aliases: newAliases })
+    try { await onUpdateAuthor(previewAuthor.id, { name: previewAuthor.name, aliases: newAliases }) }
+    catch { return }
     setEditingAliases(false)
   }
   const filteredAuthors = useMemo(() => {
@@ -153,7 +154,7 @@ export function AuthorDirectory({
                   key={author.id}
                   role="option"
                   aria-selected={active}
-                  onClick={() => onPreviewAuthor(author.id)}
+                  onClick={() => { setEditingAliases(false); onPreviewAuthor(author.id) }}
                 >
                   <span className="author-index-identity">
                     <AuthorAvatar author={author} />

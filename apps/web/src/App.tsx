@@ -356,6 +356,17 @@ export default function App() {
     finally { setBusy(false) }
   }
 
+  async function actForAuthorEdit(action: () => Promise<unknown>) {
+    setBusy(true)
+    setError(null)
+    try { await action(); await load() }
+    catch (reason) {
+      setError(reason instanceof Error ? reason.message : '操作失败')
+      throw reason
+    }
+    finally { setBusy(false) }
+  }
+
   async function openWork(work: WorkGroup | number) {
     setBusy(true)
     try { setOpenedWork(await api.workGroup(typeof work === 'number' ? work : work.id)) }
@@ -483,7 +494,7 @@ export default function App() {
         busy={busy}
         onSelect={(id) => id === null ? showAllWorks() : openAuthorWorks(id)}
         onModeChange={(mode) => mode === 'overview' ? showDashboard() : mode === 'authors' ? showAuthorDirectory() : showAllWorks()}
-        onAdd={(name, aliases) => act(() => api.createAuthor(name, aliases))}
+        onAdd={(name, aliases) => actForAuthorEdit(() => api.createAuthor(name, aliases))}
         onRefresh={(id) => act(() => api.refreshAuthor(id))}
         onDelete={async (id) => {
           if (!window.confirm('删除这个作者订阅？已发现的作品资料会保留。')) return
@@ -525,7 +536,7 @@ export default function App() {
                   previewAuthorId={previewAuthorId}
                   onPreviewAuthor={setPreviewAuthorId}
                   onOpenAuthor={openAuthorWorks}
-                  onUpdateAuthor={(id, identity) => act(() => api.updateAuthorIdentity(id, identity))}
+                  onUpdateAuthor={(id, identity) => actForAuthorEdit(() => api.updateAuthorIdentity(id, identity))}
                 />
               : <>
         <header className="topbar">
