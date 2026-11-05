@@ -483,7 +483,7 @@ export default function App() {
         busy={busy}
         onSelect={(id) => id === null ? showAllWorks() : openAuthorWorks(id)}
         onModeChange={(mode) => mode === 'overview' ? showDashboard() : mode === 'authors' ? showAuthorDirectory() : showAllWorks()}
-        onAdd={(name) => act(() => api.createAuthor(name))}
+        onAdd={(name, aliases) => act(() => api.createAuthor(name, aliases))}
         onRefresh={(id) => act(() => api.refreshAuthor(id))}
         onDelete={async (id) => {
           if (!window.confirm('删除这个作者订阅？已发现的作品资料会保留。')) return
@@ -525,6 +525,7 @@ export default function App() {
                   previewAuthorId={previewAuthorId}
                   onPreviewAuthor={setPreviewAuthorId}
                   onOpenAuthor={openAuthorWorks}
+                  onUpdateAuthor={(id, identity) => act(() => api.updateAuthorIdentity(id, identity))}
                 />
               : <>
         <header className="topbar">

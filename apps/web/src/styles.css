@@ -752,10 +752,18 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
 .library-find-row > button[aria-expanded="true"] svg { transform: rotate(45deg); }
 .library-find-row > button:hover, .library-find-row > button.active { background: #d76b48; box-shadow: 0 6px 16px rgba(11, 22, 17, .18); }
 .library-add-panel.is-open { margin-bottom: 2px; }
-.library-add-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; margin-top: 8px; border-left: 2px solid #c65d3d; padding: 0 5px 5px 8px; }
-.library-add-form input { min-width: 0; border: 1px solid #52675d; border-radius: 3px; padding: 9px 10px; color: #f4f1ea; background: #273c33; font-size: 15px; }
-.library-add-form button { border: 1px solid #c65d3d; border-radius: 3px; padding: 0 11px; color: white; background: #c65d3d; font-size: 14px; font-weight: 700; }
-.library-add-form button:disabled { opacity: .45; }
+.library-add-form { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; border-left: 2px solid #c65d3d; padding: 0 5px 5px 8px; }
+.library-add-form input { min-width: 0; width: 100%; box-sizing: border-box; border: 1px solid #52675d; border-radius: 3px; padding: 8px 10px; color: #f4f1ea; background: #273c33; font-size: 14px; }
+.library-add-form input::placeholder { color: #8d9c94; font-size: 13px; }
+.library-add-form button { border: 1px solid #c65d3d; border-radius: 3px; padding: 7px 11px; color: white; background: #c65d3d; font-size: 14px; font-weight: 700; cursor: pointer; align-self: flex-start; }
+.library-add-form button:disabled { opacity: .45; cursor: not-allowed; }
+.author-aliases-display-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.author-aliases-edit-toggle { border: 0; background: transparent; color: #c65d3d; font-size: 12px; cursor: pointer; text-decoration: underline; padding: 0; }
+.author-aliases-edit-row { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.author-aliases-input { border: 1px solid #d1cec6; border-radius: 3px; padding: 5px 8px; font-size: 13px; background: #fbf9f5; }
+.author-aliases-edit-actions { display: flex; gap: 6px; }
+.author-aliases-save-btn { border: 1px solid #c65d3d; border-radius: 3px; padding: 3px 8px; background: #c65d3d; color: white; font-size: 12px; cursor: pointer; font-weight: 600; }
+.author-aliases-cancel-btn { border: 1px solid #d1cec6; border-radius: 3px; padding: 3px 8px; background: transparent; color: #555; font-size: 12px; cursor: pointer; }
 .library-author-scroll { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; margin: 9px -8px 0 0; padding-right: 8px; scrollbar-color: #667970 transparent; scrollbar-width: thin; }
 .library-author-section { padding-top: 0; }
 .library-author-section + .library-author-section { margin-top: 14px; }

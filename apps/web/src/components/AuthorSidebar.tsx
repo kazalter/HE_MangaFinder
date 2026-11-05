@@ -53,7 +53,7 @@ interface Props {
   busy: boolean
   onSelect: (id: number | null) => void
   onModeChange: (mode: LibraryMode) => void
-  onAdd: (name: string) => Promise<void>
+  onAdd: (name: string, aliases?: string[]) => Promise<void>
   onRefresh: (id: number) => Promise<void>
   onDelete: (id: number) => Promise<void>
   settingsActive?: boolean
@@ -82,6 +82,7 @@ export function AuthorSidebar({
 }: Props) {
   const [query, setQuery] = useState('')
   const [name, setName] = useState('')
+  const [aliasesText, setAliasesText] = useState('')
   const [addOpen, setAddOpen] = useState(false)
   const [managing, setManaging] = useState(false)
   const [expanded, setExpanded] = useState(initialSidebarExpanded)
@@ -179,8 +180,13 @@ export function AuthorSidebar({
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!name.trim()) return
-    await onAdd(name.trim())
+    const aliases = aliasesText
+      .split(/[,，、\n]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    await onAdd(name.trim(), aliases)
     setName('')
+    setAliasesText('')
     setAddOpen(false)
   }
 
@@ -308,6 +314,7 @@ export function AuthorSidebar({
             <ExpandablePanel open={addOpen} className="library-add-panel">
               <form className="library-add-form" id="library-add-panel" onSubmit={submit}>
                 <input ref={addInputRef} value={name} onChange={(event) => setName(event.target.value)} placeholder="输入要订阅的作者名" maxLength={200} />
+                <input value={aliasesText} onChange={(event) => setAliasesText(event.target.value)} placeholder="备选名 / 别名（逗号分隔，如：pija, ピアニッシモ）" maxLength={500} />
                 <button disabled={busy || !name.trim()}>确认添加</button>
               </form>
             </ExpandablePanel>

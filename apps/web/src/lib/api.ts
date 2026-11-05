@@ -48,8 +48,8 @@ async function uploadImage(file: File): Promise<ImageSearchMatch[]> {
 export const api = {
   imageSearch: uploadImage,
   authors: () => request<Author[]>('/authors'),
-  createAuthor: (name: string) =>
-    request<Author>('/authors', { method: 'POST', body: JSON.stringify({ name }) }),
+  createAuthor: (name: string, aliases: string[] = []) =>
+    request<Author>('/authors', { method: 'POST', body: JSON.stringify({ name, aliases }) }),
   updateAuthorIdentity: (
     id: number,
     identity: Pick<Author, 'name'> & Partial<Pick<Author, 'aliases' | 'circle_names' | 'provider_query_names' | 'identity_note'>>,

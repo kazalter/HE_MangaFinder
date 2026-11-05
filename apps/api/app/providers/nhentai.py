@@ -86,7 +86,9 @@ class NhentaiProvider:
             limits=httpx.Limits(max_connections=5),
         )
 
-    async def discover_by_author(self, author_name: str) -> list[DiscoveredWork]:
+    async def discover_by_author(
+        self, author_name: str, *, author_names: set[str] | None = None,
+    ) -> list[DiscoveredWork]:
         normalized_author = " ".join(author_name.split()).strip()
         path, query_author, first_response = await self._find_author_listing(
             normalized_author
@@ -121,7 +123,7 @@ class NhentaiProvider:
                             return gallery
                         await asyncio.sleep(0.35)
                 await asyncio.sleep(0.08)
-            if self._has_author(detailed, query_author):
+            if self._has_author(detailed, query_author, author_names):
                 return detailed
             return None
 
@@ -564,9 +566,21 @@ class NhentaiProvider:
         return "und"
 
     @staticmethod
-    def _has_author(gallery: NhentaiGallery, author_name: str) -> bool:
-        expected = NhentaiProvider._identity(author_name)
-        return any(NhentaiProvider._identity(value) == expected for value in gallery.artists)
+    def _has_author(
+        gallery: NhentaiGallery,
+        author_name: str,
+        all_names: set[str] | None = None,
+    ) -> bool:
+        check_names = all_names or {author_name}
+        identities = {
+            NhentaiProvider._identity(name)
+            for name in check_names
+            if NhentaiProvider._identity(name)
+        }
+        return any(
+            NhentaiProvider._identity(value) in identities
+            for value in gallery.artists
+        )
 
     @staticmethod
     def _identity(value: str) -> str:

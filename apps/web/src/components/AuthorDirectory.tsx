@@ -24,6 +24,10 @@ interface Props {
   previewAuthorId: number | null
   onPreviewAuthor: (id: number) => void
   onOpenAuthor: (id: number) => void
+  onUpdateAuthor?: (
+    id: number,
+    identity: Pick<Author, 'name'> & Partial<Pick<Author, 'aliases' | 'circle_names'>>,
+  ) => Promise<void>
 }
 
 function relativeTime(value: string | null): string {
@@ -68,9 +72,22 @@ export function AuthorDirectory({
   previewAuthorId,
   onPreviewAuthor,
   onOpenAuthor,
+  onUpdateAuthor,
 }: Props) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<AuthorSort>('recent')
+  const [editingAliases, setEditingAliases] = useState(false)
+  const [aliasesInput, setAliasesInput] = useState('')
+
+  async function saveAliases() {
+    if (!previewAuthor || !onUpdateAuthor) return
+    const newAliases = aliasesInput
+      .split(/[,，、\n]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    await onUpdateAuthor(previewAuthor.id, { name: previewAuthor.name, aliases: newAliases })
+    setEditingAliases(false)
+  }
   const filteredAuthors = useMemo(() => {
     const term = query.trim().toLocaleLowerCase()
     const filtered = authors.filter((author) => (
@@ -166,7 +183,36 @@ export function AuthorDirectory({
                 {previewAuthor.x_display_name && previewAuthor.x_display_name !== previewAuthor.name
                   ? <small>{previewAuthor.x_display_name}</small>
                   : null}
-                {previewAuthor.aliases?.length ? <small>别名：{previewAuthor.aliases.join(' · ')}</small> : null}
+                {editingAliases ? (
+                  <div className="author-aliases-edit-row">
+                    <input
+                      value={aliasesInput}
+                      onChange={(e) => setAliasesInput(e.target.value)}
+                      placeholder="别名 / 备选名（逗号分隔）"
+                      className="author-aliases-input"
+                    />
+                    <div className="author-aliases-edit-actions">
+                      <button type="button" onClick={() => void saveAliases()} className="author-aliases-save-btn">保存</button>
+                      <button type="button" onClick={() => setEditingAliases(false)} className="author-aliases-cancel-btn">取消</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="author-aliases-display-row">
+                    <small>别名：{previewAuthor.aliases?.length ? previewAuthor.aliases.join(' · ') : '暂无'}</small>
+                    {onUpdateAuthor && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingAliases(true)
+                          setAliasesInput(previewAuthor.aliases?.join(', ') ?? '')
+                        }}
+                        className="author-aliases-edit-toggle"
+                      >
+                        编辑别名
+                      </button>
+                    )}
+                  </div>
+                )}
                 {previewAuthor.circle_names?.length ? <small>社团：{previewAuthor.circle_names.join(' · ')}</small> : null}
               </div>
             </div>

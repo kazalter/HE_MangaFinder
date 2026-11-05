@@ -60,7 +60,9 @@ class SourceProvider(Protocol):
     display_name: str
     capabilities: frozenset[ProviderCapability]
 
-    async def discover_by_author(self, author_name: str) -> list[DiscoveredWork]: ...
+    async def discover_by_author(
+        self, author_name: str, *, author_names: set[str] | None = None,
+    ) -> list[DiscoveredWork]: ...
 
     async def list_chapters(self, work_external_id: str) -> list[Chapter]: ...
 

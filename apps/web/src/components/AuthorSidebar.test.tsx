@@ -91,8 +91,20 @@ describe('AuthorSidebar', () => {
     fireEvent.change(screen.getByPlaceholderText('输入要订阅的作者名'), { target: { value: '  新作者  ' } })
     fireEvent.click(screen.getByRole('button', { name: '确认添加' }))
 
-    await waitFor(() => expect(onAdd).toHaveBeenCalledWith('新作者'))
+    await waitFor(() => expect(onAdd).toHaveBeenCalledWith('新作者', []))
     expect(screen.getByPlaceholderText('输入要订阅的作者名').closest('.expandable-panel')).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('submits the add-author form with aliases', async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({ onAdd })
+
+    fireEvent.click(screen.getByRole('button', { name: '添加作者' }))
+    fireEvent.change(screen.getByPlaceholderText('输入要订阅的作者名'), { target: { value: 'ピジャ' } })
+    fireEvent.change(screen.getByPlaceholderText(/备选名/), { target: { value: 'pija, ピアニッシモ' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认添加' }))
+
+    await waitFor(() => expect(onAdd).toHaveBeenCalledWith('ピジャ', ['pija', 'ピアニッシモ']))
   })
 
   it('opens the mobile drawer and closes it with Escape', () => {

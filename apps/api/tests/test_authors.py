@@ -102,3 +102,15 @@ def test_identity_conflicts_require_explicit_human_confirmation() -> None:
         )
         assert updated.aliases == ["Shared Pen Name", "Second Alias"]
         assert updated.circle_names == ["Circle"]
+
+
+def test_create_author_with_aliases() -> None:
+    from app.modules.authors.router import create_author
+    from app.modules.authors.schemas import AuthorCreate
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        payload = AuthorCreate(name="ピジャ", aliases=["pija", "ピアニッシモ"])
+        created = create_author(payload, session)
+        assert created.name == "ピジャ"
+        assert created.aliases == ["pija", "ピアニッシモ"]

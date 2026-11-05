@@ -137,6 +137,8 @@ def create_author(payload: AuthorCreate, session: SessionDep) -> AuthorRead:
     if authors.find_by_name(payload.name):
         raise HTTPException(status_code=409, detail="该作者已在订阅列表中")
     author = authors.add(payload.name)
+    if payload.aliases:
+        author.aliases = payload.aliases
     JobRepository(session).enqueue_discovery(author.id, trigger="initial")
     session.commit()
     return AuthorRead.model_validate(author)

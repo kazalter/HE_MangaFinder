@@ -93,7 +93,9 @@ class WnacgProvider:
             limits=httpx.Limits(max_connections=4),
         )
 
-    async def discover_by_author(self, author_name: str) -> list[DiscoveredWork]:
+    async def discover_by_author(
+        self, author_name: str, *, author_names: set[str] | None = None,
+    ) -> list[DiscoveredWork]:
         first_response, base_url = await self._request_site(
             "/search/",
             params={
@@ -119,6 +121,7 @@ class WnacgProvider:
             works.extend(page_works)
             await asyncio.sleep(0.25)
         unique_works = list({work.external_id: work for work in works}.values())
+        all_names = author_names or {author_name}
         verified = [
             replace(
                 work,
@@ -129,7 +132,7 @@ class WnacgProvider:
                 },
             )
             for work in unique_works
-            if self.matches_creator_credit(work.title, author_name)
+            if self.matches_creator_credit(work.title, author_name, all_names)
         ]
         if not verified:
             raise AuthorNotFoundError(
@@ -328,16 +331,33 @@ class WnacgProvider:
         return works, max(pages, default=1)
 
     @classmethod
-    def matches_creator_credit(cls, title: str, author_name: str) -> bool:
-        """Only trust an exact leading creator credit, never a scanlator suffix."""
+    def matches_creator_credit(
+        cls, title: str, author_name: str, all_names: set[str] | None = None,
+    ) -> bool:
+        """Only trust a leading creator credit, skipping scanlator/translator brackets."""
 
+        check_names = all_names or {author_name}
         value = unicodedata.normalize("NFKC", html.unescape(title)).strip()
         value = cls._event_prefix_re.sub("", value)
-        match = cls._creator_prefix_re.match(value)
-        if match is None:
-            return False
-        credit = " ".join(match.group(1).split()).strip()
-        if not credit or cls._non_creator_re.search(credit):
+
+        # Skip non-creator brackets (scanlation/translation groups) to find
+        # the real creator credit.
+        credit: str | None = None
+        for _attempt in range(5):
+            match = cls._creator_prefix_re.match(value)
+            if match is None:
+                return False
+            candidate = " ".join(match.group(1).split()).strip()
+            if not candidate:
+                return False
+            if cls._non_creator_re.search(candidate):
+                value = value[match.end():].lstrip()
+                value = cls._event_prefix_re.sub("", value)
+                continue
+            credit = candidate
+            break
+
+        if credit is None:
             return False
 
         candidates = {credit}
@@ -345,14 +365,17 @@ class WnacgProvider:
         without_parenthetical = re.sub(r"[（(][^）)]{1,100}[）)]", " ", credit).strip()
         if without_parenthetical:
             candidates.add(without_parenthetical)
-        for value in tuple(candidates):
+        for v in tuple(candidates):
             candidates.update(
                 part.strip()
-                for part in re.split(r"[/／|｜,&＆+＋]", value)
+                for part in re.split(r"[/／|｜,&＆+＋]", v)
                 if part.strip()
             )
-        expected = cls._identity(author_name)
-        return bool(expected and any(cls._identity(item) == expected for item in candidates))
+        return any(
+            (identity := cls._identity(name))
+            and any(cls._identity(item) == identity for item in candidates)
+            for name in check_names
+        )
 
     @staticmethod
     def _identity(value: str) -> str:

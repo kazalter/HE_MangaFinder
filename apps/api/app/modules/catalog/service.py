@@ -11,7 +11,7 @@ from app.modules.catalog.aggregation import AggregationService, CoverHasher
 from app.modules.catalog.discovery_repository import DiscoveryRepository
 from app.modules.catalog.repository import CatalogRepository
 from app.modules.social.planned_releases import PlannedReleaseService
-from app.providers.base import sort_discovered_works
+from app.providers.base import DiscoveredWork, sort_discovered_works
 from app.providers.errors import AuthorNotFoundError
 from app.providers.registry import ProviderRegistry
 
@@ -69,24 +69,44 @@ class DiscoveryService:
                 query_name = catalog.preferred_author_query_name(
                     author.id, provider.name, author.name
                 )
+                # Build the full set of names for multi-alias search and
+                # cross-name verification.
+                all_names = {author.name}
+                if author.aliases:
+                    all_names.update(author.aliases)
+                search_names: list[str] = [query_name]
+                for alias in (author.aliases or []):
+                    if alias not in search_names:
+                        search_names.append(alias)
+                if author.name not in search_names:
+                    search_names.append(author.name)
+
                 provider_run = discovery.start_provider(run_id, provider.name, query_name)
                 self.session.commit()
                 provider_run_id = provider_run.id
                 started = monotonic()
                 try:
-                    try:
-                        found = await provider.discover_by_author(query_name)
-                    except AuthorNotFoundError:
-                        if query_name == author.name:
-                            raise
-                        query_name = author.name
-                        provider_run = self.session.get(ProviderScanRun, provider_run_id)
-                        if provider_run:
-                            provider_run.query_name = query_name
-                            self.session.commit()
-                        found = await provider.discover_by_author(query_name)
+                    merged: dict[str, DiscoveredWork] = {}
+                    for search_name in search_names:
+                        try:
+                            try:
+                                found = await provider.discover_by_author(
+                                    search_name, author_names=all_names,
+                                )
+                            except TypeError:
+                                found = await provider.discover_by_author(search_name)
+                            for work in found:
+                                if work.external_id not in merged:
+                                    merged[work.external_id] = work
+                        except AuthorNotFoundError:
+                            continue
 
-                    works = sort_discovered_works(found)
+                    if not merged:
+                        raise AuthorNotFoundError(
+                            f"{provider.display_name} 使用所有已知名称均未找到作品"
+                        )
+
+                    works = sort_discovered_works(list(merged.values()))
                     excluded_ids = catalog.excluded_external_ids(author.id, provider.name)
                     accepted = [
                         work for work in works if work.external_id not in excluded_ids

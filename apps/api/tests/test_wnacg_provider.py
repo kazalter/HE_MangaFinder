@@ -145,3 +145,11 @@ async def test_rejects_untrusted_wnacg_cover(cover_url: str) -> None:
     with pytest.raises(ProviderError, match="不受信任"):
         await provider.fetch_cover("145555", cover_url)
     await client.aclose()
+
+
+def test_matches_creator_credit_skips_scanlator_prefix_and_supports_alias_set() -> None:
+    title = "[無毒汉化组](C97) [ピアニッシモ(ピジャ)] ずっと信じてる"
+    assert WnacgProvider.matches_creator_credit(title, "ピジャ")
+    assert WnacgProvider.matches_creator_credit(title, "ピアニッシモ")
+    assert WnacgProvider.matches_creator_credit(title, "pija", {"pija", "ピジャ", "ピアニッシモ"})
+    assert not WnacgProvider.matches_creator_credit(title, "無毒汉化组")

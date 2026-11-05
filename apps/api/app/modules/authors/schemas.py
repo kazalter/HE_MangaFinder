@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class AuthorCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    aliases: list[str] = Field(default_factory=list, max_length=100)
 
     @field_validator("name")
     @classmethod
@@ -13,6 +14,12 @@ class AuthorCreate(BaseModel):
         if not cleaned:
             raise ValueError("作者名不能为空")
         return cleaned
+
+    @field_validator("aliases")
+    @classmethod
+    def clean_aliases(cls, values: list[str]) -> list[str]:
+        cleaned = [" ".join(v.split()) for v in values]
+        return list(dict.fromkeys(v for v in cleaned if v))
 
 
 class AuthorIdentityUpdate(BaseModel):
