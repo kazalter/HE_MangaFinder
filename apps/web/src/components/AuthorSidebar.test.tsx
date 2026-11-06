@@ -135,6 +135,21 @@ describe('AuthorSidebar', () => {
     expect(document.body).not.toHaveClass('sidebar-drawer-open')
   })
 
+  it('closes the mobile drawer after switching sections', () => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === '(max-width: 800px)', media: query,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    }))
+    const { props } = renderSidebar()
+    for (const [name, mode] of [['总览', 'overview'], ['作品', 'works'], ['作者 3', 'authors']] as const) {
+      fireEvent.click(screen.getByRole('button', { name: '打开资料库导航' }))
+      fireEvent.click(screen.getByRole('button', { name }))
+      expect(props.onModeChange).toHaveBeenLastCalledWith(mode)
+      expect(screen.getByLabelText('资料库导航')).toHaveAttribute('aria-hidden', 'true')
+      expect(document.body).not.toHaveClass('sidebar-drawer-open')
+    }
+  })
+
   it('persists pinned authors', async () => {
     renderSidebar()
 

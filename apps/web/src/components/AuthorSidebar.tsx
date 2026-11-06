@@ -200,10 +200,9 @@ export function AuthorSidebar({
     if (isMobileViewport()) setMobileOpen(false)
   }
 
-  function focusAuthors() {
-    onModeChange('authors')
-    if (isMobileViewport()) setMobileOpen(true)
-    window.requestAnimationFrame(() => searchRef.current?.focus())
+  function navigateMode(mode: LibraryMode) {
+    onModeChange(mode)
+    if (isMobileViewport()) setMobileOpen(false)
   }
 
   function togglePinned(authorId: number) {
@@ -291,9 +290,9 @@ export function AuthorSidebar({
           </header>
 
           <div className="library-tabs" role="group" aria-label="资料库范围">
-            <button className={libraryMode === 'overview' && !settingsActive ? 'active' : ''} onClick={() => onModeChange('overview')}>总览</button>
-            <button className={libraryMode === 'works' && !settingsActive ? 'active' : ''} onClick={() => onModeChange('works')}>作品</button>
-            <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={focusAuthors}>作者 <span>{authors.length}</span></button>
+            <button className={libraryMode === 'overview' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('overview')}>总览</button>
+            <button className={libraryMode === 'works' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('works')}>作品</button>
+            <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('authors')}>作者 <span>{authors.length}</span></button>
           </div>
 
           <button className={`library-all-works ${libraryMode === 'works' && selectedId === null && !settingsActive ? 'active' : ''}`} onClick={() => selectAuthor(null)}>
@@ -360,9 +359,9 @@ export function AuthorSidebar({
           </span>
           <button ref={expandButtonRef} onClick={expandSidebar} aria-label="展开资料库导航" title="展开资料库导航"><CaretDoubleRight size={21} /></button>
           <nav aria-label="快捷导航">
-            <button className={libraryMode === 'overview' && !settingsActive ? 'active' : ''} onClick={() => onModeChange('overview')} aria-label="资料库总览" title="资料库总览"><ChartBar size={21} /></button>
+            <button className={libraryMode === 'overview' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('overview')} aria-label="资料库总览" title="资料库总览"><ChartBar size={21} /></button>
             <button className={libraryMode === 'works' && selectedId === null && !settingsActive ? 'active' : ''} onClick={() => selectAuthor(null)} aria-label="全部作品" title="全部作品"><SquaresFour size={21} /></button>
-            <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={focusAuthors} aria-label="作者" title="作者"><User size={22} /></button>
+            <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('authors')} aria-label="作者" title="作者"><User size={22} /></button>
             <button onClick={onOpenRadar} aria-label="动态雷达" title="动态雷达"><Crosshair size={22} /></button>
             <button onClick={() => onOpenAssistant?.()} aria-label="AI 助手" title="AI 助手"><Sparkle size={21} /></button>
             {onOpenHistory && <button onClick={onOpenHistory} aria-label="整理记录" title="整理记录"><ClockCounterClockwise size={21} /></button>}

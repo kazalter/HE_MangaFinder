@@ -6,7 +6,7 @@ import {
   MagnifyingGlass,
   WarningCircle,
 } from '@phosphor-icons/react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { Author, WorkGroup } from '../types'
 import { ThemedSelect } from './ThemedSelect'
 
@@ -76,6 +76,7 @@ export function AuthorDirectory({
 }: Props) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<AuthorSort>('recent')
+  const inspectorRef = useRef<HTMLElement>(null)
   const [editingAliases, setEditingAliases] = useState(false)
   const [aliasesInput, setAliasesInput] = useState('')
 
@@ -154,7 +155,13 @@ export function AuthorDirectory({
                   key={author.id}
                   role="option"
                   aria-selected={active}
-                  onClick={() => { setEditingAliases(false); onPreviewAuthor(author.id) }}
+                  onClick={() => {
+                    setEditingAliases(false)
+                    onPreviewAuthor(author.id)
+                    if (window.matchMedia?.('(max-width: 800px)').matches) {
+                      inspectorRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' })
+                    }
+                  }}
                 >
                   <span className="author-index-identity">
                     <AuthorAvatar author={author} />
@@ -172,7 +179,7 @@ export function AuthorDirectory({
           </div>
       </section>
 
-      <aside className="author-inspector" aria-live="polite">
+      <aside ref={inspectorRef} className="author-inspector" aria-live="polite">
           {previewAuthor ? <>
             <div className="author-inspector-profile">
               <AuthorAvatar author={previewAuthor} large />

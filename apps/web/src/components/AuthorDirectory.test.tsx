@@ -44,6 +44,18 @@ const works = [
 afterEach(cleanup)
 
 describe('AuthorDirectory', () => {
+  it('brings the selected author details into view on mobile', () => {
+    const scrollIntoView = vi.fn()
+    const originalMatchMedia = window.matchMedia
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true })
+    const { container } = render(<AuthorDirectory authors={authors} works={works} previewAuthorId={1} onPreviewAuthor={vi.fn()} onOpenAuthor={vi.fn()} />)
+    const inspector = container.querySelector('.author-inspector')!
+    inspector.scrollIntoView = scrollIntoView
+    fireEvent.click(screen.getByRole('option', { name: /mignon/ }))
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' })
+    window.matchMedia = originalMatchMedia
+  })
+
   it('filters authors, previews a row, and opens its works', () => {
     const onPreviewAuthor = vi.fn()
     const onOpenAuthor = vi.fn()

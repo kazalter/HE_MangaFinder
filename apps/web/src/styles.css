@@ -927,7 +927,7 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
   .author-index-pane { padding: 28px 20px 40px; }
   .author-directory-header h1 { font-size: 39px; }
   .author-directory-controls { grid-template-columns: 1fr; }
-  .author-index-head, .author-index-row { grid-template-columns: minmax(150px, 1fr) 54px 90px; padding-inline: 8px; }
+  .author-index-head, .author-index-row { grid-template-columns: minmax(0, 1fr) 40px 74px; column-gap: 6px; padding-inline: 4px; }
   .author-index-head > :last-child, .author-index-row > time { display: none; }
   .author-index-row::before { left: -2px; }
   .author-inspector { border-top: 1px solid #d0cabe; border-left: 0; padding: 38px 20px 50px; }
@@ -1104,4 +1104,53 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
   .assistant-messages { padding: 16px 13px 22px; }
   .assistant-composer { padding: 11px 12px max(11px, env(safe-area-inset-bottom)); }
   .assistant-button { height: 40px; padding-inline: 10px; font-size: 12px; }
+}
+
+/* Portrait phones: keep navigation, content and dialogs inside the visible viewport. */
+@media (max-width: 600px) {
+  html { scrollbar-gutter: auto; }
+  .sidebar-mobile-trigger { top: max(14px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); }
+  .library-sidebar, .library-sidebar.collapsed { height: 100dvh; }
+  .shell:has(.library-sidebar) main { padding: 76px 16px max(32px, env(safe-area-inset-bottom)); }
+  .shell:has(.library-sidebar) main.author-directory-main { padding: 64px 0 0; }
+  .author-index-pane { padding: 24px 16px 30px; }
+  .author-index-identity { gap: 8px; }
+  .author-index-row .directory-avatar { width: 36px; height: 36px; }
+  .author-inspector { padding: 28px 16px 36px; }
+  .author-inspector-profile { gap: 14px; }
+  .author-inspector-profile > div { min-width: 0; overflow-wrap: anywhere; }
+  .directory-avatar.large { width: 78px; height: 78px; }
+  .topbar { gap: 18px; }
+  .topbar h1 { font-size: 38px; }
+  .topbar-tools { gap: 9px; }
+  .shell:has(.library-sidebar) .catalog-toolbar { gap: 9px; margin: 18px 0 22px; }
+  .dashboard-header { gap: 12px; margin-bottom: 20px; }
+  .dashboard-header h1 { font-size: 36px; }
+  .dashboard-action-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .dashboard-action-grid > * { min-width: 0; min-height: 86px; gap: 9px; padding: 12px; }
+  .dashboard-action-grid strong { font-size: 24px; }
+  .dashboard-panel > header { min-height: 68px; padding: 14px; }
+  .discovery-inbox-list > article { gap: 8px 10px; padding: 12px 14px; }
+  .inbox-actions { padding-left: 58px; }
+  .inbox-actions button { min-height: 38px; }
+  .work-detail, .merge-review, .social-radar { min-height: 100dvh; max-height: 100dvh; }
+  .social-radar { height: 100dvh; }
+  .detail-header { grid-template-columns: 82px minmax(0, 1fr); gap: 13px; padding: 24px 16px; }
+  .detail-header > img, .detail-cover-empty { width: 82px; }
+  .detail-header h2 { font-size: 25px; line-height: 1.2; overflow-wrap: anywhere; }
+  .detail-header > div { min-width: 0; }
+  .provider-filter, .edition-list { padding-inline: 16px; }
+  .metadata-panel header { align-items: flex-start; }
+  .metadata-panel header > div { min-width: 0; }
+  .metadata-panel header > button { flex: 0 0 auto; white-space: nowrap; min-height: 40px; }
+  .edition-copy h3 { overflow-wrap: anywhere; }
+  .activity-list > article, .signal-list > article { grid-template-columns: 64px minmax(0, 1fr); }
+  .signal-media { width: 64px; }
+  .activity-list > article > div, .signal-copy, .raw-posts > article { min-width: 0; overflow-wrap: anywhere; }
+  .activity-tabs { gap: 0; }
+  .activity-tabs button { flex: 1; min-width: 0; padding-inline: 6px; font-size: 15px; }
+  .author-inspector { scroll-margin-top: 12px; }
+  .author-inspector-profile .author-aliases-input { max-width: 100%; }
+  .settings-savebar { bottom: max(12px, env(safe-area-inset-bottom)); }
+  input, select, textarea { font-size: 16px; }
 }
