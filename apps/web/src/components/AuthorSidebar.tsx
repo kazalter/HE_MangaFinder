@@ -344,11 +344,11 @@ export function AuthorSidebar({
           </div>
 
           <footer className="library-sidebar-footer">
-            <button className="library-assistant-action" onClick={() => { onOpenAssistant?.(); setMobileOpen(false) }}><Sparkle size={19} /><span><b>AI 助手</b><small>查询作者动态与作品</small></span><CaretDoubleRight size={16} /></button>
-            {onOpenHistory && <button onClick={() => { onOpenHistory(); setMobileOpen(false) }}><ClockCounterClockwise size={19} /><span><b>整理记录</b><small>查看与撤销整理操作</small></span><CaretDoubleRight size={16} /></button>}
-            <button className={settingsActive ? 'active' : ''} onClick={() => { onOpenSettings(); setMobileOpen(false) }}>
-              <GearSix size={19} /><span><b>系统设置</b><small>连接、模型与通知</small></span><CaretDoubleRight size={16} />
-            </button>
+            <nav className="library-quick-actions" aria-label="工具">
+              <button className="library-assistant-action" onClick={() => { onOpenAssistant?.(); setMobileOpen(false) }}><Sparkle size={19} /><span>AI 助手</span></button>
+              {onOpenHistory && <button onClick={() => { onOpenHistory(); setMobileOpen(false) }}><ClockCounterClockwise size={19} /><span>整理记录</span></button>}
+              <button className={settingsActive ? 'active' : ''} onClick={() => { onOpenSettings(); setMobileOpen(false) }}><GearSix size={19} /><span>系统设置</span></button>
+            </nav>
             <div className="library-source-status"><span className="status-dot" /><div><b>{sources.length} 个来源已启用</b><small>{sources.map((source) => source.display_name).join(' · ') || '正在连接'}</small></div></div>
           </footer>
         </div>
