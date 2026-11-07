@@ -144,9 +144,7 @@ class SocialRepository:
         if status:
             statement = statement.where(ReleaseSignal.status == status)
         return list(
-            self.session.scalars(
-                statement.order_by(ReleaseSignal.updated_at.desc()).limit(limit)
-            )
+            self.session.scalars(statement.order_by(ReleaseSignal.updated_at.desc()).limit(limit))
         )
 
     def signal_posts(self, signal_id: int) -> list[SocialPost]:
@@ -157,6 +155,13 @@ class SocialRepository:
                 .where(ReleaseSignalPost.signal_id == signal_id)
                 .order_by(SocialPost.posted_at)
             )
+        )
+
+    def activity_for_post(self, post_id: int) -> ActivityItem | None:
+        return self.session.scalar(
+            select(ActivityItem)
+            .join(ActivityItemPost, ActivityItemPost.activity_id == ActivityItem.id)
+            .where(ActivityItemPost.post_id == post_id)
         )
 
     def activity_by_cluster(self, author_id: int, key: str) -> ActivityItem | None:
@@ -228,9 +233,7 @@ class SocialRepository:
             )
         )
 
-    def latest_digest(
-        self, author_id: int, period_type: str = "rolling_7d"
-    ) -> AuthorDigest | None:
+    def latest_digest(self, author_id: int, period_type: str = "rolling_7d") -> AuthorDigest | None:
         return self.session.scalar(
             select(AuthorDigest)
             .where(

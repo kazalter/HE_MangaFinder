@@ -89,6 +89,27 @@ def test_self_thread_clusters_into_one_activity(session: Session) -> None:
     ]
 
 
+def test_ocr_reprocessing_preserves_existing_activity(session: Session) -> None:
+    author = Author(name="作家")
+    session.add(author)
+    session.flush()
+    account = SocialAccount(author_id=author.id, handle="creator", status="confirmed")
+    session.add(account)
+    session.flush()
+    post = make_post(session, account.id, "100", "イラスト")
+    service = ActivityService(session)
+    original = service.ingest(account, post)
+    session.commit()
+    original.is_read = True
+    post.ocr_text = "新刊の予約開始"
+    updated = service.ingest(account, post)
+    session.commit()
+    assert updated.id == original.id
+    assert updated.is_read is True
+    assert [item.id for item in SocialRepository(session).activity_posts(updated.id)] == [post.id]
+    assert len(SocialRepository(session).list_activities(author.id)) == 1
+
+
 @pytest.mark.asyncio
 async def test_fallback_digest_is_grounded_in_non_retweets(session: Session) -> None:
     author = Author(name="作家")

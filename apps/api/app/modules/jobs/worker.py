@@ -94,6 +94,7 @@ class JobWorker:
             )
             if job is None:
                 return False
+            job_id = job.id
             try:
                 if job.kind == DISCOVER_AUTHOR:
                     discovery = DiscoveryService(session, self.providers)
@@ -177,10 +178,9 @@ class JobWorker:
                         jobs.enqueue_agent_reviews()
                         session.commit()
             except Exception as exc:
-                logger.warning("Job %s failed: %s", job.id, exc)
-                job_id = job.id
+                logger.warning("Job %s failed: %s", job_id, exc)
                 session.rollback()
-                job = session.get(type(job), job_id)
+                job = session.get(Job, job_id)
                 if job is None:
                     raise RuntimeError(f"任务 {job_id} 在失败处理期间被删除") from exc
                 if self.covers_only or self.notifications_only or self.social_processing_only:

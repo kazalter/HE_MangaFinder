@@ -87,7 +87,11 @@ class ActivityService:
         if not assessment:
             return None
         key = activity_cluster_key(account.author_id, post, assessment.category)
-        activity = self.repository.activity_by_cluster(account.author_id, key)
+        # OCR can change the category after a post was already clustered. Reuse
+        # its existing activity to preserve its read/review state and unique link.
+        activity = self.repository.activity_for_post(post.id)
+        if activity is None:
+            activity = self.repository.activity_by_cluster(account.author_id, key)
         if activity is None:
             activity = ActivityItem(
                 author_id=account.author_id,
