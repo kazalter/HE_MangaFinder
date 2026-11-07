@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Author, ReleaseSignal, SocialStatus, WorkGroup } from '../types'
 import { SocialRadar } from './SocialRadar'
@@ -71,6 +71,24 @@ describe('SocialRadar author rail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '账号与同步' }))
     expect(screen.getByText('作者乙 的 X 账号')).toBeInTheDocument()
+  })
+
+  it('keeps the author order and scroll position when selecting an author', async () => {
+    render(
+      <SocialRadar status={status} signals={[]} authors={authors} works={[]} selectedAuthorId={1} busy={false} focusSignalId={null}
+        onClose={vi.fn()} onChanged={vi.fn().mockResolvedValue(undefined)} onOpenWork={vi.fn()} />,
+    )
+    const list = screen.getByRole('navigation', { name: '选择要查看动态的作者' })
+    const order = () => within(list).getAllByRole('button').map((button) => button.textContent)
+    const before = order()
+    list.scrollTop = 120
+
+    fireEvent.click(within(list).getByRole('button', { name: /作者乙/ }))
+
+    await waitFor(() => expect(apiMocks.socialActivity).toHaveBeenCalledWith(2))
+    expect(order()).toEqual(before)
+    expect(list.scrollTop).toBe(120)
+    expect(within(list).getByRole('button', { name: /作者乙/ })).toHaveAttribute('aria-current', 'true')
   })
 
   it('creates the large work selector only when a signal is being linked', async () => {

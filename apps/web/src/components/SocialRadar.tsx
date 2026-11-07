@@ -97,12 +97,8 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
       || author.name.toLocaleLowerCase().includes(term)
       || author.x_handle?.toLocaleLowerCase().includes(term)
       || author.x_display_name?.toLocaleLowerCase().includes(term)
-    )).sort((left, right) => {
-      if (left.id === radarAuthorId) return -1
-      if (right.id === radarAuthorId) return 1
-      return left.name.localeCompare(right.name, 'zh-CN')
-    })
-  }, [authorQuery, authors, radarAuthorId])
+    )).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+  }, [authorQuery, authors])
 
   async function loadAccounts() {
     if (!radarAuthorId) { setAccounts([]); return }
