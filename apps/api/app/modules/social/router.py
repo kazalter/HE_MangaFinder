@@ -14,6 +14,7 @@ from app.db.models import (
     ReleaseSignal,
     SocialAccount,
     SocialPost,
+    SocialPostProcessing,
     WorkGroup,
 )
 from app.db.session import get_session
@@ -166,6 +167,11 @@ def _activity_read(session: Session, activity: ActivityItem) -> ActivityItemRead
 
 def _digest_read(session: Session, digest: AuthorDigest) -> AuthorDigestRead:
     author = SocialRepository(session).author(digest.author_id)
+    evidence_posts = list(session.scalars(
+        select(SocialPost).join(SocialAccount, SocialAccount.id == SocialPost.account_id)
+        .where(SocialAccount.author_id == digest.author_id,
+               SocialPost.id.in_(digest.evidence_post_ids or []))
+    ))
     return AuthorDigestRead(
         id=digest.id,
         author_id=digest.author_id,
@@ -177,6 +183,7 @@ def _digest_read(session: Session, digest: AuthorDigest) -> AuthorDigestRead:
         highlights=digest.highlights,
         uncertainties=digest.uncertainties,
         evidence_post_ids=digest.evidence_post_ids,
+        evidence_posts=[_post_read(post) for post in evidence_posts],
         generated_by=digest.generated_by,
         model=digest.model,
         error=digest.error,
@@ -212,6 +219,12 @@ def social_status(session: SessionDep) -> SocialStatusRead:
         candidate_threshold=settings.social_candidate_threshold,
         pending_count=repository.count_signals("pending"),
         unread_count=unread,
+        processing_pending=session.scalar(select(func.count()).select_from(SocialPostProcessing).where(
+            SocialPostProcessing.status == "pending"
+        )) or 0,
+        processing_retry=session.scalar(select(func.count()).select_from(SocialPostProcessing).where(
+            (SocialPostProcessing.status == "retry") | (SocialPostProcessing.ocr_status == "retry")
+        )) or 0,
         daily_digest_enabled=settings.social_daily_digest_enabled,
         daily_digest_hour=settings.social_daily_digest_hour,
         daily_digest_timezone=settings.social_daily_digest_timezone,
@@ -460,7 +473,7 @@ async def refresh_author_digest(
     _require_social_enabled()
     if not AuthorRepository(session).get(author_id):
         raise HTTPException(status_code=404, detail="作者不存在")
-    digest = await DigestService(session, get_settings()).refresh(author_id)
+    digest = await DigestService(session, get_settings()).refresh(author_id, force=True)
     session.commit()
     return _digest_read(session, digest) if digest else None
 

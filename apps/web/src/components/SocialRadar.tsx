@@ -1,5 +1,5 @@
 import { Article, ArrowsClockwise, CaretDown, GearSix, MagnifyingGlass, NewspaperClipping, UserCircle } from '@phosphor-icons/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import type { ActivityItem, Author, AuthorDigest, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, WorkGroup } from '../types'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
@@ -70,6 +70,7 @@ interface Props {
 
 export function SocialRadar({ status, signals, authors, works, selectedAuthorId, busy, focusSignalId, onClose, onChanged, onOpenWork }: Props) {
   const { closing, requestClose } = useAnimatedClose(onClose)
+  const previousPending = useRef(status.processing_pending)
   const [filter, setFilter] = useState('all')
   const [view, setView] = useState<'overview' | 'releases' | 'raw'>('overview')
   const [radarAuthorId, setRadarAuthorId] = useState<number | null>(() => initialRadarAuthorId(selectedAuthorId, focusSignalId, signals, authors))
@@ -131,6 +132,11 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
     setSuggestions([]); setHandle(''); setLinkingSignalId(null); setLocalError(null); setLocalNotice(null)
     void Promise.all([loadAccounts(), loadActivityData('')]).catch((error) => setLocalError(String(error)))
   }, [radarAuthorId])
+  useEffect(() => {
+    if (status.processing_pending === previousPending.current) return
+    previousPending.current = status.processing_pending
+    void loadActivityData().catch((error) => setLocalError(String(error)))
+  }, [status.processing_pending])
   useEffect(() => {
     if (!focusSignalId) return
     window.setTimeout(() => document.getElementById(`signal-${focusSignalId}`)?.scrollIntoView({ block: 'center' }), 50)
@@ -256,10 +262,12 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
           <button className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>原始动态</button>
         </nav>
 
+        {(status.processing_pending ?? 0) > 0 && <p className="radar-warning">{status.processing_pending} 条动态正在后台分析，摘要会随处理完成更新。</p>}
+        {(status.processing_retry ?? 0) > 0 && <p className="radar-warning">{status.processing_retry} 条动态或图片等待重试，原始帖子已保留。</p>}
         {view === 'overview' && <>
           <section className="digest-card">
             <div className="digest-heading"><div><span>ROLLING 7 DAYS</span><h3>最近 7 天摘要</h3>{status.daily_digest_enabled && <small>日报每天 {String(status.daily_digest_hour).padStart(2, '0')}:00（{status.daily_digest_timezone}）通过已启用渠道发送</small>}</div><div className="digest-buttons">{(status.qq_configured || status.webhook_configured) && status.daily_digest_enabled && <button onClick={() => void sendDailyDigest()}>立即发送今日日报</button>}<button onClick={() => void act(async () => { setDigest(await api.refreshSocialDigest(activeAuthor.id)) })}>重新总结</button></div></div>
-            {digest ? <><p className="digest-summary">{digest.summary}</p><div className="digest-highlights">{digest.highlights.map((item, index) => <article className={`importance-${item.importance}`} key={`${item.text}-${index}`}><span>{activityLabels[item.category] ?? item.category} · {item.factuality === 'fact' ? '明确事实' : item.factuality === 'plan' ? '作者计划' : '推测'}</span><p>{item.text}</p><small>证据 {item.post_ids.map((id, evidenceIndex) => { const post = rawPosts.find((candidate) => candidate.id === id); return post ? <span key={id}>{evidenceIndex > 0 ? '、' : ''}<a href={post.url} target="_blank" rel="noreferrer">帖子 {id} ↗</a></span> : <span key={id}>{evidenceIndex > 0 ? '、' : ''}帖子 {id}</span> })}</small></article>)}</div>{digest.uncertainties.length > 0 && <div className="digest-uncertain"><strong>仍不确定</strong><ul>{digest.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></div>}<small className="digest-source">{digest.generated_by === 'agent' ? `Agent 总结 · ${digest.model ?? ''}` : '规则降级摘要'}{digest.error ? ` · Agent 暂不可用：${digest.error}` : ''}</small></> : <p className="review-empty">扫描到作者动态后，这里会生成最近 7 天摘要。</p>}
+            {digest ? <><p className="digest-evidence-note">摘要基于采集的动态生成，判断与翻译请结合原帖核对。</p><p className="digest-summary">{digest.summary}</p><div className="digest-highlights">{digest.highlights.map((item, index) => <article className={`importance-${item.importance}`} key={`${item.text}-${index}`}><span>{activityLabels[item.category] ?? item.category} · {item.factuality === 'fact' ? '来源事实（待核对）' : item.factuality === 'plan' ? '作者计划' : '推测'}</span><p>{item.text}</p><small>证据 {item.post_ids.map((id, evidenceIndex) => { const post = digest.evidence_posts?.find((candidate) => candidate.id === id) ?? rawPosts.find((candidate) => candidate.id === id); return post ? <span key={id}>{evidenceIndex > 0 ? '、' : ''}<a href={post.url} target="_blank" rel="noreferrer">帖子 {id} ↗</a></span> : <span key={id}>{evidenceIndex > 0 ? '、' : ''}帖子 {id}</span> })}</small></article>)}</div>{digest.uncertainties.length > 0 && <div className="digest-uncertain"><strong>仍不确定</strong><ul>{digest.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></div>}<small className="digest-source">{digest.generated_by === 'agent' ? `Agent 总结 · ${digest.model ?? ''}` : '规则降级摘要'}{digest.error ? ` · Agent 暂不可用：${digest.error}` : ''}</small></> : <p className="review-empty">扫描到作者动态后，这里会生成最近 7 天摘要。</p>}
           </section>
           <section className="activity-list">
             {activities.map((item) => { const post = item.posts.at(-1); const image = post?.media.find((media) => media.type === 'image')?.url; const availability = post ? availabilityLabel(post) : null; return <article className={`${item.is_read ? '' : 'unread'} importance-${item.importance}`} key={item.id}><div className="activity-thumb">{image ? <img src={image} alt="" loading="lazy" decoding="async" /> : <Article size={30} weight="thin" />}</div><div><div className="activity-meta"><b>{activityLabels[item.category] ?? item.category}</b><span>{item.author_name}</span><time>{new Date(item.ended_at).toLocaleString()}</time></div><h3>{item.headline}</h3><p>{item.summary}</p>{availability && <small className="post-availability">{availability}</small>}<div className="activity-actions"><span>{item.importance === 'critical' ? '紧急' : item.importance === 'high' ? '重要' : item.importance === 'normal' ? '一般' : '低优先级'} · 置信度 {Math.round(item.confidence * 100)}%</span>{post && <a href={post.url} target="_blank" rel="noreferrer" onClick={() => { void api.markActivityRead(item.id); verifyPost(post) }}>查看原帖 ↗</a>}</div></div></article> })}

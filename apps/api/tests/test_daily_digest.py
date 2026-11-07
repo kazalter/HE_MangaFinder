@@ -395,3 +395,25 @@ async def test_digest_retries_only_the_channel_that_failed(
     assert delivery.status == "delivered"
     assert qq_attempts == 2
     assert webhook_attempts == 1
+
+
+def test_daily_digest_waits_for_new_posts_but_not_historical_ocr(session):
+    from app.db.models import SocialPostProcessing
+
+    now = datetime.now(UTC).replace(hour=22)
+    settings = Settings(social_daily_digest_enabled=True, social_daily_digest_hour=0)
+    add_activity(session, "artist", "creator", "9100", "新刊", now)
+    post = session.scalar(select(SocialPost).where(SocialPost.platform_post_id == "9100"))
+    state = SocialPostProcessing(
+        post_id=post.id,
+        content_hash=post.content_hash,
+        status="pending",
+        ocr_status="pending",
+        backfill_only=False,
+    )
+    session.add(state)
+    session.flush()
+    assert not DailyDigestService(session, settings).is_due(now)
+    state.backfill_only = True
+    session.flush()
+    assert DailyDigestService(session, settings).is_due(now)

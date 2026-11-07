@@ -286,3 +286,144 @@ async def test_provider_type_error_is_not_retried_or_hidden() -> None:
         with pytest.raises(RuntimeError, match="provider bug"):
             await DiscoveryService(session, ProviderRegistry([provider])).discover_author(author.id)
         assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_alias_failure_saves_successful_results_and_reports_retry() -> None:
+    class PartlyBroken(FakeProvider):
+        async def discover_by_author(self, author_name, *, author_names=None):
+            if author_name == "bad alias":
+                raise RuntimeError("temporary limit")
+            return [
+                DiscoveredWork(
+                    external_id="good", title="work", source_url="https://example.test/good"
+                )
+            ]
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        author = Author(name="main", aliases=["bad alias"])
+        session.add(author)
+        session.commit()
+        result = await DiscoveryService(
+            session, ProviderRegistry([PartlyBroken()])
+        ).discover_author(author.id)
+        assert result["status"] == "partial"
+        assert result["new"] == 1
+        run = session.scalar(select(ProviderScanRun))
+        assert run.status == "failed" and "temporary limit" in run.error
+        assert session.scalar(select(CatalogEvent)) is not None
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_historical_collaborator_is_not_used_as_trusted_identity() -> None:
+    from app.modules.catalog.repository import CatalogRepository
+
+    class IdentityProvider(FakeProvider):
+        name = "nhentai"
+
+        def __init__(self):
+            self.queries = []
+
+        async def discover_by_author(self, author_name, *, author_names=None):
+            self.queries.append((author_name, author_names))
+            return []
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        author = Author(name="main")
+        session.add(author)
+        session.flush()
+        repository = CatalogRepository(session)
+        for external_id in ("1", "2"):
+            repository.upsert(
+                author.id,
+                "nhentai",
+                DiscoveredWork(
+                    external_id=external_id,
+                    title="collaboration",
+                    source_url="https://example.test/" + external_id,
+                    raw_metadata={"artists": ["collaborator"]},
+                ),
+            )
+        session.commit()
+        provider = IdentityProvider()
+        await DiscoveryService(session, ProviderRegistry([provider])).discover_author(author.id)
+        assert provider.queries == [("main", {"main"})]
+
+
+@pytest.mark.asyncio
+async def test_cover_fetch_happens_before_catalog_write_transaction(tmp_path, monkeypatch) -> None:
+    import sqlite3
+
+    from app.modules.catalog.aggregation import CoverHasher
+
+    db_path = tmp_path / "catalog.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    checks = []
+
+    async def fetch(self, url, provider_name=None, external_id=None):
+        with sqlite3.connect(db_path, timeout=0.1) as other:
+            other.execute("BEGIN IMMEDIATE")
+            other.rollback()
+        checks.append((url, provider_name, external_id))
+        return None
+
+    class Covers(FakeProvider):
+        async def discover_by_author(self, author_name, *, author_names=None):
+            return [
+                DiscoveredWork(
+                    external_id="1",
+                    title="Book",
+                    source_url="https://example.test/1",
+                    cover_url="https://example.test/cover",
+                )
+            ]
+
+    monkeypatch.setattr(CoverHasher, "fingerprint_url", fetch)
+    with Session(engine, expire_on_commit=False) as session:
+        author = Author(name="artist")
+        session.add(author)
+        session.commit()
+        result = await DiscoveryService(session, ProviderRegistry([Covers()])).discover_author(
+            author.id
+        )
+        assert result["new"] == 1
+        assert checks == [("https://example.test/cover", "fake", "1")]
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_name_is_saved_as_suggestion_without_failing_source() -> None:
+    from app.db.models import AuthorIdentitySuggestion
+    from app.modules.catalog.repository import CatalogRepository
+    from app.providers.errors import AuthorIdentityUnconfirmedError
+
+    class ProposedName(FakeProvider):
+        async def discover_by_author(self, author_name, *, author_names=None):
+            raise AuthorIdentityUnconfirmedError(author_name, "collaborator")
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        author = Author(name="main")
+        session.add(author)
+        session.commit()
+        result = await DiscoveryService(
+            session, ProviderRegistry([ProposedName()])
+        ).discover_author(author.id)
+        assert result["status"] == "partial"
+        assert session.scalar(select(ProviderScanRun)).status == "succeeded"
+        assert session.scalar(select(AuthorIdentitySuggestion)).name == "collaborator"
+        decision = CatalogRepository(session).author_query_name_decision(
+            author.id, "fake", author.name
+        )
+        assert decision.origin == "inferred" and decision.query_name == "collaborator"
+        author.aliases = ["collaborator"]
+        session.flush()
+        decision = CatalogRepository(session).author_query_name_decision(
+            author.id, "fake", author.name
+        )
+        assert decision.origin == "canonical"

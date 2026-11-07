@@ -31,6 +31,7 @@ from app.modules.jobs.worker import (
     DownloadWorker,
     JobWorker,
     NotificationWorkerThread,
+    SocialProcessingWorkerThread,
 )
 from app.modules.media.router import router as media_router
 from app.modules.media.service import CoverCacheService
@@ -59,13 +60,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     download_worker_task = None
     cover_worker = None
     notification_worker = None
+    social_processing_worker = None
     catalog_scheduler_task = None
     social_scheduler_task = None
     if settings.worker_enabled:
         worker_task = asyncio.create_task(
             JobWorker(
-                settings, providers, exclude_downloads=True, exclude_covers=True,
+                settings,
+                providers,
+                exclude_downloads=True,
+                exclude_covers=True,
                 exclude_notifications=True,
+                exclude_social_processing=True,
             ).run()
         )
         download_worker_task = asyncio.create_task(DownloadWorker(settings, providers).run())
@@ -73,6 +79,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         cover_worker.start()
         notification_worker = NotificationWorkerThread(settings)
         notification_worker.start()
+        social_processing_worker = SocialProcessingWorkerThread(settings)
+        social_processing_worker.start()
         catalog_scheduler_task = asyncio.create_task(CatalogScheduler(settings, providers).run())
     if settings.social_enabled:
         social_scheduler_task = asyncio.create_task(SocialScheduler(settings).run())
@@ -95,6 +103,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await cover_worker.stop()
     if notification_worker:
         await notification_worker.stop()
+    if social_processing_worker:
+        await social_processing_worker.stop()
     await providers.close()
 
 

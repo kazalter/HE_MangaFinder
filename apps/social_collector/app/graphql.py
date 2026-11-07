@@ -10,7 +10,7 @@ import json
 import math
 import os
 import re
-from datetime import UTC
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -265,12 +265,7 @@ class WebGraphQLCollector:
         text = tombstone.get("text") or {}
         if isinstance(text, dict):
             text = text.get("text") or ""
-        return str(
-            text
-            or result.get("reason")
-            or result.get("message")
-            or ""
-        ).strip()
+        return str(text or result.get("reason") or result.get("message") or "").strip()
 
     def lookup_user(self, handle: str) -> dict[str, Any] | None:
         body = self._request(
@@ -362,6 +357,77 @@ class WebGraphQLCollector:
                 break
             cursor = next_cursor
         return sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
+
+    def posts_batch(
+        self,
+        handle: str,
+        since_id: str | None,
+        limit: int,
+        cursor: str | None = None,
+        stop_before: str | None = None,
+    ) -> dict[str, Any]:
+        """Return complete pages and a durable continuation; never split a page."""
+        user = self.lookup_user(handle)
+        if not user or not user["id"]:
+            raise GraphQLUnavailable(f"X 账号 @{handle} 不存在或不可访问")
+        found: dict[str, dict[str, Any]] = {}
+        current = cursor
+        for _ in range(max(1, min(12, math.ceil(limit / 20) + 2))):
+            variables: dict[str, Any] = {
+                "userId": user["id"],
+                "count": min(100, max(20, limit)),
+                "includePromotedContent": False,
+                "withQuickPromoteEligibilityTweetFields": False,
+                "withVoice": True,
+            }
+            if current:
+                variables["cursor"] = current
+            body = self._request("UserTweets", variables, TIMELINE_FEATURES, TIMELINE_TOGGLES)
+            result = ((body.get("data") or {}).get("user") or {}).get("result") or {}
+            timeline = (result.get("timeline") or {}).get("timeline") or {}
+            instructions = timeline.get("instructions")
+            if not isinstance(instructions, list):
+                raise GraphQLTransientError("X 时间线结构不完整，未推进扫描位置")
+            next_cursor = None
+            reached_since = False
+            page_times: list[datetime] = []
+            for instruction in instructions:
+                for entry in instruction.get("entries") or []:
+                    content = entry.get("content") or {}
+                    if "Cursor" in (content.get("entryType") or content.get("__typename") or ""):
+                        if content.get("cursorType") == "Bottom":
+                            next_cursor = content.get("value")
+                        continue
+                    for item in self._entry_items(content):
+                        tweet = (item.get("tweet_results") or {}).get("result") or {}
+                        parsed = self._parse_tweet(tweet, user["handle"])
+                        if not parsed:
+                            continue
+                        if since_id and parsed["id"] == since_id:
+                            reached_since = True
+                            break
+                        page_times.append(datetime.fromisoformat(parsed["posted_at"]))
+                        found[parsed["id"]] = parsed
+                    if reached_since:
+                        break
+                if reached_since:
+                    break
+            posts = sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
+            old_page = bool(stop_before and page_times) and all(
+                value < datetime.fromisoformat(stop_before) for value in page_times
+            )
+            if reached_since or old_page:
+                return {"posts": posts, "complete": True, "next_cursor": None}
+            if not next_cursor:
+                if since_id:
+                    raise GraphQLTransientError("X 时间线未到达上次扫描位置，无法确认完整性")
+                return {"posts": posts, "complete": True, "next_cursor": None}
+            if next_cursor == current:
+                raise GraphQLTransientError("X 时间线分页位置没有推进，未推进扫描位置")
+            current = next_cursor
+            if len(found) >= limit:
+                return {"posts": posts, "complete": False, "next_cursor": "graphql:" + current}
+        return {"posts": posts, "complete": False, "next_cursor": "graphql:" + current}
 
     @staticmethod
     def _entry_items(content: dict[str, Any]) -> list[dict[str, Any]]:

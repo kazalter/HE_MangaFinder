@@ -6,7 +6,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.time import utc_timestamp
-from app.db.models import Author, AuthorWork, AuthorWorkExclusion, Work, WorkSource
+from app.db.models import (
+    Author,
+    AuthorIdentitySuggestion,
+    AuthorWork,
+    AuthorWorkExclusion,
+    Work,
+    WorkSource,
+)
 from app.providers.base import DiscoveredWork
 
 
@@ -95,9 +102,7 @@ class CatalogRepository:
 
     def get(self, work_id: int) -> Work | None:
         return self.session.scalar(
-            select(Work)
-            .options(selectinload(Work.sources))
-            .where(Work.id == work_id)
+            select(Work).options(selectinload(Work.sources)).where(Work.id == work_id)
         )
 
     def excluded_external_ids(self, author_id: int, provider: str) -> set[str]:
@@ -110,12 +115,8 @@ class CatalogRepository:
             )
         )
 
-    def preferred_author_query_name(
-        self, author_id: int, provider: str, fallback: str
-    ) -> str:
-        return self.author_query_name_decision(
-            author_id, provider, fallback
-        ).query_name
+    def preferred_author_query_name(self, author_id: int, provider: str, fallback: str) -> str:
+        return self.author_query_name_decision(author_id, provider, fallback).query_name
 
     def author_query_name_decision(
         self, author_id: int, provider: str, fallback: str
@@ -123,15 +124,38 @@ class CatalogRepository:
         """Choose an explicit query or explain the conservative historical inference."""
 
         author = self.session.get(Author, author_id)
-        explicit = (
-            (author.provider_query_names or {}).get(provider.casefold()) if author else None
-        )
+        explicit = (author.provider_query_names or {}).get(provider.casefold()) if author else None
         if explicit:
             return AuthorQueryNameDecision(
                 query_name=explicit,
                 origin="manual",
                 explanation=f"使用为 {provider} 人工配置的来源专用查询名",
             )
+
+        known = (
+            {
+                value.casefold()
+                for value in ([author.name] + (author.aliases or []) + (author.circle_names or []))
+            }
+            if author
+            else set()
+        )
+        suggested = self.session.scalars(
+            select(AuthorIdentitySuggestion)
+            .where(
+                AuthorIdentitySuggestion.author_id == author_id,
+                AuthorIdentitySuggestion.provider == provider,
+            )
+            .order_by(AuthorIdentitySuggestion.id.desc())
+        )
+        for candidate in suggested:
+            if candidate.name.casefold() not in known:
+                return AuthorQueryNameDecision(
+                    query_name=candidate.name,
+                    origin="inferred",
+                    explanation=f"{provider} 推测的名称尚未确认；请核对后加入别名",
+                    support=0,
+                )
 
         metadata_rows = self.session.scalars(
             select(WorkSource.raw_metadata)
@@ -171,7 +195,7 @@ class CatalogRepository:
         return AuthorQueryNameDecision(
             query_name=display_names[identity],
             origin="inferred",
-            explanation=f"从 {support} 条 {provider} 历史作品的作者标签推断",
+            explanation=f"从 {support} 条 {provider} 历史作品推测；需确认后作为别名使用",
             support=support,
         )
 
@@ -198,9 +222,7 @@ class CatalogRepository:
         return result
 
     @classmethod
-    def _latest_source_sort_key(
-        cls, row: tuple[Work, datetime]
-    ) -> tuple[int, float]:
+    def _latest_source_sort_key(cls, row: tuple[Work, datetime]) -> tuple[int, float]:
         timestamps = [
             cls._timestamp(source.source_updated_at)
             for source in row[0].sources

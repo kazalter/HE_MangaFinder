@@ -17,8 +17,15 @@ LimitQuery = Annotated[int, Query(ge=1, le=100)]
 
 
 @router.get("", response_model=list[JobRead])
-def list_jobs(session: SessionDep, limit: LimitQuery = 20) -> list[JobRead]:
-    return [JobRead.model_validate(job) for job in JobRepository(session).list_recent(limit)]
+def list_jobs(
+    session: SessionDep,
+    limit: LimitQuery = 20,
+    include_internal: bool = True,
+) -> list[JobRead]:
+    return [
+        JobRead.model_validate(job)
+        for job in JobRepository(session).list_recent(limit, include_internal=include_internal)
+    ]
 
 
 @router.get("/{job_id}/file", response_class=FileResponse)

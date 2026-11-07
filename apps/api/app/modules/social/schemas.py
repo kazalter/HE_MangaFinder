@@ -132,6 +132,7 @@ class AuthorDigestRead(BaseModel):
     highlights: list[DigestHighlight]
     uncertainties: list[str]
     evidence_post_ids: list[int]
+    evidence_posts: list[SocialPostRead] = Field(default_factory=list)
     generated_by: str
     model: str | None
     error: str | None
@@ -206,6 +207,8 @@ class SocialStatusRead(BaseModel):
     candidate_threshold: float
     pending_count: int
     unread_count: int
+    processing_pending: int = 0
+    processing_retry: int = 0
     daily_digest_enabled: bool
     daily_digest_hour: int
     daily_digest_timezone: str

@@ -342,6 +342,17 @@ export default function App() {
     && !jobs.some((newer) => newer.id > job.id && newer.status === 'succeeded' && jobSubject(newer) === jobSubject(job))
   ))
 
+  useEffect(() => {
+    if (!(socialStatus?.processing_pending)) return
+    let cancelled = false
+    const timer = window.setInterval(() => {
+      void api.socialStatus().then((next) => {
+        if (!cancelled) setSocialStatus(next)
+      }).catch(() => { /* The next poll will retry. */ })
+    }, 10000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [socialStatus?.processing_pending])
+
   function dismissFailedJob(id: number) {
     setDismissedJobThrough(id)
     try { window.sessionStorage.setItem('mangafinder:dismissed-job-through', String(id)) }
@@ -536,6 +547,7 @@ export default function App() {
                   previewAuthorId={previewAuthorId}
                   onPreviewAuthor={setPreviewAuthorId}
                   onOpenAuthor={openAuthorWorks}
+                  onGetQueryName={api.authorQueryName}
                   onUpdateAuthor={(id, identity) => actForAuthorEdit(() => api.updateAuthorIdentity(id, identity))}
                 />
               : <>

@@ -48,6 +48,8 @@ async function uploadImage(file: File): Promise<ImageSearchMatch[]> {
 export const api = {
   imageSearch: uploadImage,
   authors: () => request<Author[]>('/authors'),
+  authorQueryName: (id: number, provider: string) =>
+    request<{ provider: string, query_name: string, origin: string, support: number }>(`/authors/${id}/query-name/${provider}`),
   createAuthor: (name: string, aliases: string[] = []) =>
     request<Author>('/authors', { method: 'POST', body: JSON.stringify({ name, aliases }) }),
   updateAuthorIdentity: (
@@ -112,7 +114,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ max_reviews: maxReviews ?? null }),
     }),
-  jobs: () => request<Job[]>('/jobs?limit=10'),
+  jobs: () => request<Job[]>('/jobs?limit=10&include_internal=false'),
   sources: () => request<Source[]>('/sources'),
   dashboard: (days = 30) => request<DashboardData>(`/dashboard?days=${days}`),
   discoveryInbox: (state = 'unread') =>

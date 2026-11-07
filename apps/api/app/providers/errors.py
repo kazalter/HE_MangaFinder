@@ -9,6 +9,12 @@ class AuthorNotFoundError(ProviderError):
     pass
 
 
+class AuthorIdentityUnconfirmedError(AuthorNotFoundError):
+    def __init__(self, original: str, candidate: str) -> None:
+        self.candidate = candidate
+        super().__init__(f'来源推测“{candidate}”可能对应“{original}”，请核对并加入作者别名后重试')
+
+
 def describe_http_error(exc: httpx.HTTPError) -> str:
     """Describe transport failures without leaking request URLs or credentials."""
     if isinstance(exc, httpx.TimeoutException):

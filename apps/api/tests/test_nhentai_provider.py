@@ -166,7 +166,9 @@ async def test_discovers_provider_alias_from_plain_search_details() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = NhentaiProvider(user_agent="test", client=client)
 
-    works = await provider.discover_by_author("ラマンダ")
+    with pytest.raises(ProviderError, match="请核对并加入作者别名"):
+        await provider.discover_by_author("ラマンダ")
+    works = await provider.discover_by_author("ラマンダ", author_names={"ラマンダ", "ramanda"})
 
     assert [work.external_id for work in works] == ["101", "102"]
     assert all(work.raw_metadata["artists"] == ["ramanda"] for work in works)

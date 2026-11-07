@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Author, WorkGroup } from '../types'
 import { AuthorDirectory } from './AuthorDirectory'
@@ -54,6 +54,21 @@ describe('AuthorDirectory', () => {
     fireEvent.click(screen.getByRole('option', { name: /mignon/ }))
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' })
     window.matchMedia = originalMatchMedia
+  })
+
+  it('requires explicit confirmation before adding a suggested source name', async () => {
+    const onGetQueryName = vi.fn().mockImplementation(async (_id: number, provider: string) => ({
+      provider, query_name: provider === 'nhentai' ? 'asano' : '浅野一二〇',
+      origin: 'inferred', support: 4,
+    }))
+    const onUpdateAuthor = vi.fn().mockResolvedValue(undefined)
+    render(<AuthorDirectory authors={authors} works={works} previewAuthorId={1}
+      onPreviewAuthor={vi.fn()} onOpenAuthor={vi.fn()} onGetQueryName={onGetQueryName}
+      onUpdateAuthor={onUpdateAuthor} />)
+    expect(await screen.findByText(/nhentai：asano/)).toBeInTheDocument()
+    expect(onUpdateAuthor).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '确认是别名' }))
+    await waitFor(() => expect(onUpdateAuthor).toHaveBeenCalledWith(1, { name: '浅野一二〇', aliases: ['asano'] }))
   })
 
   it('filters authors, previews a row, and opens its works', () => {

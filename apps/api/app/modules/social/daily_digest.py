@@ -15,6 +15,7 @@ from app.db.models import (
     ReleaseSignalPost,
     SocialAccount,
     SocialPost,
+    SocialPostProcessing,
 )
 from app.modules.social.digest import DigestService, localize_known_terms
 
@@ -43,6 +44,20 @@ class DailyDigestService:
         hour = min(23, max(0, self.settings.social_daily_digest_hour))
         if local_now.hour < hour:
             return False
+        # Do not send a daily summary while newly collected posts still await
+        # analysis. Historical OCR backfills do not block the daily delivery.
+        if (
+            self.session.scalar(
+                select(SocialPostProcessing.post_id)
+                .where(
+                    SocialPostProcessing.status == "pending",
+                    SocialPostProcessing.backfill_only.is_(False),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            return False
         return (
             self.session.scalar(
                 select(DailyDigestDelivery.id).where(
@@ -56,9 +71,7 @@ class DailyDigestService:
         period_end = as_utc(now or datetime.now(UTC))
         local_date = self.local_date(period_end)
         existing = self.session.scalar(
-            select(DailyDigestDelivery).where(
-                DailyDigestDelivery.local_date == local_date
-            )
+            select(DailyDigestDelivery).where(DailyDigestDelivery.local_date == local_date)
         )
         if existing and existing.status != "skipped":
             return {
@@ -94,14 +107,15 @@ class DailyDigestService:
             digest = await DigestService(self.session, self.settings).refresh(
                 author_id, now=period_end
             )
+            # A digest is derived, retryable state. Release its write transaction
+            # before the next author causes an external model request.
+            self.session.commit()
             if not digest:
                 continue
             recent_post_ids = self._recent_post_ids(author_id, period_start, period_end)
             notified_post_ids = self._notified_post_ids(author_id, period_start, period_end)
             highlights: list[str] = []
-            minimum = IMPORTANCE_RANK.get(
-                self.settings.social_daily_digest_min_importance, 1
-            )
+            minimum = IMPORTANCE_RANK.get(self.settings.social_daily_digest_min_importance, 1)
             for item in digest.highlights:
                 post_ids = {int(value) for value in item.get("post_ids", [])}
                 if not post_ids.intersection(recent_post_ids):
@@ -192,9 +206,7 @@ class DailyDigestService:
         self, period_start: datetime, period_end: datetime
     ) -> dict[int, list[ActivityItem]]:
         minimum = IMPORTANCE_RANK.get(self.settings.social_daily_digest_min_importance, 1)
-        allowed = [
-            value for value, rank in IMPORTANCE_RANK.items() if rank >= minimum
-        ]
+        allowed = [value for value, rank in IMPORTANCE_RANK.items() if rank >= minimum]
         rows = list(
             self.session.scalars(
                 select(ActivityItem)
@@ -253,9 +265,7 @@ class DailyDigestService:
                 break
         return result
 
-    def _message(
-        self, local_date: str, sections: list[tuple[int, str, list[str]]]
-    ) -> str:
+    def _message(self, local_date: str, sections: list[tuple[int, str, list[str]]]) -> str:
         lines = ["【MangaFinder · 作者近况日报】", f"日期：{local_date}"]
         item_count = 0
         for _, author_name, highlights in sections:

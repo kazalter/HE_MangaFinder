@@ -59,9 +59,7 @@ def test_retweet_is_kept_out_of_activity(session: Session) -> None:
     account = SocialAccount(author_id=author.id, handle="creator", status="confirmed")
     session.add(account)
     session.flush()
-    post = make_post(
-        session, account.id, "1", "RT @other: 新刊です", post_type="retweet"
-    )
+    post = make_post(session, account.id, "1", "RT @other: 新刊です", post_type="retweet")
 
     assert assess_activity(post) is None
     assert ActivityService(session).ingest(account, post) is None
@@ -103,9 +101,7 @@ async def test_fallback_digest_is_grounded_in_non_retweets(session: Session) -> 
     make_post(session, account.id, "21", "RT @other: 新刊です", post_type="retweet")
 
     ActivityService(session).ingest(account, original)
-    digest = await DigestService(
-        session, Settings(social_agent_enabled=False)
-    ).refresh(author.id)
+    digest = await DigestService(session, Settings(social_agent_enabled=False)).refresh(author.id)
 
     assert digest is not None
     assert digest.generated_by == "rules"
@@ -150,9 +146,7 @@ async def test_fallback_digest_sorts_mixed_sqlite_and_new_utc_datetimes(
         posted_at=datetime.now(UTC) - timedelta(hours=1),
     )
 
-    digest = await DigestService(
-        session, Settings(social_agent_enabled=False)
-    ).refresh(author_id)
+    digest = await DigestService(session, Settings(social_agent_enabled=False)).refresh(author_id)
 
     assert digest is not None
     assert digest.highlights[0]["post_ids"] == [new.id]
@@ -218,3 +212,92 @@ async def test_prompt_version_invalidates_digest_cache(session: Session) -> None
     assert second.id == first.id
     assert second.content_hash != first_hash
     assert second.prompt_version == "social-zh-v2"
+
+
+@pytest.mark.asyncio
+async def test_failed_model_digest_retries_after_cooldown_and_manual_force(session, monkeypatch):
+    from datetime import timedelta
+
+    from app.modules.social.digest import ActivityDigestReviewer
+    from app.modules.social.schemas import ActivityDigestVerdict
+
+    author = Author(name="retry artist")
+    session.add(author)
+    session.flush()
+    account = SocialAccount(author_id=author.id, handle="retry", status="confirmed")
+    session.add(account)
+    session.flush()
+    post = make_post(session, account.id, "1000", "新刊の予約開始")
+    now = datetime.now(UTC)
+    calls = []
+
+    async def review(self, evidence):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("temporary failure")
+        return ActivityDigestVerdict.model_validate(
+            {
+                "summary": "新刊",
+                "highlights": [
+                    {
+                        "text": "新刊",
+                        "category": "release",
+                        "importance": "high",
+                        "factuality": "fact",
+                        "post_ids": [post.id],
+                    }
+                ],
+                "uncertainties": [],
+            }
+        )
+
+    monkeypatch.setattr(ActivityDigestReviewer, "review", review)
+    settings = Settings(
+        social_agent_enabled=True,
+        agent_enabled=True,
+        agent_base_url="https://example.test",
+        agent_model="model",
+        agent_api_key="test",
+    )
+    service = DigestService(session, settings)
+    first = await service.refresh(author.id, now=now)
+    assert first.generated_by == "rules" and first.error
+    session.flush()
+    await service.refresh(author.id, now=now + timedelta(minutes=1))
+    assert len(calls) == 1
+    final = await service.refresh(author.id, now=now + timedelta(minutes=1), force=True)
+    assert len(calls) == 2 and final.generated_by == "agent" and final.error is None
+
+
+def test_digest_evidence_returns_only_the_tracked_authors_posts(session):
+    from app.db.models import AuthorDigest
+    from app.modules.social.router import _digest_read
+
+    author = Author(name="artist")
+    other = Author(name="other")
+    session.add_all([author, other])
+    session.flush()
+    a = SocialAccount(author_id=author.id, handle="a", status="confirmed")
+    b = SocialAccount(author_id=other.id, handle="b", status="confirmed")
+    session.add_all([a, b])
+    session.flush()
+    allowed = make_post(session, a.id, "21", "original")
+    unrelated = make_post(session, b.id, "22", "unrelated")
+    now = datetime.now(UTC)
+    digest = AuthorDigest(
+        author_id=author.id,
+        period_type="rolling_7d",
+        period_start=now,
+        period_end=now,
+        summary="summary",
+        highlights=[],
+        uncertainties=[],
+        evidence_post_ids=[allowed.id, unrelated.id],
+        content_hash="x",
+        generated_by="rules",
+    )
+    session.add(digest)
+    session.flush()
+    response = _digest_read(session, digest)
+    assert [post.id for post in response.evidence_posts] == [allowed.id]
+    assert response.evidence_posts[0].url.endswith("/21")

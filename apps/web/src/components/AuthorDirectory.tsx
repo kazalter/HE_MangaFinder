@@ -6,7 +6,7 @@ import {
   MagnifyingGlass,
   WarningCircle,
 } from '@phosphor-icons/react'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Author, WorkGroup } from '../types'
 import { ThemedSelect } from './ThemedSelect'
 
@@ -24,6 +24,7 @@ interface Props {
   previewAuthorId: number | null
   onPreviewAuthor: (id: number) => void
   onOpenAuthor: (id: number) => void
+  onGetQueryName?: (id: number, provider: string) => Promise<{ provider: string, query_name: string, origin: string, support: number }>
   onUpdateAuthor?: (
     id: number,
     identity: Pick<Author, 'name'> & Partial<Pick<Author, 'aliases' | 'circle_names'>>,
@@ -72,6 +73,7 @@ export function AuthorDirectory({
   previewAuthorId,
   onPreviewAuthor,
   onOpenAuthor,
+  onGetQueryName,
   onUpdateAuthor,
 }: Props) {
   const [query, setQuery] = useState('')
@@ -79,6 +81,7 @@ export function AuthorDirectory({
   const inspectorRef = useRef<HTMLElement>(null)
   const [editingAliases, setEditingAliases] = useState(false)
   const [aliasesInput, setAliasesInput] = useState('')
+  const [nameSuggestions, setNameSuggestions] = useState<{ provider: string, query_name: string, origin: string, support: number }[]>([])
 
   async function saveAliases() {
     if (!previewAuthor || !onUpdateAuthor) return
@@ -110,6 +113,26 @@ export function AuthorDirectory({
   const previewAuthor = authors.find((author) => author.id === previewAuthorId)
     ?? filteredAuthors[0]
     ?? authors[0]
+  useEffect(() => {
+    let active = true
+    setNameSuggestions([])
+    if (!previewAuthor || !onGetQueryName) return () => { active = false }
+    void Promise.allSettled(['wnacg', 'nhentai'].map((provider) => onGetQueryName(previewAuthor.id, provider)))
+      .then((results) => {
+        if (!active) return
+        const known = [previewAuthor.name, ...(previewAuthor.aliases ?? []), ...(previewAuthor.circle_names ?? []), ...Object.values(previewAuthor.provider_query_names ?? {})]
+          .map((name) => name.normalize('NFKC').toLocaleLowerCase())
+        setNameSuggestions(results.flatMap((result) => result.status === 'fulfilled' && result.value.origin === 'inferred'
+          && !known.includes(result.value.query_name.normalize('NFKC').toLocaleLowerCase()) ? [result.value] : []))
+      })
+    return () => { active = false }
+  }, [previewAuthor, onGetQueryName])
+
+  async function confirmNameSuggestion(name: string) {
+    if (!previewAuthor || !onUpdateAuthor) return
+    try { await onUpdateAuthor(previewAuthor.id, { name: previewAuthor.name, aliases: [...(previewAuthor.aliases ?? []), name] }) }
+    catch { return }
+  }
   const previewWorks = useMemo(() => {
     if (!previewAuthor) return []
     return works
@@ -224,6 +247,11 @@ export function AuthorDirectory({
                 {previewAuthor.circle_names?.length ? <small>社团：{previewAuthor.circle_names.join(' · ')}</small> : null}
               </div>
             </div>
+            {nameSuggestions.length > 0 && <div className="author-name-suggestions">
+              <strong>待核对的来源名称</strong>
+              <small>以下名称由历史作品推测，可能是合作者；确认前不会作为作者别名自动收录。</small>
+              {nameSuggestions.map((item) => <div key={`${item.provider}:${item.query_name}`}><span>{item.provider}：{item.query_name}{item.support > 0 ? `（${item.support} 条作品）` : ''}</span>{onUpdateAuthor && <button type="button" onClick={() => void confirmNameSuggestion(item.query_name)}>确认是别名</button>}</div>)}
+            </div>}
             <button className="author-open-button" onClick={() => onOpenAuthor(previewAuthor.id)}>
               查看 {previewAuthor.work_count} 部作品 <ArrowRight size={17} />
             </button>

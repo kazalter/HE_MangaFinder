@@ -30,6 +30,12 @@ class CollectorProfile(BaseModel):
     avatar_url: str | None = None
 
 
+class CollectorBatch(BaseModel):
+    posts: list[CollectorPost]
+    complete: bool
+    next_cursor: str | None = None
+
+
 class XBrowserCollector:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
@@ -98,19 +104,34 @@ class XBrowserCollector:
         body = await self._request("POST", "/session/reload")
         return body if isinstance(body, dict) else {}
 
-    async def posts(
-        self, handle: str, since_id: str | None, limit: int
-    ) -> list[CollectorPost]:
+    async def posts(self, handle: str, since_id: str | None, limit: int) -> list[CollectorPost]:
         params: dict[str, str | int] = {"limit": limit}
         if since_id:
             params["since_id"] = since_id
-        body = await self._request(
-            "GET", f"/accounts/{handle}/posts", params=params
-        )
+        body = await self._request("GET", f"/accounts/{handle}/posts", params=params)
         return [CollectorPost.model_validate(item) for item in body]
 
+    async def posts_batch(
+        self,
+        handle: str,
+        since_id: str | None,
+        limit: int,
+        cursor: str | None = None,
+        stop_before: datetime | None = None,
+    ) -> CollectorBatch:
+        params: dict[str, str | int] = {"limit": limit}
+        if since_id:
+            params["since_id"] = since_id
+        if cursor:
+            params["cursor"] = cursor
+        if stop_before is not None:
+            params["stop_before"] = stop_before.isoformat()
+        body = await self._request("GET", f"/accounts/{handle}/posts/batch", params=params)
+        batch = CollectorBatch.model_validate(body)
+        if not batch.complete and (not batch.next_cursor or batch.next_cursor == cursor):
+            raise RuntimeError("X 采集未完成且没有可用的续页位置，保留原扫描位置")
+        return batch
+
     async def post_status(self, handle: str, post_id: str) -> dict[str, Any]:
-        body = await self._request(
-            "GET", f"/posts/{post_id}/status", params={"handle": handle}
-        )
+        body = await self._request("GET", f"/posts/{post_id}/status", params={"handle": handle})
         return body if isinstance(body, dict) else {}

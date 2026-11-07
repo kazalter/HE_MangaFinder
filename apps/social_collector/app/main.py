@@ -211,6 +211,69 @@ class BrowserCollector:
                     await self.context.storage_state(path=str(STATE_RUNTIME))
                 await page.close()
 
+    async def posts_batch(
+        self,
+        handle: str,
+        since_id: str | None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        # Browser fallback resumes by locating the last collected post again. If the
+        # anchor is no longer visible, fail closed instead of silently skipping data.
+        async with self.lock:
+            page = await self.page()
+            try:
+                await self.navigate(page, f"https://x.com/{handle}")
+                await page.wait_for_timeout(2500)
+                await self.ensure_access(page)
+                found: dict[str, dict[str, Any]] = {}
+                seen: set[str] = set()
+                seeking = bool(cursor)
+                stalled = 0
+                for _ in range(80):
+                    articles = page.locator('article[data-testid="tweet"]')
+                    before = len(seen)
+                    for index in range(await articles.count()):
+                        parsed = await self._parse_article(articles.nth(index), handle)
+                        if not parsed or parsed["id"] in seen:
+                            continue
+                        post_id = parsed["id"]
+                        seen.add(post_id)
+                        if seeking:
+                            if post_id == cursor:
+                                seeking = False
+                            continue
+                        if since_id and post_id == since_id:
+                            return {
+                                "posts": list(found.values()),
+                                "complete": True,
+                                "next_cursor": None,
+                            }
+                        found[post_id] = parsed
+                        if len(found) >= limit:
+                            return {
+                                "posts": list(found.values()),
+                                "complete": False,
+                                "next_cursor": "browser:" + post_id,
+                            }
+                    stalled = stalled + 1 if len(seen) == before else 0
+                    if stalled >= 3:
+                        if seeking or since_id:
+                            raise RuntimeError("X 浏览器时间线未到达上次位置，保留扫描进度")
+                        return {
+                            "posts": list(found.values()),
+                            "complete": True,
+                            "next_cursor": None,
+                        }
+                    await page.mouse.wheel(0, 3000)
+                    await page.wait_for_timeout(1100)
+                raise RuntimeError("X 浏览器翻页未完成，保留扫描进度")
+            finally:
+                STATE_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
+                if self.context:
+                    await self.context.storage_state(path=str(STATE_RUNTIME))
+                await page.close()
+
     async def post_status(self, handle: str, post_id: str) -> dict[str, str | None]:
         async with self.lock:
             page = await self.page()
@@ -235,9 +298,7 @@ class BrowserCollector:
                     "已刪除",
                 )
                 status = (
-                    "deleted"
-                    if any(word in folded for word in deleted_words)
-                    else "unavailable"
+                    "deleted" if any(word in folded for word in deleted_words) else "unavailable"
                 )
                 return {"status": status, "reason": body[:500] or "X 页面没有返回帖子"}
             finally:
@@ -446,6 +507,45 @@ async def posts(
         except GraphQLTransientError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     return await collector.posts(clean, since_id, limit)
+
+
+@app.get("/accounts/{handle}/posts/batch", dependencies=[Depends(authorize)])
+async def posts_batch(
+    handle: str,
+    since_id: str | None = None,
+    cursor: str | None = None,
+    stop_before: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> dict[str, Any]:
+    clean = handle.removeprefix("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", clean):
+        raise HTTPException(status_code=422, detail="X 账号格式无效")
+    if stop_before:
+        try:
+            parsed_cutoff = datetime.fromisoformat(stop_before)
+            if parsed_cutoff.tzinfo is None:
+                raise ValueError("timezone required")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="无效的回溯时间") from exc
+    if cursor and not cursor.startswith(("graphql:", "browser:")):
+        raise HTTPException(status_code=422, detail="无效的扫描续页位置")
+    if graphql_collector.available and (not cursor or cursor.startswith("graphql:")):
+        try:
+            raw_cursor = cursor.removeprefix("graphql:") if cursor else None
+            return await asyncio.to_thread(
+                graphql_collector.posts_batch, clean, since_id, limit, raw_cursor, stop_before
+            )
+        except GraphQLUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except GraphQLTransientError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if cursor and cursor.startswith("graphql:"):
+        raise HTTPException(status_code=503, detail="原 GraphQL 采集不可用，保留扫描进度等待恢复")
+    try:
+        raw_cursor = cursor.removeprefix("browser:") if cursor else None
+        return await collector.posts_batch(clean, since_id, limit, raw_cursor)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/posts/{post_id}/status", dependencies=[Depends(authorize)])

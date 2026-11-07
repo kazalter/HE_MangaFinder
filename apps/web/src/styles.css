@@ -429,6 +429,7 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
 .digest-heading small { display: block; margin-top: 7px; color: #85756c; font-size: 16px; }
 .digest-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .notice { margin: 12px 0; padding: 11px 14px; border: 1px solid #adcbb4; border-radius: 10px; background: #f0faf2; color: #356640; }
+.digest-evidence-note { margin: 16px 0 0; color: #706a60; font-size: 13px; line-height: 1.5; }
 .digest-summary { margin: 17px 0; color: #4f4942; font-size: 20px; line-height: 1.75; }
 .digest-highlights { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .digest-highlights article { border-left: 3px solid #809487; padding: 9px 11px; background: rgba(255,255,255,.72); }
@@ -1155,3 +1156,8 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
   .settings-savebar { bottom: max(12px, env(safe-area-inset-bottom)); }
   input, select, textarea { font-size: 16px; }
 }
+
+.author-name-suggestions { display: grid; gap: 8px; margin-top: 20px; border: 1px solid #d4c69f; padding: 12px; background: #f5eedc; font-size: 13px; }
+.author-name-suggestions > small { color: #6e6758; line-height: 1.5; }
+.author-name-suggestions > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }
+.author-name-suggestions button { min-height: 36px; border: 1px solid #9b7456; padding: 6px 9px; color: #744932; background: #fffaf0; }

@@ -9,6 +9,8 @@ DISCOVER_AUTHOR = "discover_author"
 DOWNLOAD_CHAPTER = "download_chapter"
 AGENT_REVIEW_SUGGESTIONS = "agent_review_suggestions"
 SOCIAL_SYNC_ACCOUNT = "social_sync_account"
+SOCIAL_PROCESS_POST = "social_process_post"
+REFRESH_SOCIAL_DIGEST = "refresh_social_digest"
 DELIVER_NOTIFICATIONS = "deliver_notifications"
 BUILD_DAILY_DIGEST = "build_daily_digest"
 REFRESH_COVER_FINGERPRINTS = "refresh_cover_fingerprints"
@@ -116,6 +118,36 @@ class JobRepository:
         if existing:
             return existing
         job = Job(kind=SOCIAL_SYNC_ACCOUNT, payload={"account_id": account_id})
+        self.session.add(job)
+        self.session.flush()
+        return job
+
+    def enqueue_social_post(self, post_id: int) -> Job:
+        active = self.session.scalars(
+            select(Job).where(
+                Job.kind == SOCIAL_PROCESS_POST,
+                Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+            )
+        )
+        existing = next((job for job in active if job.payload.get("post_id") == post_id), None)
+        if existing:
+            return existing
+        job = Job(kind=SOCIAL_PROCESS_POST, payload={"post_id": post_id})
+        self.session.add(job)
+        self.session.flush()
+        return job
+
+    def enqueue_social_digest(self, author_id: int) -> Job:
+        active = self.session.scalars(
+            select(Job).where(
+                Job.kind == REFRESH_SOCIAL_DIGEST,
+                Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+            )
+        )
+        existing = next((job for job in active if job.payload.get("author_id") == author_id), None)
+        if existing:
+            return existing
+        job = Job(kind=REFRESH_SOCIAL_DIGEST, payload={"author_id": author_id})
         self.session.add(job)
         self.session.flush()
         return job
@@ -245,5 +277,10 @@ class JobRepository:
             job.next_attempt_at = None
         self.session.commit()
 
-    def list_recent(self, limit: int = 20) -> list[Job]:
-        return list(self.session.scalars(select(Job).order_by(Job.created_at.desc()).limit(limit)))
+    def list_recent(self, limit: int = 20, *, include_internal: bool = True) -> list[Job]:
+        statement = select(Job)
+        if not include_internal:
+            statement = statement.where(
+                Job.kind.not_in([SOCIAL_PROCESS_POST, REFRESH_SOCIAL_DIGEST])
+            )
+        return list(self.session.scalars(statement.order_by(Job.created_at.desc()).limit(limit)))

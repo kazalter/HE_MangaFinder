@@ -15,9 +15,12 @@ from app.db.models import (
     SocialAccount,
     SocialAgentReview,
     SocialPost,
+    SocialPostProcessing,
+    SocialSyncProgress,
     Work,
 )
-from app.modules.social.activity import ActivityService
+from app.modules.jobs.repository import JobRepository
+from app.modules.social.activity import ActivityService, activity_cluster_key, assess_activity
 from app.modules.social.agent import SocialReleaseReviewer
 from app.modules.social.collector import CollectorPost, XBrowserCollector
 from app.modules.social.digest import DigestService
@@ -50,28 +53,102 @@ class SocialSyncService:
                     # A missing avatar must not prevent post collection. Profile metadata
                     # will be retried on the next sync while the account has no avatar.
                     pass
+            avatar_url = (
+                profile.avatar_url if profile and profile.avatar_url else account.avatar_url
+            )
+            if avatar_url:
+                await SocialAvatarArchive(self.settings).archive(avatar_url)
+            progress = self.session.get(SocialSyncProgress, account.id)
+            stale_progress = None
+            if progress and (
+                progress.handle.casefold() != account.handle.casefold()
+                or progress.since_id != account.last_post_id
+            ):
+                stale_progress = progress
+                progress = None
+            cutoff = (
+                progress.backfill_cutoff
+                if progress
+                else datetime.now(UTC) - timedelta(days=self.settings.social_initial_backfill_days)
+            )
+            watermark_time = None
+            if account.last_post_id:
+                watermark_time = self.session.scalar(
+                    select(SocialPost.posted_at).where(
+                        SocialPost.account_id == account.id,
+                        SocialPost.platform_post_id == account.last_post_id,
+                    )
+                )
+            batch = await collector.posts_batch(
+                account.handle,
+                account.last_post_id,
+                self.settings.social_max_posts_per_sync,
+                cursor=progress.cursor if progress else None,
+                stop_before=cutoff if account.last_post_id is None else watermark_time,
+            )
+            incoming = batch.posts
+            if stale_progress:
+                self.session.delete(stale_progress)
+                self.session.flush()
             if profile:
                 account.platform_user_id = profile.id or account.platform_user_id
                 account.display_name = profile.display_name or account.display_name
                 account.profile_url = profile.profile_url or account.profile_url
                 account.avatar_url = profile.avatar_url or account.avatar_url
-            if account.avatar_url:
-                await SocialAvatarArchive(self.settings).archive(account.avatar_url)
-            incoming = await collector.posts(
-                account.handle,
-                account.last_post_id,
-                self.settings.social_max_posts_per_sync,
-            )
-            result = await self.ingest(account, incoming)
+            result = self.queue_posts(account, incoming, backfill_cutoff=cutoff)
             now = datetime.now(UTC)
-            account.last_synced_at = now
             account.sync_error = None
-            if incoming:
-                newest = max(incoming, key=lambda item: utc_timestamp(item.posted_at))
-                account.last_post_id = newest.id
-            interval = self._next_interval(account.author_id)
-            jitter = random.uniform(-0.08, 0.08)  # noqa: S311 - scheduling jitter only
-            account.next_sync_at = now + timedelta(minutes=interval * (1 + jitter))
+            newest = (
+                max(incoming, key=lambda item: utc_timestamp(item.posted_at)) if incoming else None
+            )
+            if (
+                newest
+                and watermark_time
+                and utc_timestamp(newest.posted_at) < utc_timestamp(watermark_time)
+            ):
+                newest = None
+            if batch.complete:
+                if (
+                    progress
+                    and progress.newest_post_id
+                    and (
+                        newest is None
+                        or (
+                            progress.newest_posted_at is not None
+                            and utc_timestamp(progress.newest_posted_at)
+                            >= utc_timestamp(newest.posted_at)
+                        )
+                    )
+                ):
+                    account.last_post_id = progress.newest_post_id
+                elif newest:
+                    account.last_post_id = newest.id
+                if progress:
+                    self.session.delete(progress)
+                account.last_synced_at = now
+                interval = self._next_interval(account.author_id)
+                jitter = random.uniform(-0.08, 0.08)  # noqa: S311 - scheduling jitter only
+                account.next_sync_at = now + timedelta(minutes=interval * (1 + jitter))
+            else:
+                if progress is None:
+                    progress = SocialSyncProgress(
+                        account_id=account.id,
+                        handle=account.handle,
+                        since_id=account.last_post_id,
+                        cursor=batch.next_cursor,
+                        backfill_cutoff=cutoff if account.last_post_id is None else None,
+                    )
+                    self.session.add(progress)
+                else:
+                    progress.cursor = batch.next_cursor
+                if newest and (
+                    progress.newest_posted_at is None
+                    or utc_timestamp(newest.posted_at) > utc_timestamp(progress.newest_posted_at)
+                ):
+                    progress.newest_post_id = newest.id
+                    progress.newest_posted_at = newest.posted_at
+                account.next_sync_at = now
+            result["complete"] = batch.complete
             self.session.commit()
             return result
         except Exception as exc:
@@ -84,30 +161,21 @@ class SocialSyncService:
             self.session.commit()
             raise
 
-    async def ingest(
-        self, account: SocialAccount, incoming: list[CollectorPost]
+    def queue_posts(
+        self,
+        account: SocialAccount,
+        incoming: list[CollectorPost],
+        *,
+        backfill_cutoff: datetime | None = None,
     ) -> dict[str, int]:
-        cutoff = datetime.now(UTC) - timedelta(days=self.settings.social_initial_backfill_days)
-        first_sync = account.last_post_id is None
-        created_count = 0
-        analyzed_count = 0
-        signal_count = 0
-        activity_count = 0
-        # First sync may return a large media-heavy timeline. Persist every post, but spend
-        # OCR time on the newest items; later incremental runs naturally process all new media.
-        newest_media_post_ids = [
-            item.id
-            for item in sorted(
-                incoming, key=lambda value: utc_timestamp(value.posted_at), reverse=True
-            )
-            if item.media
-        ]
-        ocr_post_ids = set(
-            newest_media_post_ids[: max(0, self.settings.social_ocr_max_posts_per_sync)]
+        """Save raw facts and durable follow-up work in the same short transaction."""
+        cutoff = as_utc(
+            backfill_cutoff
+            or (datetime.now(UTC) - timedelta(days=self.settings.social_initial_backfill_days))
         )
+        created_count = queued = 0
         for item in sorted(incoming, key=lambda value: utc_timestamp(value.posted_at)):
-            posted_at = as_utc(item.posted_at)
-            if first_sync and posted_at < cutoff:
+            if account.last_post_id is None and as_utc(item.posted_at) < cutoff:
                 continue
             content_hash = sha256(
                 json.dumps(item.model_dump(mode="json"), sort_keys=True).encode("utf-8")
@@ -126,51 +194,125 @@ class SocialSyncService:
                     "links": item.links,
                     "raw_metadata": item.raw,
                     "content_hash": content_hash,
-                    "posted_at": posted_at,
+                    "posted_at": as_utc(item.posted_at),
                     "availability_status": "available",
                     "availability_reason": None,
                     "unavailable_since": None,
                     "availability_failure_count": 0,
                 },
             )
-            if created:
-                created_count += 1
-            if not changed and self.repository.signal_for_post(post.id):
+            created_count += int(created)
+            if item.post_type == "retweet":
                 continue
-            if post.post_type == "retweet":
+            state = self.session.get(SocialPostProcessing, post.id)
+            if not changed and state and state.status == "done":
                 continue
-            media_archive = SocialMediaArchive(self.session, self.settings)
-            local_media = await media_archive.archive_post(post) if post.media else {}
-            if post.media and not post.ocr_text and item.id in ocr_post_ids:
-                post.ocr_text = await LocalMediaOcr(self.settings).extract(
-                    post.media, local_media
-                )
-            analyzed_count += 1
-            activity = ActivityService(self.session).ingest(account, post)
-            if activity:
-                activity_count += 1
-                if activity.importance in {"high", "critical"}:
-                    media_archive.pin_post(post.id, activity.importance)
-            signal = await self.analyze_post(account, post)
-            if signal:
-                signal_count += 1
-                if signal.status in {"pending", "confirmed", "linked"}:
-                    media_archive.pin_post(post.id, "critical")
-        if activity_count:
-            await DigestService(self.session, self.settings).refresh(account.author_id)
-        self.session.flush()
-        return {
-            "fetched": len(incoming),
-            "created": created_count,
-            "analyzed": analyzed_count,
-            "signals": signal_count,
-            "activities": activity_count,
-        }
+            if state is None:
+                state = SocialPostProcessing(post_id=post.id, content_hash=content_hash)
+                self.session.add(state)
+            elif changed:
+                state.content_hash = content_hash
+                state.status = "pending"
+                state.ocr_status = "pending"
+                state.backfill_only = False
+                state.last_error = None
+            JobRepository(self.session).enqueue_social_post(post.id)
+            queued += 1
+        return {"fetched": len(incoming), "created": created_count, "queued": queued}
 
-    async def analyze_post(self, account: SocialAccount, post: SocialPost) -> ReleaseSignal | None:
+    async def process_post(self, post_id: int) -> dict[str, object]:
+        post = self.session.get(SocialPost, post_id)
+        state = self.session.get(SocialPostProcessing, post_id)
+        if not post or not state:
+            return {"status": "missing"}
+        account = self.repository.get_account(post.account_id)
+        if not account:
+            return {"status": "missing"}
+        expected = post.content_hash
+        old_ocr_text = post.ocr_text
+        was_backfill = state.backfill_only
+        if state.status == "done" and state.content_hash == expected:
+            return {"status": "done"}
+        archive = SocialMediaArchive(self.session, self.settings)
+        local_media = {}
+        if was_backfill:
+            # Reuse existing local images but do not expand or evict the archive
+            # merely because historical OCR is being filled in.
+            for index, item in enumerate(post.media):
+                if item.get("type") == "image":
+                    asset = archive.asset(post.id, index)
+                    path = archive.local_file(asset) if asset else None
+                    if path:
+                        local_media[index] = path
+        elif self.settings.social_media_cache_max_bytes > 0:
+            for index, item in enumerate(post.media):
+                if item.get("type") != "image" or not item.get("url"):
+                    continue
+                asset = await archive.archive(post.id, index, str(item["url"]))
+                path = archive.local_file(asset)
+                if path:
+                    local_media[index] = path
+                self.session.commit()
+            archive.enforce_quota()
+            self.session.commit()
+        if post.media and state.ocr_status in {"pending", "retry", "disabled"}:
+            result = await LocalMediaOcr(self.settings).extract_result(post.media, local_media)
+            self.session.refresh(post)
+            if post.content_hash != expected:
+                raise RuntimeError("帖子在处理时发生变化，将重新处理")
+            if result.text:
+                post.ocr_text = result.text
+            state.ocr_status = result.status
+            state.last_error = result.error
+            self.session.commit()
+        elif not post.media:
+            state.ocr_status = "not_applicable"
+            self.session.commit()
+        elif post.ocr_text:
+            state.ocr_status = "text"
+            self.session.commit()
+
+        if state.backfill_only and post.ocr_text == old_ocr_text:
+            state.status = "done"
+            self.session.commit()
+            return {"status": "done", "activity": False, "signal": False}
+
+        # Prepare model evidence and await the external reviewer before writing activity.
+        prepared = await self._prepare_review(account, post)
+        self.session.refresh(post)
+        if post.content_hash != expected:
+            raise RuntimeError("帖子在分析时发生变化，将重新处理")
+        assessment = assess_activity(post)
+        existing_activity = (
+            self.repository.activity_by_cluster(
+                account.author_id,
+                activity_cluster_key(account.author_id, post, assessment.category),
+            )
+            if was_backfill and assessment
+            else None
+        )
+        activity = ActivityService(self.session).ingest(account, post)
+        if was_backfill and activity and existing_activity is None:
+            activity.is_read = True
+        if activity and activity.importance in {"high", "critical"}:
+            archive.pin_post(post.id, activity.importance)
+        signal = await self.analyze_post(account, post, prepared=prepared, backfill=was_backfill)
+        if signal and signal.status in {"pending", "confirmed", "linked"}:
+            archive.pin_post(post.id, "critical")
+        state.content_hash = expected
+        state.status = "done"
+        state.backfill_only = False
+        if state.ocr_status not in {"retry", "disabled"}:
+            state.last_error = None
+        if activity:
+            JobRepository(self.session).enqueue_social_digest(account.author_id)
+        self.session.commit()
+        return {"status": "done", "activity": bool(activity), "signal": bool(signal)}
+
+    async def _prepare_review(self, account: SocialAccount, post: SocialPost):
         assessment = assess_post(post)
         if not assessment.candidate:
-            return None
+            return assessment, None, None, None
         snapshot = self._evidence_snapshot(account, post, assessment)
         verdict = None
         review_error = None
@@ -179,12 +321,25 @@ class SocialSyncService:
                 verdict = (await SocialReleaseReviewer(self.settings).review(snapshot)).verdict
             except Exception as exc:
                 review_error = str(exc)
+        return assessment, snapshot, verdict, review_error
+
+    async def analyze_post(
+        self,
+        account: SocialAccount,
+        post: SocialPost,
+        *,
+        prepared=None,
+        backfill: bool = False,
+    ) -> ReleaseSignal | None:
+        assessment, snapshot, verdict, review_error = (
+            prepared if prepared is not None else await self._prepare_review(account, post)
+        )
+        if not assessment.candidate:
+            return None
 
         kind = verdict.kind if verdict else assessment.kind
         title = verdict.title if verdict and verdict.title else assessment.title
-        event_code = (
-            verdict.event_code if verdict and verdict.event_code else assessment.event_code
-        )
+        event_code = verdict.event_code if verdict and verdict.event_code else assessment.event_code
         booth = verdict.booth if verdict and verdict.booth else assessment.booth
         confidence = assessment.confidence
         if verdict:
@@ -195,9 +350,7 @@ class SocialSyncService:
             grounded_evidence.extend(self._ground(verdict.evidence, snapshot))
             grounded_counter.extend(self._ground(verdict.counter_evidence, snapshot))
         stores = list(
-            dict.fromkeys(
-                assessment.store_urls + (verdict.store_urls if verdict else [])
-            )
+            dict.fromkeys(assessment.store_urls + (verdict.store_urls if verdict else []))
         )
 
         status = "archived" if confidence < self.settings.social_candidate_threshold else "pending"
@@ -218,11 +371,13 @@ class SocialSyncService:
             "delay",
             "cancellation",
         } and bool(event_code or assessment.counter_evidence)
-        if (
-            confidence >= self.settings.social_auto_confirm_threshold
-            and (safe_new_release or safe_non_new)
+        if confidence >= self.settings.social_auto_confirm_threshold and (
+            safe_new_release or safe_non_new
         ):
             status = "confirmed"
+
+        if backfill and status == "confirmed":
+            status = "pending"
 
         key_assessment = RuleAssessment(
             candidate=True,
@@ -263,7 +418,7 @@ class SocialSyncService:
             signal.booth = booth or signal.booth
             signal.store_urls = list(dict.fromkeys(signal.store_urls + stores))
             signal.confidence = max(signal.confidence, confidence)
-            if signal.status not in {"rejected", "released"}:
+            if signal.status not in {"rejected", "released", "confirmed", "linked"}:
                 signal.status = status
             signal.evidence = list(dict.fromkeys(signal.evidence + grounded_evidence))
             signal.counter_evidence = list(
@@ -288,7 +443,7 @@ class SocialSyncService:
                     error=review_error,
                 )
             )
-        if signal.status == "confirmed" and (is_new or signal.notified_at is None):
+        if not backfill and signal.status == "confirmed" and (is_new or signal.notified_at is None):
             self.queue_notification(signal, account, post)
         self.session.flush()
         return signal

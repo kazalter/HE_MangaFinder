@@ -46,6 +46,17 @@ class Author(Base):
     )
 
 
+class AuthorIdentitySuggestion(Base):
+    __tablename__ = "author_identity_suggestions"
+    __table_args__ = (UniqueConstraint("author_id", "provider", "name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey("authors.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
 class Work(Base):
     __tablename__ = "works"
 
@@ -426,6 +437,22 @@ class SocialAccount(Base):
     )
 
 
+class SocialSyncProgress(Base):
+    """Durable continuation for a timeline scan; the public watermark stays unchanged."""
+
+    __tablename__ = "social_sync_progress"
+
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("social_accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    handle: Mapped[str] = mapped_column(String(100))
+    since_id: Mapped[str | None] = mapped_column(String(100))
+    cursor: Mapped[str] = mapped_column(Text)
+    newest_post_id: Mapped[str | None] = mapped_column(String(100))
+    newest_posted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    backfill_cutoff: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
 class SocialPost(Base):
     __tablename__ = "social_posts"
     __table_args__ = (UniqueConstraint("account_id", "platform_post_id"),)
@@ -461,6 +488,22 @@ class SocialPost(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), default=utcnow, onupdate=utcnow
     )
+
+
+class SocialPostProcessing(Base):
+    """Durable processing/OCR state, separate from the original post."""
+
+    __tablename__ = "social_post_processing"
+
+    post_id: Mapped[int] = mapped_column(
+        ForeignKey("social_posts.id", ondelete="CASCADE"), primary_key=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    ocr_status: Mapped[str] = mapped_column(String(30), default="pending")
+    backfill_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class SocialMediaAsset(Base):

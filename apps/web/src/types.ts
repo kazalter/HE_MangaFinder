@@ -326,6 +326,8 @@ export interface SocialStatus {
   candidate_threshold: number
   pending_count: number
   unread_count: number
+  processing_pending?: number
+  processing_retry?: number
   daily_digest_enabled: boolean
   daily_digest_hour: number
   daily_digest_timezone: string
@@ -527,6 +529,7 @@ export interface AuthorDigest {
   highlights: DigestHighlight[]
   uncertainties: string[]
   evidence_post_ids: number[]
+  evidence_posts?: SocialPost[]
   generated_by: 'agent' | 'rules'
   model: string | null
   error: string | null

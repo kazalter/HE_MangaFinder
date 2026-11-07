@@ -6,7 +6,7 @@ from dataclasses import asdict
 from sqlalchemy.exc import OperationalError
 
 from app.core.config import Settings
-from app.db.models import Job, JobStatus
+from app.db.models import Job, JobStatus, SocialPostProcessing
 from app.db.session import SessionLocal
 from app.modules.agent_review.service import AgentReviewService
 from app.modules.catalog.cover_maintenance import CoverFingerprintRefreshService
@@ -19,10 +19,13 @@ from app.modules.jobs.repository import (
     DISCOVER_AUTHOR,
     DOWNLOAD_CHAPTER,
     REFRESH_COVER_FINGERPRINTS,
+    REFRESH_SOCIAL_DIGEST,
+    SOCIAL_PROCESS_POST,
     SOCIAL_SYNC_ACCOUNT,
     JobRepository,
 )
 from app.modules.social.daily_digest import DailyDigestService
+from app.modules.social.digest import DigestService
 from app.modules.social.notifications import NotificationService
 from app.modules.social.service import SocialSyncService
 from app.providers.registry import ProviderRegistry, build_registry
@@ -32,9 +35,17 @@ logger = logging.getLogger(__name__)
 
 class JobWorker:
     def __init__(
-        self, settings: Settings, providers: ProviderRegistry, *, exclude_downloads: bool = False,
-        exclude_covers: bool = False, covers_only: bool = False,
-        exclude_notifications: bool = False, notifications_only: bool = False,
+        self,
+        settings: Settings,
+        providers: ProviderRegistry,
+        *,
+        exclude_downloads: bool = False,
+        exclude_covers: bool = False,
+        covers_only: bool = False,
+        exclude_notifications: bool = False,
+        notifications_only: bool = False,
+        exclude_social_processing: bool = False,
+        social_processing_only: bool = False,
     ) -> None:
         self.settings = settings
         self.providers = providers
@@ -43,6 +54,8 @@ class JobWorker:
         self.covers_only = covers_only
         self.exclude_notifications = exclude_notifications
         self.notifications_only = notifications_only
+        self.exclude_social_processing = exclude_social_processing
+        self.social_processing_only = social_processing_only
 
     async def run(self) -> None:
         while True:
@@ -61,12 +74,22 @@ class JobWorker:
             jobs = JobRepository(session)
             job = jobs.claim_next(
                 kinds=(
-                    {REFRESH_COVER_FINGERPRINTS} if self.covers_only
-                    else {DELIVER_NOTIFICATIONS} if self.notifications_only else None
+                    {REFRESH_COVER_FINGERPRINTS}
+                    if self.covers_only
+                    else {DELIVER_NOTIFICATIONS}
+                    if self.notifications_only
+                    else {SOCIAL_PROCESS_POST, REFRESH_SOCIAL_DIGEST}
+                    if self.social_processing_only
+                    else None
                 ),
                 exclude_kinds=({DOWNLOAD_CHAPTER} if self.exclude_downloads else set())
                 | ({REFRESH_COVER_FINGERPRINTS} if self.exclude_covers else set())
-                | ({DELIVER_NOTIFICATIONS} if self.exclude_notifications else set()),
+                | ({DELIVER_NOTIFICATIONS} if self.exclude_notifications else set())
+                | (
+                    {SOCIAL_PROCESS_POST, REFRESH_SOCIAL_DIGEST}
+                    if self.exclude_social_processing
+                    else set()
+                ),
                 prioritize_notifications=self.exclude_downloads,
             )
             if job is None:
@@ -123,6 +146,17 @@ class JobWorker:
                     )
                     job.payload = {**job.payload, **result}
                     jobs.enqueue_notification_delivery_if_needed()
+                elif job.kind == SOCIAL_PROCESS_POST:
+                    result = await SocialSyncService(session, self.settings).process_post(
+                        int(job.payload["post_id"])
+                    )
+                    job.payload = {**job.payload, **result}
+                    jobs.enqueue_notification_delivery_if_needed()
+                elif job.kind == REFRESH_SOCIAL_DIGEST:
+                    digest = await DigestService(session, self.settings).refresh(
+                        int(job.payload["author_id"])
+                    )
+                    job.payload = {**job.payload, "digest_id": digest.id if digest else None}
                 elif job.kind == BUILD_DAILY_DIGEST:
                     result = await DailyDigestService(session, self.settings).build(
                         force=bool(job.payload.get("force", False))
@@ -149,10 +183,20 @@ class JobWorker:
                 job = session.get(type(job), job_id)
                 if job is None:
                     raise RuntimeError(f"任务 {job_id} 在失败处理期间被删除") from exc
-                if self.covers_only or self.notifications_only:
+                if self.covers_only or self.notifications_only or self.social_processing_only:
                     while True:
                         try:
                             if job.status == JobStatus.RUNNING:
+                                if (
+                                    job.kind == SOCIAL_PROCESS_POST
+                                    and job.attempts >= self.settings.max_job_attempts
+                                ):
+                                    state = session.get(
+                                        SocialPostProcessing, int(job.payload["post_id"])
+                                    )
+                                    if state:
+                                        state.status = "retry"
+                                        state.last_error = str(exc)[:1000]
                                 jobs.fail(job, str(exc), self.settings.max_job_attempts)
                             break
                         except OperationalError as lock_error:
@@ -201,6 +245,7 @@ class CoverWorkerThread:
                         await asyncio.sleep(self.settings.poll_interval_seconds)
             finally:
                 await providers.close()
+
         asyncio.run(serve())
 
     async def stop(self) -> None:
@@ -221,6 +266,17 @@ class NotificationWorkerThread(CoverWorkerThread):
 
     def _make_worker(self, providers: ProviderRegistry) -> JobWorker:
         return JobWorker(self.settings, providers, notifications_only=True)
+
+
+class SocialProcessingWorkerThread(CoverWorkerThread):
+    """Perform OCR and model work without blocking discovery or notification queues."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.thread.name = "social-processing"
+
+    def _make_worker(self, providers: ProviderRegistry) -> JobWorker:
+        return JobWorker(self.settings, providers, social_processing_only=True)
 
 
 class DownloadWorker:

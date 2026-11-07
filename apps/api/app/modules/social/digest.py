@@ -158,8 +158,7 @@ class ActivityDigestReviewer:
             raise RuntimeError(f"动态摘要 Agent 返回无效 JSON：{exc}") from exc
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(
-                f"动态摘要 Agent 返回 HTTP {exc.response.status_code}："
-                f"{exc.response.text[:500]}"
+                f"动态摘要 Agent 返回 HTTP {exc.response.status_code}：{exc.response.text[:500]}"
             ) from exc
         except httpx.HTTPError as exc:
             raise RuntimeError(f"无法连接动态摘要 Agent：{exc}") from exc
@@ -175,16 +174,17 @@ class DigestService:
         self.repository = SocialRepository(session)
 
     async def refresh(
-        self, author_id: int, days: int = 7, *, now: datetime | None = None
+        self,
+        author_id: int,
+        days: int = 7,
+        *,
+        now: datetime | None = None,
+        force: bool = False,
     ) -> AuthorDigest | None:
-        today = as_utc(now or datetime.now(UTC)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today = as_utc(now or datetime.now(UTC)).replace(hour=0, minute=0, second=0, microsecond=0)
         period_end = today + timedelta(days=1)
         period_start = period_end - timedelta(days=days)
-        posts = self.repository.recent_posts_for_author(
-            author_id, period_start, period_end
-        )
+        posts = self.repository.recent_posts_for_author(author_id, period_start, period_end)
         if not posts:
             return None
         author = self.repository.author(author_id)
@@ -201,14 +201,30 @@ class DigestService:
                     "evidence": evidence,
                     "prompt_version": self.settings.social_agent_prompt_version,
                     "localization_version": DIGEST_LOCALIZATION_VERSION,
+                    "model": self.settings.agent_model
+                    if self.settings.social_agent_configured
+                    else None,
+                    "provider": self.settings.agent_provider
+                    if self.settings.social_agent_configured
+                    else None,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
         digest = self.repository.digest_for_period(author_id, "rolling_7d", period_end)
-        if digest and digest.content_hash == content_hash:
-            return digest
+        if digest and digest.content_hash == content_hash and not force:
+            needs_model_retry = (
+                self.settings.social_agent_configured and digest.generated_by != "agent"
+            )
+            retry_due = (
+                digest.error is None
+                or not digest.updated_at
+                or as_utc(now or datetime.now(UTC)) - as_utc(digest.updated_at)
+                >= timedelta(minutes=15)
+            )
+            if not needs_model_retry or not retry_due:
+                return digest
 
         generated_by = "rules"
         model = None
@@ -216,17 +232,18 @@ class DigestService:
         verdict = self._fallback(posts)
         if self.settings.social_agent_configured:
             try:
-                verdict = await ActivityDigestReviewer(self.settings).review(evidence)
-                verdict = self._ground(verdict, {post.id for post in posts})
+                reviewed = await ActivityDigestReviewer(self.settings).review(evidence)
+                reviewed = self._ground(reviewed, {post.id for post in posts})
+                if not reviewed.highlights:
+                    raise ValueError("模型摘要没有可核对的原帖证据")
+                verdict = reviewed
                 generated_by = "agent"
                 model = self.settings.agent_model
             except Exception as exc:
                 error = str(exc)[:2000]
 
         verdict = localize_verdict(verdict)
-        evidence_ids = sorted(
-            {post_id for item in verdict.highlights for post_id in item.post_ids}
-        )
+        evidence_ids = sorted({post_id for item in verdict.highlights for post_id in item.post_ids})
         values = {
             "summary": verdict.summary,
             "highlights": [item.model_dump(mode="json") for item in verdict.highlights],
@@ -237,6 +254,8 @@ class DigestService:
             "model": model,
             "prompt_version": self.settings.social_agent_prompt_version,
             "error": error,
+            # Advance the retry clock even if consecutive failures have identical text.
+            "updated_at": as_utc(now or datetime.now(UTC)),
         }
         if digest is None:
             digest = AuthorDigest(
@@ -271,9 +290,7 @@ class DigestService:
         }
 
     @staticmethod
-    def _ground(
-        verdict: ActivityDigestVerdict, allowed_ids: set[int]
-    ) -> ActivityDigestVerdict:
+    def _ground(verdict: ActivityDigestVerdict, allowed_ids: set[int]) -> ActivityDigestVerdict:
         highlights = []
         for item in verdict.highlights:
             item.post_ids = list(dict.fromkeys(i for i in item.post_ids if i in allowed_ids))

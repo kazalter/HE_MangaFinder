@@ -2,6 +2,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
 from urllib.parse import urlparse
@@ -15,6 +16,13 @@ logger = logging.getLogger(__name__)
 ALLOWED_MEDIA_HOSTS = {"pbs.twimg.com", "video.twimg.com"}
 
 
+@dataclass(frozen=True)
+class OcrResult:
+    status: str
+    text: str | None = None
+    error: str | None = None
+
+
 class LocalMediaOcr:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -25,18 +33,35 @@ class LocalMediaOcr:
         media: list[dict[str, object]],
         local_paths: dict[int, object] | None = None,
     ) -> str | None:
-        if not self.settings.social_ocr_enabled or not shutil.which("tesseract"):
-            return None
+        return (await self.extract_result(media, local_paths)).text
+
+    async def extract_result(
+        self,
+        media: list[dict[str, object]],
+        local_paths: dict[int, object] | None = None,
+    ) -> OcrResult:
+        images = [
+            (index, item)
+            for index, item in enumerate(media[:4])
+            if item.get("type") == "image" and item.get("url")
+        ]
+        if not images:
+            return OcrResult("not_applicable")
+        if not self.settings.social_ocr_enabled:
+            return OcrResult("disabled")
+        if not shutil.which("tesseract"):
+            return OcrResult("retry", error="OCR 程序不可用")
         texts: list[str] = []
+        failures = []
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            for index, item in enumerate(media[:4]):
+            for index, item in images:
                 url = str(item.get("url", ""))
                 parsed = urlparse(url)
                 if (
-                    not url
-                    or parsed.scheme not in {"http", "https"}
+                    parsed.scheme not in {"http", "https"}
                     or parsed.hostname not in ALLOWED_MEDIA_HOSTS
                 ):
+                    failures.append("不允许的图片地址")
                     continue
                 try:
                     supplied = (local_paths or {}).get(index)
@@ -57,14 +82,18 @@ class LocalMediaOcr:
                                 temporary.write(raw)
                             stdout = await self._recognize(path)
                     if stdout is None:
-                        logger.info("Social media OCR timed out: %s", url)
+                        failures.append("OCR 超时或执行失败")
                         continue
                     text = stdout.decode("utf-8", errors="replace").strip()
                     if text:
                         texts.append(text[:6000])
                 except Exception as exc:
                     logger.info("Social media OCR skipped %s: %s", url, exc)
-        return "\n\n".join(texts) or None
+                    failures.append(type(exc).__name__)
+        text = "\n\n".join(texts) or None
+        if failures:
+            return OcrResult("retry", text=text, error="; ".join(failures)[:1000])
+        return OcrResult("text" if text else "empty", text=text)
 
     async def _recognize(self, path: str) -> bytes | None:
         result = await asyncio.create_subprocess_exec(
@@ -80,7 +109,7 @@ class LocalMediaOcr:
             stdout, _ = await asyncio.wait_for(
                 result.communicate(), timeout=self.settings.social_ocr_timeout_seconds
             )
-            return stdout
+            return stdout if result.returncode == 0 else None
         except TimeoutError:
             result.kill()
             await result.communicate()
