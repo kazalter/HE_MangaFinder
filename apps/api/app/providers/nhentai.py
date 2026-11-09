@@ -159,8 +159,13 @@ class NhentaiProvider:
             listed_artist = self.parse_artist(response.text)
             if listed_artist and self._identity(listed_artist) == self._identity(author_name):
                 return path, listed_artist, response
-        except ProviderError:
-            pass
+        except ProviderError as exc:
+            # Only a missing artist page justifies searching for an alternate name.
+            # Authentication, rate limits and transport failures affect the source,
+            # so retrying another endpoint only creates extra requests and hides them.
+            cause = exc.__cause__
+            if not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code != 404:
+                raise
 
         exact_response = await self._request_page(
             "/search/",

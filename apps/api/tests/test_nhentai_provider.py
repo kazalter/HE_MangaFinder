@@ -4,7 +4,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from app.providers.errors import ProviderError
 from app.providers.nhentai import NhentaiProvider
 
@@ -203,3 +202,32 @@ async def test_rejects_untrusted_cover_host() -> None:
     with pytest.raises(ProviderError, match="不受信任"):
         await provider.fetch_cover("123456", "https://attacker.example/cover.jpg")
     await client.aclose()
+
+
+@pytest.mark.parametrize("status", [403, 429, 503])
+async def test_artist_source_error_stops_before_search_fallback(status: int) -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        return httpx.Response(status, text="source unavailable")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(user_agent="test", client=client)
+        with pytest.raises(ProviderError, match=f"HTTP {status}"):
+            await provider.discover_by_author("mignon")
+    assert requests == ["/artist/mignon/"]
+
+
+async def test_artist_transport_error_stops_before_search_fallback() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        raise httpx.ConnectTimeout("timeout", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(user_agent="test", client=client)
+        with pytest.raises(ProviderError, match="超时"):
+            await provider.discover_by_author("mignon")
+    assert requests == ["/artist/mignon/"]
