@@ -1161,3 +1161,55 @@ main { padding: 56px clamp(28px, 3.4vw, 52px) 70px; min-width: 0; transition: pa
 .author-name-suggestions > small { color: #6e6758; line-height: 1.5; }
 .author-name-suggestions > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }
 .author-name-suggestions button { min-height: 36px; border: 1px solid #9b7456; padding: 6px 9px; color: #744932; background: #fffaf0; }
+
+/* A compact work queue that follows the library's existing color system. */
+.library-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.library-tabs button { font-size: 15px; }
+.todo-workbench { max-width: 1200px; margin: 0 auto; padding-bottom: 60px; color: #263b33; }
+.todo-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 18px; margin-bottom: 24px; }
+.todo-header h1 { margin: 0 0 7px; font-size: clamp(28px, 3vw, 36px); line-height: 1.2; }
+.todo-header p, .todo-section header p { margin: 0; color: #62766b; font-size: 14px; }
+.todo-header button, .todo-section button, .todo-tabs button { cursor: pointer; }
+.todo-header button { flex: 0 0 auto; white-space: nowrap; display: inline-flex; gap: 7px; align-items: center; padding: 9px 13px; border: 1px solid #c9d3cb; border-radius: 7px; background: #fff; color: #365649; }
+.todo-tabs { display: flex; gap: 8px; padding-bottom: 14px; overflow-x: auto; border-bottom: 1px solid #d3ddd5; }
+.todo-tabs button { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 9px 13px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #52695c; font-weight: 650; }
+.todo-tabs button[aria-pressed="true"] { background: #284b3b; color: #fff; }
+.todo-tabs button span { font-size: 12px; opacity: .8; }
+.todo-section { margin-top: 22px; overflow: hidden; border: 1px solid #d9e1da; border-radius: 10px; background: #fff; }
+.todo-section > header { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 19px 20px 15px; }
+.todo-section h2 { margin: 0 0 5px; font-size: 19px; }
+.todo-section > header > span, .todo-hint { color: #64786d; font-size: 13px; }
+.todo-section button { border: 1px solid #d4ddd5; border-radius: 6px; padding: 7px 10px; background: #fff; color: #315342; font-size: 13px; font-weight: 600; }
+.todo-section button:hover:not(:disabled) { background: #edf4ef; }
+.todo-section button:disabled, .todo-header button:disabled { opacity: .45; cursor: not-allowed; }
+.todo-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 20px; background: #f3f7f3; color: #526b5b; font-size: 13px; }
+.todo-bulk label { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; }
+.todo-bulk span { margin-right: auto; }
+.todo-row { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 15px 20px; border-top: 1px solid #edf0ed; }
+.todo-row > input, .todo-bulk input { accent-color: #315f48; flex: 0 0 auto; }
+.todo-cover { width: 48px; height: 62px; flex: 0 0 auto; display: grid; place-items: center; overflow: hidden; border-radius: 4px; background: #e8efe8; color: #70877a; }
+.todo-cover img { width: 100%; height: 100%; object-fit: cover; }
+.todo-icon { flex: 0 0 auto; color: #547866; }
+.todo-icon.danger { color: #ba583d; }
+.todo-copy { flex: 1 1 auto; min-width: 0; display: grid; gap: 4px; }
+.todo-copy strong { overflow-wrap: anywhere; font-size: 15px; line-height: 1.4; }
+.todo-copy small { color: #a14e35; font-size: 12px; font-weight: 700; }
+.todo-copy span { color: #6b7c72; font-size: 13px; overflow-wrap: anywhere; }
+.todo-actions { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.todo-empty { display: flex; align-items: center; gap: 7px; margin: 0; padding: 22px 20px; border-top: 1px solid #edf0ed; color: #728579; font-size: 14px; }
+.todo-problem, .todo-notice { margin: 12px 20px; color: #91462d; font-size: 14px; }
+.todo-notice { margin: 14px 0 0; padding: 12px; border-radius: 6px; background: #fff0e7; }
+.todo-loading { color: #637b6d; font-size: 14px; }
+.todo-more { display: block; margin: 14px auto 18px; }
+.todo-hint { margin: 12px 20px; }
+.todo-workbench button:focus-visible, .todo-workbench input:focus-visible { outline: 3px solid #de8867; outline-offset: 2px; }
+@media (max-width: 800px) {
+  .todo-header { align-items: flex-start; }
+  .todo-header h1 { font-size: 27px; }
+  .todo-section > header { padding: 16px; align-items: flex-start; }
+  .todo-row { flex-wrap: wrap; gap: 10px; padding: 14px 16px; }
+  .todo-copy { flex-basis: calc(100% - 90px); }
+  .todo-actions { flex: 1 0 100%; justify-content: flex-start; padding-left: 0; }
+  .todo-actions button { min-height: 38px; }
+  .todo-bulk { padding: 10px 16px; }
+}

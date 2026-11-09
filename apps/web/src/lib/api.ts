@@ -1,4 +1,4 @@
-import type { ActivityItem, AgentStatus, AssistantMessage, AssistantReply, AiConfig, Author, AuthorDigest, CatalogEvent, CatalogOperation, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, ImageSearchMatch, Job, MergeSuggestion, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail, WorkMetadataPatch } from '../types'
+import type { ActivityItem, AgentStatus, AssistantMessage, AssistantReply, AiConfig, Author, AuthorDigest, CatalogEvent, CatalogOperation, Chapter, ConfigAuthStatus, ConnectionTestResult, DashboardData, FailedDownload, ImageSearchMatch, Job, MergeSuggestion, PlannedRelease, NotificationConfig, ReleaseSignal, SeriesCandidate, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, Source, SystemConfig, Work, WorkGroup, WorkGroupDetail, WorkMetadataPatch } from '../types'
 
 function cookie(name: string): string | undefined {
   return document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -16,7 +16,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     },
   })
   if (!response.ok) {
-    if (response.status === 401 && options?.method && options.method !== 'GET'
+    if (response.status === 401 && ((options?.method && options.method !== 'GET') || path.includes('/library-check'))
       && !path.startsWith('/system-config/auth/')) {
       window.dispatchEvent(new Event('mangafinder:login-required'))
     }
@@ -115,13 +115,22 @@ export const api = {
       body: JSON.stringify({ max_reviews: maxReviews ?? null }),
     }),
   jobs: () => request<Job[]>('/jobs?limit=10&include_internal=false'),
+  failedDownloads: () => request<{ items: FailedDownload[], has_more: boolean }>('/jobs/failed-downloads?limit=100'),
+  plannedMatches: () => request<PlannedRelease[]>('/social/planned-releases?needs_match=true&limit=300'),
+  linkPlannedMatch: (id: number, groupId: number) => request<PlannedRelease>(`/social/planned-releases/${id}`, {
+    method: 'PATCH', body: JSON.stringify({ group_id: groupId }),
+  }),
   sources: () => request<Source[]>('/sources'),
   dashboard: (days = 30) => request<DashboardData>(`/dashboard?days=${days}`),
-  discoveryInbox: (state = 'unread') =>
-    request<CatalogEvent[]>(`/discovery-inbox?state=${encodeURIComponent(state)}`),
+  discoveryInbox: (state = 'unread', offset = 0) =>
+    request<CatalogEvent[]>(`/discovery-inbox?state=${encodeURIComponent(state)}&limit=100&offset=${offset}`),
   updateDiscoveryEvent: (id: number, state: CatalogEvent['state']) =>
     request<void>(`/discovery-inbox/${id}`, {
       method: 'PATCH', body: JSON.stringify({ state }),
+    }),
+  updateSelectedDiscoveryEvents: (ids: number[], state: 'read' | 'ignored') =>
+    request<{ changed: number }>('/discovery-inbox/bulk', {
+      method: 'POST', body: JSON.stringify({ ids, state }),
     }),
   updateAllDiscoveryEvents: (state: 'read' | 'ignored' = 'read') =>
     request<{ changed: number }>('/discovery-inbox/bulk', {
@@ -129,9 +138,14 @@ export const api = {
     }),
   chapters: (workId: number, provider: string) =>
     request<Chapter[]>(`/works/${workId}/chapters?provider=${encodeURIComponent(provider)}`),
-  downloadChapter: (workId: number, provider: string, chapterId: string) =>
+  libraryCheck: (workId: number, provider: string) =>
+    request<{ status: 'found' | 'possible' | 'not_found' | 'unavailable', message: string, matches: { id: number, title: string, reason: string }[] }>(`/works/${workId}/library-check?provider=${encodeURIComponent(provider)}`),
+  heManagerStatus: () => request<{ configured: boolean }>('/integrations/he-manager'),
+  heManagerLogin: (username: string, password: string) => request<{ message: string }>('/integrations/he-manager/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  heManagerDisconnect: () => request<{ message: string }>('/integrations/he-manager', { method: 'DELETE' }),
+  downloadChapter: (workId: number, provider: string, chapterId: string, confirmLibraryRisk = false) =>
     request<Job>(`/works/${workId}/downloads`, {
-      method: 'POST', body: JSON.stringify({ provider, chapter_id: chapterId }),
+      method: 'POST', body: JSON.stringify({ provider, chapter_id: chapterId, confirm_library_risk: confirmLibraryRisk }),
     }),
   socialStatus: () => request<SocialStatus>('/social/status'),
   socialRadar: (authorId?: number, status?: string) => {

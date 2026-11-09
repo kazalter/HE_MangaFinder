@@ -83,3 +83,4 @@ class CatalogEventStateUpdate(BaseModel):
 class CatalogEventBulkUpdate(BaseModel):
     state: Literal["read", "ignored"] = "read"
     author_id: int | None = Field(default=None, ge=1)
+    ids: list[int] | None = Field(default=None, min_length=1, max_length=500)

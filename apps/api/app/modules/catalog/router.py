@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.session import get_session
 from app.modules.catalog.repository import CatalogRepository
 from app.modules.catalog.schemas import (
@@ -12,9 +13,11 @@ from app.modules.catalog.schemas import (
     WorkRead,
     WorkSourceRead,
 )
+from app.modules.integrations.he_manager import check_library
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.schemas import JobRead
 from app.modules.media.urls import work_cover_url
+from app.modules.system_config.security import require_admin
 from app.providers.base import ProviderCapability
 from app.providers.registry import ProviderRegistry
 
@@ -67,10 +70,16 @@ async def list_chapters(
     return [ChapterRead(**asdict(chapter)) for chapter in chapters]
 
 
-@router.post(
-    "/{work_id}/downloads", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED
-)
-def download_chapter(
+@router.get("/{work_id}/library-check", dependencies=[Depends(require_admin)])
+async def library_check(work_id: int, provider: str, session: SessionDep) -> dict:
+    source = CatalogRepository(session).get_source(work_id, provider)
+    if source is None:
+        raise HTTPException(status_code=404, detail="作品来源不存在")
+    return await check_library(get_settings(), source.work.title, source.source_url)
+
+
+@router.post("/{work_id}/downloads", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
+async def download_chapter(
     work_id: int, payload: DownloadCreate, request: Request, session: SessionDep
 ) -> JobRead:
     source = CatalogRepository(session).get_source(work_id, payload.provider)
@@ -82,8 +91,11 @@ def download_chapter(
         raise HTTPException(status_code=409, detail="该来源已停用，只保留历史记录")
     if ProviderCapability.DOWNLOAD not in source_provider.capabilities:
         raise HTTPException(status_code=409, detail="该来源不支持下载")
-    job = JobRepository(session).enqueue_download(
-        work_id, payload.provider, payload.chapter_id
-    )
+    result = await check_library(get_settings(), source.work.title, source.source_url)
+    if result["status"] != "not_found" and not payload.confirm_library_risk:
+        raise HTTPException(
+            status_code=409, detail="HE Manager 检查发现已有作品或检查未完成，请确认后再下载"
+        )
+    job = JobRepository(session).enqueue_download(work_id, payload.provider, payload.chapter_id)
     session.commit()
     return JobRead.model_validate(job)

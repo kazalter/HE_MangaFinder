@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     downloads_max_bytes: int = 0
     downloads_cleanup_target_ratio: float = 0.8
     cover_cache_dir: Path = Path("./data/cover-cache")
+    he_manager_base_url: str = ""
+    he_manager_token: str = ""
     komga_base_url: str = ""
     komga_api_key: str = ""
     komga_library_id: str = ""

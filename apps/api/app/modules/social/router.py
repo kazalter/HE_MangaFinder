@@ -77,12 +77,8 @@ def _post_read(post: SocialPost) -> SocialPostRead:
 
 
 def _account_read(account: SocialAccount) -> SocialAccountRead:
-    avatar_url = (
-        f"/api/social/accounts/{account.id}/avatar" if account.avatar_url else None
-    )
-    return SocialAccountRead.model_validate(account).model_copy(
-        update={"avatar_url": avatar_url}
-    )
+    avatar_url = f"/api/social/accounts/{account.id}/avatar" if account.avatar_url else None
+    return SocialAccountRead.model_validate(account).model_copy(update={"avatar_url": avatar_url})
 
 
 def _signal_read(session: Session, signal: ReleaseSignal) -> ReleaseSignalRead:
@@ -114,15 +110,13 @@ def _signal_read(session: Session, signal: ReleaseSignal) -> ReleaseSignalRead:
     )
 
 
-def _planned_release_read(
-    session: Session, planned: PlannedRelease
-) -> PlannedReleaseRead:
+def _planned_release_read(session: Session, planned: PlannedRelease) -> PlannedReleaseRead:
     author = SocialRepository(session).author(planned.author_id)
     signal_count = int(
         session.scalar(
-            select(func.count()).select_from(ReleaseSignal).where(
-                ReleaseSignal.planned_release_id == planned.id
-            )
+            select(func.count())
+            .select_from(ReleaseSignal)
+            .where(ReleaseSignal.planned_release_id == planned.id)
         )
         or 0
     )
@@ -158,20 +152,22 @@ def _activity_read(session: Session, activity: ActivityItem) -> ActivityItemRead
         is_read=activity.is_read,
         started_at=activity.started_at,
         ended_at=activity.ended_at,
-        posts=[
-            _post_read(post)
-            for post in repository.activity_posts(activity.id)
-        ],
+        posts=[_post_read(post) for post in repository.activity_posts(activity.id)],
     )
 
 
 def _digest_read(session: Session, digest: AuthorDigest) -> AuthorDigestRead:
     author = SocialRepository(session).author(digest.author_id)
-    evidence_posts = list(session.scalars(
-        select(SocialPost).join(SocialAccount, SocialAccount.id == SocialPost.account_id)
-        .where(SocialAccount.author_id == digest.author_id,
-               SocialPost.id.in_(digest.evidence_post_ids or []))
-    ))
+    evidence_posts = list(
+        session.scalars(
+            select(SocialPost)
+            .join(SocialAccount, SocialAccount.id == SocialPost.account_id)
+            .where(
+                SocialAccount.author_id == digest.author_id,
+                SocialPost.id.in_(digest.evidence_post_ids or []),
+            )
+        )
+    )
     return AuthorDigestRead(
         id=digest.id,
         author_id=digest.author_id,
@@ -199,7 +195,8 @@ def social_status(session: SessionDep) -> SocialStatusRead:
     unread = len(
         list(
             session.scalars(
-                select(ReleaseSignal.id).where(ReleaseSignal.is_read.is_(False))
+                select(ReleaseSignal.id)
+                .where(ReleaseSignal.is_read.is_(False))
                 .where(ReleaseSignal.status.in_(["pending", "confirmed", "linked"]))
             )
         )
@@ -219,27 +216,33 @@ def social_status(session: SessionDep) -> SocialStatusRead:
         candidate_threshold=settings.social_candidate_threshold,
         pending_count=repository.count_signals("pending"),
         unread_count=unread,
-        processing_pending=session.scalar(select(func.count()).select_from(SocialPostProcessing).where(
-            SocialPostProcessing.status == "pending"
-        )) or 0,
-        processing_retry=session.scalar(select(func.count()).select_from(SocialPostProcessing).where(
-            (SocialPostProcessing.status == "retry") | (SocialPostProcessing.ocr_status == "retry")
-        )) or 0,
+        processing_pending=session.scalar(
+            select(func.count())
+            .select_from(SocialPostProcessing)
+            .where(SocialPostProcessing.status == "pending")
+        )
+        or 0,
+        processing_retry=session.scalar(
+            select(func.count())
+            .select_from(SocialPostProcessing)
+            .where(
+                (SocialPostProcessing.status == "retry")
+                | (SocialPostProcessing.ocr_status == "retry")
+            )
+        )
+        or 0,
         daily_digest_enabled=settings.social_daily_digest_enabled,
         daily_digest_hour=settings.social_daily_digest_hour,
         daily_digest_timezone=settings.social_daily_digest_timezone,
     )
 
 
-@router.get(
-    "/authors/{author_id}/social-accounts", response_model=list[SocialAccountRead]
-)
+@router.get("/authors/{author_id}/social-accounts", response_model=list[SocialAccountRead])
 def list_social_accounts(author_id: int, session: SessionDep) -> list[SocialAccountRead]:
     if not AuthorRepository(session).get(author_id):
         raise HTTPException(status_code=404, detail="作者不存在")
     return [
-        _account_read(item)
-        for item in SocialRepository(session).accounts_for_author(author_id)
+        _account_read(item) for item in SocialRepository(session).accounts_for_author(author_id)
     ]
 
 
@@ -400,26 +403,25 @@ def list_planned_releases(
     session: SessionDep,
     author_id: int | None = None,
     include_closed: bool = False,
+    needs_match: bool = False,
     limit: Annotated[int, Query(ge=1, le=300)] = 100,
 ) -> list[PlannedReleaseRead]:
     statement = select(PlannedRelease)
     if author_id is not None:
         statement = statement.where(PlannedRelease.author_id == author_id)
-    if not include_closed:
+    if needs_match:
         statement = statement.where(
-            PlannedRelease.status.not_in(["released", "cancelled"])
+            PlannedRelease.status == "discovered",
+            PlannedRelease.suggested_group_id.is_not(None),
+            PlannedRelease.linked_group_id.is_(None),
         )
-    rows = list(
-        session.scalars(
-            statement.order_by(PlannedRelease.updated_at.desc()).limit(limit)
-        )
-    )
+    if not include_closed:
+        statement = statement.where(PlannedRelease.status.not_in(["released", "cancelled"]))
+    rows = list(session.scalars(statement.order_by(PlannedRelease.updated_at.desc()).limit(limit)))
     return [_planned_release_read(session, item) for item in rows]
 
 
-@router.patch(
-    "/social/planned-releases/{planned_id}", response_model=PlannedReleaseRead
-)
+@router.patch("/social/planned-releases/{planned_id}", response_model=PlannedReleaseRead)
 def update_planned_release(
     planned_id: int, payload: PlannedReleaseUpdate, session: SessionDep
 ) -> PlannedReleaseRead:
@@ -453,9 +455,7 @@ def list_activity(
     return [_activity_read(session, item) for item in rows]
 
 
-@router.get(
-    "/authors/{author_id}/social-digest", response_model=AuthorDigestRead | None
-)
+@router.get("/authors/{author_id}/social-digest", response_model=AuthorDigestRead | None)
 def get_author_digest(author_id: int, session: SessionDep) -> AuthorDigestRead | None:
     if not AuthorRepository(session).get(author_id):
         raise HTTPException(status_code=404, detail="作者不存在")
@@ -467,9 +467,7 @@ def get_author_digest(author_id: int, session: SessionDep) -> AuthorDigestRead |
     "/authors/{author_id}/social-digest/refresh",
     response_model=AuthorDigestRead | None,
 )
-async def refresh_author_digest(
-    author_id: int, session: SessionDep
-) -> AuthorDigestRead | None:
+async def refresh_author_digest(author_id: int, session: SessionDep) -> AuthorDigestRead | None:
     _require_social_enabled()
     if not AuthorRepository(session).get(author_id):
         raise HTTPException(status_code=404, detail="作者不存在")
@@ -490,9 +488,7 @@ def send_daily_digest(session: SessionDep) -> JobRead:
     return JobRead.model_validate(job)
 
 
-@router.get(
-    "/authors/{author_id}/social-posts", response_model=list[SocialPostRead]
-)
+@router.get("/authors/{author_id}/social-posts", response_model=list[SocialPostRead])
 def list_author_social_posts(
     author_id: int,
     session: SessionDep,
@@ -508,16 +504,12 @@ def list_author_social_posts(
     )
     if post_type:
         statement = statement.where(SocialPost.post_type == post_type)
-    rows = list(
-        session.scalars(statement.order_by(SocialPost.posted_at.desc()).limit(limit))
-    )
+    rows = list(session.scalars(statement.order_by(SocialPost.posted_at.desc()).limit(limit)))
     return [_post_read(post) for post in rows]
 
 
 @router.get("/social/posts/{post_id}/media/{media_index}", response_class=FileResponse)
-async def social_post_media(
-    post_id: int, media_index: int, session: SessionDep
-) -> Response:
+async def social_post_media(post_id: int, media_index: int, session: SessionDep) -> Response:
     post = session.get(SocialPost, post_id)
     if not post or media_index < 0 or media_index >= len(post.media):
         raise HTTPException(status_code=404, detail="帖子图片不存在")

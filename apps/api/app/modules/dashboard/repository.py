@@ -38,9 +38,7 @@ class DashboardRepository:
         now = datetime.now(UTC)
         since = now - timedelta(days=period_days)
         event_rows = list(
-            self.session.scalars(
-                select(CatalogEvent).where(CatalogEvent.created_at >= since)
-            )
+            self.session.scalars(select(CatalogEvent).where(CatalogEvent.created_at >= since))
         )
         new_works = sum(item.event_type == "work_discovered" for item in event_rows)
         new_editions = sum(item.event_type == "edition_discovered" for item in event_rows)
@@ -50,15 +48,9 @@ class DashboardRepository:
             editions=self._count(Work),
             new_works=new_works,
             new_editions=new_editions,
-            unread_discoveries=self._count_where(
-                CatalogEvent, CatalogEvent.state == "unread"
-            ),
-            pending_merges=self._count_where(
-                MergeSuggestion, MergeSuggestion.status == "pending"
-            ),
-            pending_signals=self._count_where(
-                ReleaseSignal, ReleaseSignal.status == "pending"
-            ),
+            unread_discoveries=self._count_where(CatalogEvent, CatalogEvent.state == "unread"),
+            pending_merges=self._count_where(MergeSuggestion, MergeSuggestion.status == "pending"),
+            pending_signals=self._count_where(ReleaseSignal, ReleaseSignal.status == "pending"),
             failed_provider_scans=self._count_where(
                 ProviderScanRun,
                 ProviderScanRun.status == "failed",
@@ -87,16 +79,16 @@ class DashboardRepository:
         state: str | None,
         author_id: int | None,
         limit: int,
+        offset: int = 0,
     ) -> list[CatalogEventRead]:
         statement = (
             select(CatalogEvent, Author, WorkGroup)
             .join(Author, Author.id == CatalogEvent.author_id)
             .outerjoin(WorkGroup, WorkGroup.id == CatalogEvent.group_id)
-            .options(
-                selectinload(WorkGroup.members).selectinload(WorkGroupMember.work)
-            )
+            .options(selectinload(WorkGroup.members).selectinload(WorkGroupMember.work))
             .order_by(CatalogEvent.created_at.desc(), CatalogEvent.id.desc())
             .limit(limit)
+            .offset(offset)
         )
         if state and state != "all":
             statement = statement.where(CatalogEvent.state == state)
@@ -132,8 +124,12 @@ class DashboardRepository:
         self.session.flush()
         return event
 
-    def set_all_event_states(self, state: str, author_id: int | None = None) -> int:
+    def set_all_event_states(
+        self, state: str, author_id: int | None = None, ids: list[int] | None = None
+    ) -> int:
         statement = select(CatalogEvent).where(CatalogEvent.state == "unread")
+        if ids is not None:
+            statement = statement.where(CatalogEvent.id.in_(ids))
         if author_id is not None:
             statement = statement.where(CatalogEvent.author_id == author_id)
         events = list(self.session.scalars(statement))
@@ -233,9 +229,7 @@ class DashboardRepository:
         ]
 
     @staticmethod
-    def _trend(
-        events: list[CatalogEvent], now: datetime, period_days: int
-    ) -> list[TrendPoint]:
+    def _trend(events: list[CatalogEvent], now: datetime, period_days: int) -> list[TrendPoint]:
         dates = [
             (now - timedelta(days=offset)).date().isoformat()
             for offset in reversed(range(period_days))
@@ -254,8 +248,5 @@ class DashboardRepository:
 
     def _count_where(self, model: type, *conditions: object) -> int:
         return int(
-            self.session.scalar(
-                select(func.count()).select_from(model).where(*conditions)
-            )
-            or 0
+            self.session.scalar(select(func.count()).select_from(model).where(*conditions)) or 0
         )

@@ -32,9 +32,10 @@ def discovery_inbox(
     ] = "unread",
     author_id: Annotated[int | None, Query(ge=1)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[CatalogEventRead]:
     return DashboardRepository(session).inbox(
-        state=state, author_id=author_id, limit=limit
+        state=state, author_id=author_id, limit=limit, offset=offset
     )
 
 
@@ -56,7 +57,7 @@ def update_discovery_events(
     session: SessionDep,
 ) -> dict[str, int]:
     changed = DashboardRepository(session).set_all_event_states(
-        payload.state, payload.author_id
+        payload.state, payload.author_id, payload.ids
     )
     session.commit()
     return {"changed": changed}

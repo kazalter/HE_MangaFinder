@@ -38,6 +38,7 @@ class ChapterRead(BaseModel):
 class DownloadCreate(BaseModel):
     provider: str
     chapter_id: str = Field(min_length=1, max_length=300)
+    confirm_library_risk: bool = False
 
 
 class WorkGroupAuthorRead(BaseModel):

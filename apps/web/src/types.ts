@@ -236,6 +236,23 @@ export interface Job {
   next_attempt_at: string | null
 }
 
+export interface FailedDownload {
+  job: Job
+  work_title: string | null
+  group_id: number | null
+}
+
+export interface PlannedRelease {
+  id: number
+  author_id: number
+  author_name: string
+  title: string
+  status: string
+  suggested_group_id: number | null
+  linked_group_id: number | null
+  updated_at: string
+}
+
 export interface Chapter {
   external_id: string
   title: string | null

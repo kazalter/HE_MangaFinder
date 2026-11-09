@@ -10,6 +10,7 @@ import { PageSelector } from './components/PageSelector'
 import { SocialRadar } from './components/SocialRadar'
 import { SystemSettings } from './components/SystemSettings'
 import { ThemedSelect } from './components/ThemedSelect'
+import { TodoWorkbench } from './components/TodoWorkbench'
 import { WorkCard } from './components/WorkCard'
 import { WorkCoverTile } from './components/WorkCoverTile'
 import { WorkDetail } from './components/WorkDetail'
@@ -21,7 +22,7 @@ type ViewMode = 'cards' | 'covers' | 'list'
 type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
 type WorkSort = 'first' | 'updated' | 'title' | 'year' | 'editions'
 type GroupMode = 'none' | 'author'
-export type LibraryMode = 'overview' | 'works' | 'authors'
+export type LibraryMode = 'overview' | 'works' | 'authors' | 'todo'
 
 const JOB_LABELS: Record<string, string> = {
   discover_author: '作品发现',
@@ -146,9 +147,10 @@ export default function App() {
   const [previewAuthorId, setPreviewAuthorId] = useState<number | null>(savedAuthorId)
   const [libraryMode, setLibraryMode] = useState<LibraryMode>(() => {
     const requested = new URLSearchParams(window.location.search).get('view')
+    if (requested === 'todo') return 'todo'
     if (requested === 'authors') return 'authors'
     if (requested === 'overview') return 'overview'
-    return savedChoice('mangafinder:library-mode', ['overview', 'works', 'authors'], 'overview')
+    return savedChoice('mangafinder:library-mode', ['overview', 'works', 'authors', 'todo'], 'overview')
   })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -389,12 +391,16 @@ export default function App() {
     setBusy(true)
     setError(null)
     try {
+      const check = await api.libraryCheck(edition.work_id, source.provider)
+      const matches = check.matches.map((item) => `• ${item.title}（${item.reason}）`).join('\n')
+      const detail = [check.message, matches].filter(Boolean).join('\n')
+      if (!window.confirm(`${detail}\n\n${check.status === 'not_found' ? '继续检查下载来源？' : '仍要继续下载吗？'}`)) return
       const chapters = await api.chapters(edition.work_id, source.provider)
       if (!chapters.length) throw new Error('这个来源暂时没有可下载章节')
       const chapter = chapters[0]
       const label = chapter.number ? `第 ${chapter.number} 话` : (chapter.title ?? '最新章节')
       if (!window.confirm(`从 ${source.provider} 把《${edition.title}》${label}加入 CBZ 下载队列？`)) return
-      await api.downloadChapter(edition.work_id, source.provider, chapter.external_id)
+      await api.downloadChapter(edition.work_id, source.provider, chapter.external_id, check.status !== 'not_found')
       await load()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '创建下载任务失败')
@@ -462,6 +468,12 @@ export default function App() {
     setSelectedId(null)
   }
 
+  function showTodo() {
+    setSettingsOpen(false)
+    setLibraryMode('todo')
+    setSelectedId(null)
+  }
+
   function showAllWorks() {
     setSettingsOpen(false)
     setPage(1)
@@ -504,7 +516,7 @@ export default function App() {
         libraryMode={libraryMode}
         busy={busy}
         onSelect={(id) => id === null ? showAllWorks() : openAuthorWorks(id)}
-        onModeChange={(mode) => mode === 'overview' ? showDashboard() : mode === 'authors' ? showAuthorDirectory() : showAllWorks()}
+        onModeChange={(mode) => mode === 'overview' ? showDashboard() : mode === 'todo' ? showTodo() : mode === 'authors' ? showAuthorDirectory() : showAllWorks()}
         onAdd={(name, aliases) => actForAuthorEdit(() => api.createAuthor(name, aliases))}
         onRefresh={(id) => act(() => api.refreshAuthor(id))}
         onDelete={async (id) => {
@@ -519,13 +531,15 @@ export default function App() {
         onOpenHistory={() => { setSettingsOpen(false); setHistoryOpen(true) }}
       />
 
-      <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : libraryMode === 'overview' ? 'dashboard-main' : ''}>
+      <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : libraryMode === 'overview' || libraryMode === 'todo' ? 'dashboard-main' : ''}>
         {error && <div className="alert" role="alert">
           <div className="alert-copy"><strong>操作失败</strong><span>{error}</span></div>
           <button className="alert-close" onClick={() => setError(null)} aria-label="关闭错误提示">×</button>
         </div>}
         {settingsOpen
           ? <SystemSettings onClose={() => setSettingsOpen(false)} />
+          : libraryMode === 'todo'
+            ? <TodoWorkbench works={works} onOpenWork={(id) => void openWork(id)} onOpenReviews={() => setReviewOpen(true)} onChanged={() => void load()} />
           : libraryMode === 'overview'
             ? dashboard
               ? <Dashboard

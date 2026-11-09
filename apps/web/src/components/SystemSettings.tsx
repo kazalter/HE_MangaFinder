@@ -47,6 +47,9 @@ export function SystemSettings({ onClose }: { onClose: () => void }) {
   const [cookieHeader, setCookieHeader] = useState('')
   const [storageState, setStorageState] = useState<Record<string, unknown> | null>(null)
   const [storageName, setStorageName] = useState('')
+  const [heUsername, setHeUsername] = useState('')
+  const [hePassword, setHePassword] = useState('')
+  const [heConnected, setHeConnected] = useState(false)
 
   const dirty = useMemo(() => {
     if (!config || !draft) return false
@@ -58,6 +61,8 @@ export function SystemSettings({ onClose }: { onClose: () => void }) {
     const next = await api.systemConfig()
     setConfig(next)
     setDraft(structuredClone(next))
+    const he = await api.heManagerStatus()
+    setHeConnected(he.configured)
   }
 
   useEffect(() => {
@@ -252,6 +257,7 @@ export function SystemSettings({ onClose }: { onClose: () => void }) {
         {section === 'deployment' && <>
           <div className="settings-section-title"><div><span>RUNTIME</span><h2>部署状态</h2><p>这些项目来自 Docker 和宿主机，只在这里检查，不在线改写。</p></div></div>
           <div className="settings-card"><div className="deployment-list"><div><span>MangaFinder API</span><strong className="state-ok">运行中</strong></div><div><span>Social Collector</span><strong className={config.deployment.collector_running ? 'state-ok' : 'state-bad'}>{config.deployment.collector_running ? '运行中' : '未连接'}</strong></div><div><span>X 会话目录</span><code>{config.deployment.x_session_dir}</code></div><div><span>社交媒体目录</span><code>{config.deployment.social_media_dir}</code></div><div><span>数据库</span><code>{config.deployment.database_url}</code></div></div></div>
+          <div className="settings-card"><h3>HE Manager 馆藏检查</h3><p className="setting-help">{heConnected ? '已连接。下载前会检查馆藏；登录会话过期后需重新连接。' : '登录 HE Manager 后，下载前会检查是否已拥有。密码不会保存。'}</p><div className="settings-form-grid"><Field label="HE Manager 用户名"><input value={heUsername} onChange={(event) => setHeUsername(event.target.value)} autoComplete="username" /></Field><Field label="HE Manager 密码"><input type="password" value={hePassword} onChange={(event) => setHePassword(event.target.value)} autoComplete="current-password" /></Field></div><div className="settings-card-actions"><button disabled={busy || !heUsername || !hePassword} onClick={() => void act(async () => { const result = await api.heManagerLogin(heUsername, hePassword); setHePassword(''); return { ok: true, message: result.message } })}>连接 HE Manager</button>{heConnected && <button disabled={busy} onClick={() => void act(async () => { const result = await api.heManagerDisconnect(); return { ok: true, message: result.message } })}>断开连接</button>}</div></div>
           <div className="settings-card"><h3>导出与阅读器</h3><p className="setting-help">备份包含可校验清单，默认排除管理员会话、系统凭证、Cookie 与通知载荷。</p><div className="settings-card-actions"><a href="/api/backup/catalog.json" download>导出 JSON</a><a href="/api/backup/archive" download>下载可验证备份</a><a href="/api/opds/v1.2/catalog.xml" target="_blank" rel="noreferrer">打开 OPDS</a></div><div className="settings-card-actions"><button onClick={() => void act(() => api.triggerLibraryScan('komga'))} disabled={busy}>触发 Komga 扫描</button><button onClick={() => void act(() => api.triggerLibraryScan('kavita'))} disabled={busy}>触发 Kavita 扫描</button></div><p className="setting-help">阅读器地址、Library ID 和 API Key 通过 Dockge 环境变量配置，密钥不会回显或导出。</p></div>
           <div className="settings-callout"><strong>在 Dockge 中修改</strong><p>Compose profile、数据卷路径、代理网络和容器间令牌决定服务能否启动，需要在部署环境中修改。</p><code>COMPOSE_PROFILES=social</code><code>MANGAFINDER_SOCIAL_COLLECTOR_TOKEN=…</code><code>MANGAFINDER_X_SESSION_HOST_DIR=…</code></div>
         </>}
