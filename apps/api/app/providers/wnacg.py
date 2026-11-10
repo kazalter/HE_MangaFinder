@@ -3,6 +3,7 @@ import html
 import re
 import unicodedata
 import zipfile
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from app.providers.base import (
 )
 from app.providers.errors import AuthorNotFoundError, ProviderError, describe_http_error
 
+Sleep = Callable[[float], Awaitable[None]]
 
 class WnacgProvider:
     name = "wnacg"
@@ -33,12 +35,16 @@ class WnacgProvider:
     )
     canonical_url = "https://www.wnacg.com"
 
+    # Leading event / release-type markers, e.g. "(C85) (同人誌) [Circle (Artist)]".
     _event_prefix_re = re.compile(
         r"^\s*[（(](?:c\d+[a-z]?|comiket\s*\d+|comic\s*market\s*\d+|"
-        r"ac\d+|comitia\s*\d+|コミティア\s*\d+)[）)]\s*",
+        r"ac\d+|comitia\s*\d+|コミティア\s*\d+|comic1\s*☆?\s*\d+|"
+        r"sc\d+|例大祭\s*\d*|紅楼夢\s*\d*|ff\d+|cr\d+|"
+        r"同人誌|同人cg集|成年コミック|一般コミック)[）)]\s*",
         re.IGNORECASE,
     )
     _creator_prefix_re = re.compile(r"^\s*[\[【]([^\]】]{1,160})[\]】]")
+    _credit_separator_re = re.compile(r"[/／|｜,，、;；&＆+＋×]")
     _non_creator_re = re.compile(
         r"汉化|漢化|翻译|翻譯|翻訳|扫图|掃圖|嵌字|机翻|機翻|校对|校對|"
         r"修图|修圖|去码|去碼|無修正|无修正|scan(?:lation)?|translat",
@@ -72,6 +78,7 @@ class WnacgProvider:
         cookie: str = "",
         max_search_pages: int = 5,
         client: httpx.AsyncClient | None = None,
+        sleep: Sleep = asyncio.sleep,
     ) -> None:
         if not base_urls:
             raise ValueError("WNACG 至少需要一个候选域名")
@@ -79,6 +86,7 @@ class WnacgProvider:
         self._active_base_url: str | None = None
         self._max_search_pages = max(1, min(max_search_pages, 20))
         self._owns_client = client is None
+        self._sleep = sleep
         headers = {
             "User-Agent": user_agent,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -119,7 +127,7 @@ class WnacgProvider:
             )
             page_works, _ = self.parse_search(response.text, base_url)
             works.extend(page_works)
-            await asyncio.sleep(0.25)
+            await self._sleep(0.25)
         unique_works = list({work.external_id: work for work in works}.values())
         all_names = author_names or {author_name}
         verified = [
@@ -224,19 +232,46 @@ class WnacgProvider:
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for index, image_url in enumerate(image_urls, start=1):
-                    try:
-                        image_response = await self._client.get(image_url, headers=headers)
-                        image_response.raise_for_status()
-                    except httpx.HTTPError as exc:
-                        raise ProviderError(f"WNACG 第 {index} 页下载失败: {exc}") from exc
+                    image_response = await self._download_image(index, image_url, headers)
                     suffix = Path(image_response.url.path).suffix or ".jpg"
                     archive.writestr(f"{index:04d}{suffix}", image_response.content)
-                    await asyncio.sleep(0.08)
+                    await self._sleep(0.08)
             temporary.replace(output)
         except Exception:
             temporary.unlink(missing_ok=True)
             raise
         return str(output)
+
+    _image_attempts = 3
+
+    async def _download_image(
+        self, index: int, image_url: str, headers: dict[str, str]
+    ) -> httpx.Response:
+        """Fetch one page, retrying transient failures so long galleries can finish."""
+
+        for attempt in range(1, self._image_attempts + 1):
+            try:
+                response = await self._client.get(image_url, headers=headers)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                transient = status == 429 or status >= 500
+                if not transient or attempt == self._image_attempts:
+                    raise ProviderError(
+                        f"WNACG 第 {index} 页下载失败: {describe_http_error(exc)}"
+                    ) from exc
+            except httpx.HTTPError as exc:
+                if attempt == self._image_attempts:
+                    raise ProviderError(
+                        f"WNACG 第 {index} 页下载失败: {describe_http_error(exc)}"
+                    ) from exc
+            else:
+                content_type = response.headers.get("content-type", "").lower()
+                if content_type.startswith("text/html") or not response.content:
+                    raise ProviderError(f"WNACG 第 {index} 页不是有效图片")
+                return response
+            await self._sleep(1.5 * attempt)
+        raise ProviderError(f"WNACG 第 {index} 页下载失败")
 
     async def _request_site(
         self, path: str, params: dict[str, str] | None = None
@@ -312,7 +347,7 @@ class WnacgProvider:
                     status="completed" if "完結" in title or "完结" in title else None,
                     # WNACG labels this as creation/upload time, not original release year.
                     year=None,
-                    language="zh-Hant",
+                    language=cls._language(category),
                     tags=tags,
                     source_updated_at=published,
                     raw_metadata={
@@ -330,6 +365,16 @@ class WnacgProvider:
         ]
         return works, max(pages, default=1)
 
+    @staticmethod
+    def _language(category: str | None) -> str:
+        # Category suffixes state the edition language; unlabeled categories on this
+        # site are Chinese uploads.
+        if category and "日語" in category:
+            return "ja"
+        if category and "English" in category:
+            return "en"
+        return "zh-Hant"
+
     @classmethod
     def matches_creator_credit(
         cls, title: str, author_name: str, all_names: set[str] | None = None,
@@ -338,7 +383,7 @@ class WnacgProvider:
 
         check_names = all_names or {author_name}
         value = unicodedata.normalize("NFKC", html.unescape(title)).strip()
-        value = cls._event_prefix_re.sub("", value)
+        value = cls._strip_event_prefixes(value)
 
         # Skip non-creator brackets (scanlation/translation groups) to find
         # the real creator credit.
@@ -350,9 +395,13 @@ class WnacgProvider:
             candidate = " ".join(match.group(1).split()).strip()
             if not candidate:
                 return False
-            if cls._non_creator_re.search(candidate):
-                value = value[match.end():].lstrip()
-                value = cls._event_prefix_re.sub("", value)
+            rest = value[match.end():].lstrip()
+            after_event = cls._strip_event_prefixes(rest)
+            # Releases are credited as "(event) [Circle (Artist)] Title"; a bracket
+            # placed before the event marker is a release/scanlation group prefix.
+            group_prefix = after_event != rest and cls._creator_prefix_re.match(after_event)
+            if cls._non_creator_re.search(candidate) or group_prefix:
+                value = after_event
                 continue
             credit = candidate
             break
@@ -368,7 +417,7 @@ class WnacgProvider:
         for v in tuple(candidates):
             candidates.update(
                 part.strip()
-                for part in re.split(r"[/／|｜,&＆+＋]", v)
+                for part in cls._credit_separator_re.split(v)
                 if part.strip()
             )
         return any(
@@ -376,6 +425,15 @@ class WnacgProvider:
             and any(cls._identity(item) == identity for item in candidates)
             for name in check_names
         )
+
+    @classmethod
+    def _strip_event_prefixes(cls, value: str) -> str:
+        for _ in range(3):
+            stripped = cls._event_prefix_re.sub("", value, count=1)
+            if stripped == value:
+                break
+            value = stripped
+        return value
 
     @staticmethod
     def _identity(value: str) -> str:
@@ -416,7 +474,11 @@ class WnacgProvider:
             for marker in (
                 "<title>just a moment...</title>",
                 "<title>redirecting...</title>",
-                "challenge-platform",
+                "<title>attention required! | cloudflare</title>",
+                # Normal Cloudflare pages also load /cdn-cgi/challenge-platform/ scripts,
+                # so only markers unique to an interstitial challenge are used.
+                "window._cf_chl_opt",
+                "cf-chl-widget",
                 "router.parklogic.com",
             )
         )

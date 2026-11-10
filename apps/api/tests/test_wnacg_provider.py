@@ -153,3 +153,111 @@ def test_matches_creator_credit_skips_scanlator_prefix_and_supports_alias_set() 
     assert WnacgProvider.matches_creator_credit(title, "ピアニッシモ")
     assert WnacgProvider.matches_creator_credit(title, "pija", {"pija", "ピジャ", "ピアニッシモ"})
     assert not WnacgProvider.matches_creator_credit(title, "無毒汉化组")
+
+
+async def _no_sleep(_: float) -> None:
+    return None
+
+
+@pytest.mark.parametrize(
+    ("title", "author"),
+    [
+        # Real titles: Japanese comma between names, group bracket before the event.
+        ("[DA HOOTCH (新堂エル、ShindoL)] 女ゆうしゃノ旅1-6 [中国翻訳]", "ShindoL"),
+        ("[DA HOOTCH (新堂エル、ShindoL)] 女ゆうしゃノ旅1-6 [中国翻訳]", "新堂エル"),
+        ("[祐希堂](C84) [Da Hootch (ShindoL)] TSF Monogatari Append 1.0[祐希堂]", "ShindoL"),
+        ("[作者A×作者B] 合作本", "作者B"),
+        ("(COMIC1☆13) [DA HOOTCH (新堂エル)] BOUDICA (FateGrand Order)", "新堂エル"),
+        ("(C85) (同人誌) [DA HOOTCH (新堂エル)] PIG (ゼルダの伝説)", "新堂エル"),
+        ("[有毒気漢化組] (COMIC1☆11) [Da Hootch (新堂エル)] MILDRED 準備号", "新堂エル"),
+    ],
+)
+def test_matches_real_world_creator_credit_formats(title: str, author: str) -> None:
+    assert WnacgProvider.matches_creator_credit(title, author)
+
+
+def test_group_prefix_before_event_is_not_a_creator_credit() -> None:
+    title = "[祐希堂](C84) [Da Hootch (ShindoL)] TSF Monogatari Append 1.0[祐希堂]"
+    assert not WnacgProvider.matches_creator_credit(title, "祐希堂")
+
+
+def test_reads_edition_language_from_category() -> None:
+    html = (FIXTURES / "wnacg_search.html").read_text()
+    for css_class, language in [("cate-20", "zh-Hant"), ("cate-13", "ja"), ("cate-17", "en")]:
+        works, _ = WnacgProvider.parse_search(
+            html.replace("cate-20", css_class), "https://mirror.example.test"
+        )
+        assert works[0].language == language
+
+
+def test_normal_cloudflare_javascript_is_not_a_challenge_page() -> None:
+    html = (
+        "<title>搜索</title><li class='gallary_item'></li>"
+        '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+    )
+    assert WnacgProvider._is_challenge(html) is False
+    assert WnacgProvider._is_challenge("<title>Just a moment...</title>") is True
+
+
+async def test_retries_transient_image_failures(tmp_path: Path) -> None:
+    gallery_html = (FIXTURES / "wnacg_gallery.html").read_text()
+    attempts: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/photos-gallery-aid-277305.html":
+            return httpx.Response(200, text=gallery_html)
+        if request.url.host == "img.example.test":
+            attempts[request.url.path] = attempts.get(request.url.path, 0) + 1
+            if attempts[request.url.path] == 1:
+                raise httpx.ReadTimeout("slow", request=request)
+            if attempts[request.url.path] == 2:
+                return httpx.Response(502)
+            return httpx.Response(200, content=b"image")
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = WnacgProvider(
+            user_agent="test",
+            base_urls=["https://mirror.example.test"],
+            client=client,
+            sleep=_no_sleep,
+        )
+        await provider.download_chapter("277305", "277305", str(tmp_path / "g.cbz"))
+
+    assert set(attempts.values()) == {3}
+    with zipfile.ZipFile(tmp_path / "g.cbz") as archive:
+        assert len(archive.namelist()) == 2
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(404),
+        httpx.Response(200, headers={"content-type": "text/html"}, text="<html>error</html>"),
+    ],
+)
+async def test_rejects_missing_or_html_image_without_leaving_partial_file(
+    tmp_path: Path, response: httpx.Response
+) -> None:
+    gallery_html = (FIXTURES / "wnacg_gallery.html").read_text()
+    image_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal image_requests
+        if request.url.path == "/photos-gallery-aid-277305.html":
+            return httpx.Response(200, text=gallery_html)
+        image_requests += 1
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = WnacgProvider(
+            user_agent="test",
+            base_urls=["https://mirror.example.test"],
+            client=client,
+            sleep=_no_sleep,
+        )
+        with pytest.raises(ProviderError, match="第 1 页"):
+            await provider.download_chapter("277305", "277305", str(tmp_path / "g.cbz"))
+
+    assert image_requests == 1
+    assert list(tmp_path.iterdir()) == []
