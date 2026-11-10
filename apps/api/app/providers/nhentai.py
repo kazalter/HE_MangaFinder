@@ -105,13 +105,15 @@ class NhentaiProvider:
 
     # Documented per-IP quotas of https://nhentai.net/api/v2/docs, kept slightly
     # below the published values so concurrent scans do not trip HTTP 429.
-    _anonymous_limits = {"search": 9, "gallery": 18, "tag": 13, "tagged": 13}
-    _api_key_limits = {"search": 18, "gallery": 40, "tag": 27, "tagged": 27}
+    _anonymous_limits = {"search": 9, "gallery": 18, "tag": 13, "tagged": 13, "cdn": 10}
+    _api_key_limits = {"search": 18, "gallery": 40, "tag": 27, "tagged": 27, "cdn": 10}
     _max_rate_limit_retries = 2
     _max_retry_after_seconds = 90.0
     _tagged_page_size = 100
     _detail_limit = 8
     _tag_lookup_batch = 100
+    _image_attempts = 4
+    _download_concurrency = 3
 
     def __init__(
         self,
@@ -138,6 +140,7 @@ class NhentaiProvider:
             headers["Cookie"] = cookie
         self._api_headers = {"Authorization": f"Key {api_key.strip()}"} if api_key.strip() else {}
         limits = self._api_key_limits if self._api_headers else self._anonymous_limits
+        self._image_servers: list[str] | None = None
         self._limiters = {
             bucket: _RateLimiter(limit, sleep, clock) for bucket, limit in limits.items()
         }
@@ -357,22 +360,87 @@ class NhentaiProvider:
         output.parent.mkdir(parents=True, exist_ok=True)
         temporary = output.with_suffix(output.suffix + ".part")
         referer = f"{self._base_url}/g/{gallery.external_id}/"
+        servers = await self._load_image_servers()
+        urls = gallery.image_urls
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                for index, image_url in enumerate(gallery.image_urls, start=1):
+                # Small concurrent batches keep memory bounded while pages are still
+                # written in reading order.
+                for start in range(0, len(urls), self._download_concurrency):
+                    chunk = urls[start : start + self._download_concurrency]
+                    batch = list(enumerate(chunk, start + 1))
                     try:
-                        response = await self._client.get(image_url, headers={"Referer": referer})
-                        response.raise_for_status()
-                    except httpx.HTTPError as exc:
-                        raise ProviderError(f"nHentai 第 {index} 页下载失败: {exc}") from exc
-                    suffix = Path(response.url.path).suffix or Path(image_url).suffix or ".jpg"
-                    archive.writestr(f"{index:04d}{suffix}", response.content)
+                        async with asyncio.TaskGroup() as group:
+                            tasks = [
+                                group.create_task(
+                                    self._download_image(index, url, referer, servers)
+                                )
+                                for index, url in batch
+                            ]
+                    except ExceptionGroup as errors:
+                        raise errors.exceptions[0] from None
+                    for (index, url), task in zip(batch, tasks, strict=True):
+                        response = task.result()
+                        suffix = Path(response.url.path).suffix or Path(url).suffix or ".jpg"
+                        archive.writestr(f"{index:04d}{suffix}", response.content)
                     await self._sleep(0.06)
             temporary.replace(output)
-        except Exception:
+        except BaseException:
             temporary.unlink(missing_ok=True)
             raise
         return str(output)
+
+    async def _load_image_servers(self) -> list[str]:
+        """Read the official image mirror list once; downloads fall back across it."""
+
+        if self._image_servers is not None:
+            return self._image_servers
+        servers: list[str] = []
+        try:
+            payload = await self._request_api("/api/v2/cdn", bucket="cdn")
+        except ProviderError:
+            payload = None
+        raw = payload.get("image_servers") if isinstance(payload, dict) else None
+        for value in raw if isinstance(raw, list) else []:
+            parsed = urlsplit(str(value))
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme == "https" and host.endswith(".nhentai.net"):
+                servers.append(f"https://{host}")
+        self._image_servers = list(dict.fromkeys(servers))
+        return self._image_servers
+
+    async def _download_image(
+        self, index: int, image_url: str, referer: str, servers: list[str]
+    ) -> httpx.Response:
+        """Fetch one page, retrying transient failures on the alternate image servers."""
+
+        parsed = urlsplit(image_url)
+        tail = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        candidates = list(
+            dict.fromkeys([image_url, *(f"{server}{tail}" for server in servers)])
+        )
+        detail = "未知错误"
+        for attempt in range(self._image_attempts):
+            url = candidates[attempt % len(candidates)]
+            try:
+                response = await self._client.get(url, headers={"Referer": referer})
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = describe_http_error(exc)
+                status = exc.response.status_code
+                # 404 can be a mirror that has not synced yet; other 4xx are final.
+                if status < 500 and status not in {404, 408, 429}:
+                    break
+            except httpx.HTTPError as exc:
+                detail = describe_http_error(exc)
+            else:
+                content_type = response.headers.get("content-type", "").lower()
+                if response.content and not content_type.startswith(("text/", "application/json")):
+                    return response
+                detail = "响应不是有效图片"
+            if attempt + 1 < self._image_attempts:
+                await self._sleep(min(1.0 * (attempt + 1), 4.0))
+        raise ProviderError(f"nHentai 第 {index} 页下载失败: {detail}")
 
     async def _gallery(self, external_id: str) -> NhentaiGallery:
         self._validate_id(external_id)

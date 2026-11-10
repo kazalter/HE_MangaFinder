@@ -385,3 +385,96 @@ async def test_artist_transport_error_stops_before_search_fallback() -> None:
         with pytest.raises(ProviderError, match="超时"):
             await provider.discover_by_author("mignon")
     assert requests == ["/api/v2/tags/artist/mignon"]
+
+
+def _gallery_with_pages(count: int) -> dict[str, object]:
+    payload = json.loads((FIXTURES / "nhentai_gallery.json").read_text())
+    payload.pop("images")
+    payload["pages"] = [
+        {"number": index, "path": f"galleries/3000000/{index}.jpg"}
+        for index in range(1, count + 1)
+    ]
+    return payload
+
+
+async def test_download_falls_back_to_cdn_mirrors_and_keeps_page_order(tmp_path: Path) -> None:
+    attempts: dict[str, list[str]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/galleries/123456":
+            return httpx.Response(200, json=_gallery_with_pages(7))
+        if request.url.path == "/api/v2/cdn":
+            return httpx.Response(
+                200,
+                json={
+                    "image_servers": [
+                        "https://i1.nhentai.net",
+                        "https://i2.nhentai.net",
+                        "https://attacker.example",
+                    ]
+                },
+            )
+        if request.url.host.endswith(".nhentai.net"):
+            hosts = attempts.setdefault(request.url.path, [])
+            hosts.append(request.url.host)
+            if request.url.path.endswith("/2.jpg") and len(hosts) == 1:
+                raise httpx.ConnectTimeout("slow", request=request)
+            if request.url.path.endswith("/5.jpg") and len(hosts) < 3:
+                return httpx.Response(502)
+            return httpx.Response(
+                200, headers={"content-type": "image/jpeg"}, content=request.url.path.encode()
+            )
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(user_agent="test", client=client, sleep=_no_sleep)
+        output = tmp_path / "book.cbz"
+        await provider.download_chapter("123456", "123456", str(output))
+
+    assert attempts["/galleries/3000000/2.jpg"] == ["i.nhentai.net", "i1.nhentai.net"]
+    assert attempts["/galleries/3000000/5.jpg"] == [
+        "i.nhentai.net",
+        "i1.nhentai.net",
+        "i2.nhentai.net",
+    ]
+    assert all("attacker.example" not in hosts for hosts in attempts.values())
+    with zipfile.ZipFile(output) as archive:
+        names = archive.namelist()
+        assert names == [f"{index:04d}.jpg" for index in range(1, 8)]
+        assert [archive.read(name) for name in names] == [
+            f"/galleries/3000000/{index}.jpg".encode() for index in range(1, 8)
+        ]
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_requests", "message"),
+    [
+        (httpx.Response(403), 1, "HTTP 403"),
+        (
+            httpx.Response(200, headers={"content-type": "text/html"}, text="<html>x</html>"),
+            4,
+            "不是有效图片",
+        ),
+    ],
+)
+async def test_download_rejects_bad_pages_without_leaving_partial_file(
+    tmp_path: Path, response: httpx.Response, expected_requests: int, message: str
+) -> None:
+    image_requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/galleries/123456":
+            return httpx.Response(200, json=_gallery_with_pages(1))
+        if request.url.path == "/api/v2/cdn":
+            return httpx.Response(200, json={"image_servers": ["https://i1.nhentai.net"]})
+        image_requests.append(str(request.url))
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(user_agent="test", client=client, sleep=_no_sleep)
+        with pytest.raises(ProviderError, match=message) as error:
+            await provider.download_chapter("123456", "123456", str(tmp_path / "book.cbz"))
+
+    assert "galleries/3000000" not in str(error.value)
+    assert len(image_requests) == expected_requests
+    assert list(tmp_path.iterdir()) == []
