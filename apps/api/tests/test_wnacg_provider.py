@@ -1,3 +1,4 @@
+import asyncio
 import zipfile
 from pathlib import Path
 
@@ -240,13 +241,12 @@ async def test_rejects_missing_or_html_image_without_leaving_partial_file(
     tmp_path: Path, response: httpx.Response
 ) -> None:
     gallery_html = (FIXTURES / "wnacg_gallery.html").read_text()
-    image_requests = 0
+    image_requests: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal image_requests
         if request.url.path == "/photos-gallery-aid-277305.html":
             return httpx.Response(200, text=gallery_html)
-        image_requests += 1
+        image_requests.append(request.url.path)
         return response
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -259,5 +259,45 @@ async def test_rejects_missing_or_html_image_without_leaving_partial_file(
         with pytest.raises(ProviderError, match="第 1 页"):
             await provider.download_chapter("277305", "277305", str(tmp_path / "g.cbz"))
 
-    assert image_requests == 1
+    # Permanent failures are not retried; pages of one batch are requested once each.
+    assert len(image_requests) == len(set(image_requests)) == 2
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_downloads_pages_concurrently_in_reading_order(tmp_path: Path) -> None:
+    urls = "".join(
+        f'{{ url: fast_img_host+\\"//img.example.test/data/{index}.jpg\\", caption: \\"\\"}},'
+        for index in range(1, 8)
+    )
+    gallery_html = f"<script>var imglist = [{urls}];</script>"
+    in_flight = 0
+    peak = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, peak
+        if request.url.path == "/photos-gallery-aid-277305.html":
+            return httpx.Response(200, text=gallery_html)
+        in_flight += 1
+        peak = max(peak, in_flight)
+        # Later pages finish first, so ordering must not depend on completion order.
+        await asyncio.sleep(0.01 * (10 - int(Path(request.url.path).stem)))
+        in_flight -= 1
+        return httpx.Response(200, content=request.url.path.encode())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = WnacgProvider(
+            user_agent="test",
+            base_urls=["https://mirror.example.test"],
+            client=client,
+            sleep=_no_sleep,
+        )
+        output = tmp_path / "g.cbz"
+        await provider.download_chapter("277305", "277305", str(output))
+
+    assert peak == 3
+    with zipfile.ZipFile(output) as archive:
+        names = archive.namelist()
+        assert names == [f"{index:04d}.jpg" for index in range(1, 8)]
+        assert [archive.read(name) for name in names] == [
+            f"/data/{index}.jpg".encode() for index in range(1, 8)
+        ]

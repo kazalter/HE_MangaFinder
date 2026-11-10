@@ -231,18 +231,32 @@ class WnacgProvider:
         headers = {"Referer": f"{base_url}/photos-index-aid-{work_external_id}.html"}
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                for index, image_url in enumerate(image_urls, start=1):
-                    image_response = await self._download_image(index, image_url, headers)
-                    suffix = Path(image_response.url.path).suffix or ".jpg"
-                    archive.writestr(f"{index:04d}{suffix}", image_response.content)
-                    await self._sleep(0.08)
+                # Small concurrent batches (within the client's connection limit) keep
+                # memory bounded while pages are still written in reading order.
+                for start in range(0, len(image_urls), self._download_concurrency):
+                    chunk = image_urls[start : start + self._download_concurrency]
+                    batch = list(enumerate(chunk, start + 1))
+                    try:
+                        async with asyncio.TaskGroup() as group:
+                            tasks = [
+                                group.create_task(self._download_image(index, url, headers))
+                                for index, url in batch
+                            ]
+                    except ExceptionGroup as errors:
+                        raise errors.exceptions[0] from None
+                    for (index, _), task in zip(batch, tasks, strict=True):
+                        image_response = task.result()
+                        suffix = Path(image_response.url.path).suffix or ".jpg"
+                        archive.writestr(f"{index:04d}{suffix}", image_response.content)
+                    await self._sleep(0.1)
             temporary.replace(output)
-        except Exception:
+        except BaseException:
             temporary.unlink(missing_ok=True)
             raise
         return str(output)
 
     _image_attempts = 3
+    _download_concurrency = 3
 
     async def _download_image(
         self, index: int, image_url: str, headers: dict[str, str]
