@@ -10,21 +10,21 @@ from app.providers.nhentai import NhentaiProvider
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def embedded_html(*payloads: dict[str, object]) -> str:
-    scripts = "".join(
-        '<script type="application/json">'
-        + json.dumps(
-            {
-                "status": 200,
-                "statusText": "OK",
-                "headers": {"content-type": "application/json"},
-                "body": json.dumps(payload),
-            }
-        )
-        + "</script>"
-        for payload in payloads
-    )
-    return f"<!doctype html><html><body>{scripts}</body></html>"
+async def _no_sleep(_: float) -> None:
+    return None
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.value = 1000.0
+        self.slept: list[float] = []
+
+    def now(self) -> float:
+        return self.value
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(round(seconds, 4))
+        self.value += seconds
 
 
 def test_parses_search_gallery_metadata_and_images() -> None:
@@ -62,7 +62,7 @@ async def test_discovers_exact_artist_across_pages_and_downloads_cbz(
     ]
     gallery_payload.pop("images")
     artist_payload = {
-        "id": 1,
+        "id": 77,
         "type": "artist",
         "name": "mignon",
         "slug": "mignon",
@@ -76,21 +76,28 @@ async def test_discovers_exact_artist_across_pages_and_downloads_cbz(
                 "japanese_title": "[MIGNON WORKS (mignon)] おなかサマー2",
                 "thumbnail": "galleries/3000000/thumb.webp",
                 "num_pages": 2,
+                "tag_ids": [77, 12227],
             }
         ],
         "num_pages": 2,
     }
+    requested: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/artist/mignon/":
+        requested.append(request.url.path)
+        if request.url.path == "/api/v2/tags/artist/mignon":
+            return httpx.Response(200, json=artist_payload)
+        if request.url.path == "/api/v2/galleries/tagged":
+            assert request.url.params["tag_id"] == "77"
+            assert request.url.params["per_page"] == "100"
             page = request.url.params.get("page")
             payload = listing_payload if page == "1" else {"result": [], "num_pages": 2}
-            return httpx.Response(200, text=embedded_html(artist_payload, payload))
-        if request.url.path == "/g/123456/":
-            return httpx.Response(200, text=embedded_html(gallery_payload))
+            return httpx.Response(200, json=payload)
+        if request.url.path == "/api/v2/galleries/123456":
+            return httpx.Response(200, json=gallery_payload)
         if request.url.host == "i.nhentai.net":
             return httpx.Response(200, content=f"image:{request.url.path}".encode())
-        return httpx.Response(404)
+        return httpx.Response(404, json={"error": "Not found"})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = NhentaiProvider(
@@ -113,14 +120,95 @@ async def test_discovers_exact_artist_across_pages_and_downloads_cbz(
     with zipfile.ZipFile(output) as archive:
         assert archive.namelist() == ["0001.webp", "0002.jpg"]
         assert archive.read("0001.webp").startswith(b"image:")
+    # Every metadata request goes to the JSON API; HTML pages are behind Cloudflare.
+    assert not any(path.startswith(("/artist/", "/search/", "/g/")) for path in requested)
     await client.aclose()
 
 
-async def test_discovers_provider_alias_from_plain_search_details() -> None:
-    base_gallery = json.loads((FIXTURES / "nhentai_gallery.json").read_text())
+async def test_keeps_listed_gallery_when_detail_lookup_fails() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/tags/artist/mignon":
+            return httpx.Response(200, json={"id": 77, "type": "artist", "name": "mignon"})
+        if request.url.path == "/api/v2/galleries/tagged":
+            return httpx.Response(
+                200,
+                json={
+                    "result": [
+                        {
+                            "id": 5,
+                            "media_id": "50",
+                            "english_title": "Listed",
+                            "thumbnail": "galleries/50/thumb.jpg",
+                            "num_pages": 3,
+                            "tag_ids": [77],
+                        }
+                    ],
+                    "num_pages": 1,
+                },
+            )
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(user_agent="test", client=client, sleep=_no_sleep)
+        works = await provider.discover_by_author("mignon")
+
+    assert [work.title for work in works] == ["Listed"]
+    assert works[0].raw_metadata["artists"] == ["mignon"]
+
+
+async def test_resolves_artist_tag_from_exact_search_when_slug_is_missing() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.path}?{request.url.query.decode()}")
+        if request.url.path == "/api/v2/tags/artist/shin-dol":
+            return httpx.Response(404, json={"error": "Tag not found"})
+        if request.url.path == "/api/v2/search":
+            assert request.url.params["query"] == 'artist:"Shin Dol"'
+            return httpx.Response(
+                200,
+                json={
+                    "result": [
+                        {"id": 1, "media_id": "10", "english_title": "A", "tag_ids": [9, 3]},
+                        {"id": 2, "media_id": "20", "english_title": "B", "tag_ids": [9]},
+                    ],
+                    "num_pages": 1,
+                },
+            )
+        if request.url.path == "/api/v2/tags/ids":
+            assert request.url.params["ids"] == "9,3"
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": 9, "type": "artist", "name": "shindol"},
+                    {"id": 3, "type": "language", "name": "japanese"},
+                ],
+            )
+        if request.url.path == "/api/v2/galleries/tagged":
+            assert request.url.params["tag_id"] == "9"
+            return httpx.Response(
+                200,
+                json={
+                    "result": [
+                        {"id": 1, "media_id": "10", "english_title": "A", "tag_ids": [9]}
+                    ],
+                    "num_pages": 1,
+                },
+            )
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(user_agent="test", client=client, sleep=_no_sleep)
+        works = await provider.discover_by_author("Shin Dol")
+
+    assert [work.external_id for work in works] == ["1"]
+    assert works[0].raw_metadata["artists"] == ["shindol"]
+
+
+async def test_discovers_provider_alias_from_plain_search_tags() -> None:
     requested_urls: list[str] = []
 
-    def listing(ids: list[int]) -> dict[str, object]:
+    def listing(ids: list[int], tags: dict[int, list[int]]) -> dict[str, object]:
         return {
             "result": [
                 {
@@ -130,50 +218,113 @@ async def test_discovers_provider_alias_from_plain_search_details() -> None:
                     "japanese_title": f"作品 {gallery_id}",
                     "thumbnail": f"galleries/{gallery_id + 1000}/thumb.webp",
                     "num_pages": 2,
+                    "tag_ids": tags.get(gallery_id, []),
                 }
                 for gallery_id in ids
             ],
             "num_pages": 1,
         }
 
-    def gallery(gallery_id: int, artist: str) -> dict[str, object]:
-        payload = json.loads(json.dumps(base_gallery))
-        payload["id"] = gallery_id
-        payload["media_id"] = str(gallery_id + 1000)
-        payload["title"]["pretty"] = f"Work {gallery_id}"
-        payload["tags"][0]["name"] = artist
-        return payload
-
     def handler(request: httpx.Request) -> httpx.Response:
         requested_urls.append(str(request.url))
-        query = request.url.params.get("q")
-        if request.url.path == "/search/" and query == "artist:ラマンダ":
-            return httpx.Response(200, text=embedded_html(listing([])))
-        if request.url.path == "/search/" and query == "ラマンダ":
-            return httpx.Response(200, text=embedded_html(listing([101, 102, 103])))
-        if request.url.path == "/artist/ramanda/":
-            artist = {"id": 1, "type": "artist", "name": "ramanda"}
-            return httpx.Response(200, text=embedded_html(artist, listing([101, 102])))
-        if request.url.path == "/g/101/":
-            return httpx.Response(200, text=embedded_html(gallery(101, "ramanda")))
-        if request.url.path == "/g/102/":
-            return httpx.Response(200, text=embedded_html(gallery(102, "ramanda")))
-        if request.url.path == "/g/103/":
-            return httpx.Response(200, text=embedded_html(gallery(103, "other")))
+        query = request.url.params.get("query")
+        if request.url.path == "/api/v2/tags/artist/ラマンダ":
+            return httpx.Response(404, json={"error": "Tag not found"})
+        if request.url.path == "/api/v2/search" and query == 'artist:"ラマンダ"':
+            return httpx.Response(200, json=listing([], {}))
+        if request.url.path == "/api/v2/search" and query == "ラマンダ":
+            tags = {101: [500, 6346], 102: [500, 6346], 103: [600, 6346]}
+            return httpx.Response(200, json=listing([101, 102, 103], tags))
+        if request.url.path == "/api/v2/tags/ids":
+            assert set(request.url.params["ids"].split(",")) == {"500", "6346"}
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": 500, "type": "artist", "name": "ramanda"},
+                    {"id": 6346, "type": "language", "name": "japanese"},
+                ],
+            )
+        if request.url.path == "/api/v2/galleries/tagged":
+            assert request.url.params["tag_id"] == "500"
+            return httpx.Response(200, json=listing([101, 102], {101: [500], 102: [500]}))
+        if request.url.path.startswith("/api/v2/galleries/"):
+            return httpx.Response(503)
         return httpx.Response(404)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    provider = NhentaiProvider(user_agent="test", client=client)
+    provider = NhentaiProvider(user_agent="test", client=client, sleep=_no_sleep)
 
     with pytest.raises(ProviderError, match="请核对并加入作者别名"):
         await provider.discover_by_author("ラマンダ")
     works = await provider.discover_by_author("ラマンダ", author_names={"ラマンダ", "ramanda"})
 
-    assert [work.external_id for work in works] == ["101", "102"]
+    assert sorted(work.external_id for work in works) == ["101", "102"]
     assert all(work.raw_metadata["artists"] == ["ramanda"] for work in works)
-    assert any("q=%E3%83%A9%E3%83%9E%E3%83%B3%E3%83%80" in url for url in requested_urls)
-    assert any("/artist/ramanda/" in url for url in requested_urls)
+    assert any("query=%E3%83%A9%E3%83%9E%E3%83%B3%E3%83%80" in url for url in requested_urls)
+    # Alias inference uses one batched tag lookup instead of a detail request per gallery.
+    assert not any("/api/v2/galleries/10" in url for url in requested_urls[:6])
     await client.aclose()
+
+
+async def test_waits_for_retry_after_and_retries_rate_limited_request() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "7"}, json={"error": "limit"})
+        return httpx.Response(200, json={"id": 1, "type": "artist", "name": "mignon"})
+
+    clock = FakeClock()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(
+            user_agent="test", client=client, sleep=clock.sleep, clock=clock.now
+        )
+        payload = await provider._request_api("/api/v2/tags/artist/mignon", bucket="tag")
+
+    assert payload["name"] == "mignon"
+    assert attempts == 2
+    assert clock.slept == [7.0]
+
+
+async def test_rate_limiter_paces_requests_to_documented_quota() -> None:
+    clock = FakeClock()
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"result": [], "num_pages": 1})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(
+            user_agent="test", client=client, sleep=clock.sleep, clock=clock.now
+        )
+        for _ in range(10):
+            await provider._request_api("/api/v2/search", bucket="search", params={"query": "x"})
+
+    assert calls == 10
+    # Anonymous search allows 10/min; the provider keeps one request in reserve.
+    assert len(clock.slept) == 1
+    assert clock.slept[0] == pytest.approx(60.05)
+
+
+async def test_sends_optional_api_key_only_to_api_requests() -> None:
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.url.host] = request.headers.get("Authorization")
+        if request.url.host == "nhentai.net":
+            return httpx.Response(200, json={"id": 1, "type": "artist", "name": "mignon"})
+        return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=b"jpeg")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = NhentaiProvider(user_agent="test", api_key="secret", client=client)
+        await provider._request_api("/api/v2/tags/artist/mignon", bucket="tag")
+        await provider.fetch_cover("1", "https://t.nhentai.net/galleries/10/cover.jpg")
+
+    assert seen == {"nhentai.net": "Key secret", "t.nhentai.net": None}
 
 
 def test_normal_cloudflare_javascript_is_not_a_challenge_page() -> None:
@@ -185,7 +336,7 @@ def test_normal_cloudflare_javascript_is_not_a_challenge_page() -> None:
 async def test_reports_cloudflare_without_bypassing_it() -> None:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(
-            lambda request: httpx.Response(403, text="Just a moment...")
+            lambda request: httpx.Response(403, text="<title>Just a moment...</title>")
         )
     )
     provider = NhentaiProvider(user_agent="test", client=client)
@@ -204,19 +355,22 @@ async def test_rejects_untrusted_cover_host() -> None:
     await client.aclose()
 
 
-@pytest.mark.parametrize("status", [403, 429, 503])
-async def test_artist_source_error_stops_before_search_fallback(status: int) -> None:
+@pytest.mark.parametrize(("status", "attempts"), [(403, 1), (429, 3), (503, 1)])
+async def test_artist_source_error_stops_before_search_fallback(status: int, attempts: int) -> None:
     requests: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request.url.path)
         return httpx.Response(status, text="source unavailable")
 
+    clock = FakeClock()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        provider = NhentaiProvider(user_agent="test", client=client)
+        provider = NhentaiProvider(
+            user_agent="test", client=client, sleep=clock.sleep, clock=clock.now
+        )
         with pytest.raises(ProviderError, match=f"HTTP {status}"):
             await provider.discover_by_author("mignon")
-    assert requests == ["/artist/mignon/"]
+    assert requests == ["/api/v2/tags/artist/mignon"] * attempts
 
 
 async def test_artist_transport_error_stops_before_search_fallback() -> None:
@@ -230,4 +384,4 @@ async def test_artist_transport_error_stops_before_search_fallback() -> None:
         provider = NhentaiProvider(user_agent="test", client=client)
         with pytest.raises(ProviderError, match="超时"):
             await provider.discover_by_author("mignon")
-    assert requests == ["/artist/mignon/"]
+    assert requests == ["/api/v2/tags/artist/mignon"]

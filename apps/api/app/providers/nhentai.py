@@ -1,17 +1,17 @@
 import asyncio
-import json
 import re
+import time
 import unicodedata
 import zipfile
-from collections import Counter
-from dataclasses import dataclass
+from collections import Counter, deque
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx
-from bs4 import BeautifulSoup
 
 from app.providers.base import (
     Chapter,
@@ -26,6 +26,9 @@ from app.providers.errors import (
     ProviderError,
     describe_http_error,
 )
+
+Sleep = Callable[[float], Awaitable[None]]
+Clock = Callable[[], float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +45,43 @@ class NhentaiGallery:
     alt_titles: list[str]
     scanlator: str | None
     page_count: int
+    tag_ids: list[int] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class NhentaiArtistTag:
+    id: int
+    name: str
+
+
+class _RateLimiter:
+    """Sliding-window limiter matching nHentai's documented per-minute API quotas."""
+
+    def __init__(self, limit: int, sleep: Sleep, clock: Clock, window: float = 60.0) -> None:
+        self._limit = max(1, limit)
+        self._window = window
+        self._sleep = sleep
+        self._clock = clock
+        self._calls: deque[float] = deque()
+        self._blocked_until = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            while True:
+                now = self._clock()
+                if self._blocked_until > now:
+                    await self._sleep(self._blocked_until - now)
+                    continue
+                while self._calls and now - self._calls[0] >= self._window:
+                    self._calls.popleft()
+                if len(self._calls) < self._limit:
+                    self._calls.append(now)
+                    return
+                await self._sleep(self._window - (now - self._calls[0]) + 0.05)
+
+    def block_for(self, seconds: float) -> None:
+        self._blocked_until = max(self._blocked_until, self._clock() + seconds)
 
 
 class NhentaiProvider:
@@ -63,25 +103,44 @@ class NhentaiProvider:
         "a": "avif",
     }
 
+    # Documented per-IP quotas of https://nhentai.net/api/v2/docs, kept slightly
+    # below the published values so concurrent scans do not trip HTTP 429.
+    _anonymous_limits = {"search": 9, "gallery": 18, "tag": 13, "tagged": 13}
+    _api_key_limits = {"search": 18, "gallery": 40, "tag": 27, "tagged": 27}
+    _max_rate_limit_retries = 2
+    _max_retry_after_seconds = 90.0
+    _tagged_page_size = 100
+    _detail_limit = 8
+    _tag_lookup_batch = 100
+
     def __init__(
         self,
         user_agent: str,
         base_url: str = "https://nhentai.net",
         proxy_url: str = "",
         cookie: str = "",
+        api_key: str = "",
         max_search_pages: int = 3,
         client: httpx.AsyncClient | None = None,
+        sleep: Sleep = asyncio.sleep,
+        clock: Clock = time.monotonic,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._max_search_pages = max(1, min(max_search_pages, 20))
         self._owns_client = client is None
+        self._sleep = sleep
         headers = {
             "User-Agent": user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.5",
+            "Accept": "application/json, image/*;q=0.8, */*;q=0.5",
             "Accept-Language": "en-US,en;q=0.9,ja;q=0.7",
         }
         if cookie:
             headers["Cookie"] = cookie
+        self._api_headers = {"Authorization": f"Key {api_key.strip()}"} if api_key.strip() else {}
+        limits = self._api_key_limits if self._api_headers else self._anonymous_limits
+        self._limiters = {
+            bucket: _RateLimiter(limit, sleep, clock) for bucket, limit in limits.items()
+        }
         self._client = client or httpx.AsyncClient(
             headers=headers,
             proxy=proxy_url or None,
@@ -98,146 +157,158 @@ class NhentaiProvider:
         author_names: set[str] | None = None,
     ) -> list[DiscoveredWork]:
         normalized_author = " ".join(author_name.split()).strip()
-        path, query_author, first_response = await self._find_author_listing(
-            normalized_author, author_names=author_names
-        )
-        parsed, total_pages = self.parse_listing(first_response.text, query_author)
-        galleries: dict[str, NhentaiGallery] = {}
-        for gallery in parsed:
-            galleries[gallery.external_id] = gallery
+        artist = await self._find_artist_tag(normalized_author, author_names=author_names)
 
-        for page in range(2, min(total_pages, self._max_search_pages) + 1):
-            params = {"sort": "date", "page": str(page)}
-            if path == "/search/":
-                params["q"] = f"artist:{query_author}"
-            response = await self._request_page(path, params=params)
-            parsed, _ = self.parse_listing(response.text, query_author)
+        galleries: dict[str, NhentaiGallery] = {}
+        total_pages = 1
+        page = 1
+        while page <= min(total_pages, self._max_search_pages):
+            payload = await self._request_api(
+                "/api/v2/galleries/tagged",
+                bucket="tagged",
+                params={
+                    "tag_id": str(artist.id),
+                    "sort": "date",
+                    "page": str(page),
+                    "per_page": str(self._tagged_page_size),
+                },
+            )
+            parsed, total_pages = self.parse_listing(payload, artist.name)
             for gallery in parsed:
-                galleries[gallery.external_id] = gallery
+                galleries.setdefault(gallery.external_id, gallery)
+            page += 1
 
         if not galleries:
             raise AuthorNotFoundError(f"nHentai 未找到作者“{author_name}”")
 
         semaphore = asyncio.Semaphore(2)
 
-        authoritative_listing = path.startswith("/artist/")
-
-        async def enrich(gallery: NhentaiGallery) -> NhentaiGallery | None:
+        async def enrich(gallery: NhentaiGallery) -> NhentaiGallery:
+            # The tag listing is authoritative, so details only add metadata. A
+            # failed detail lookup keeps the listed gallery instead of failing the scan.
             async with semaphore:
                 for attempt in range(2):
                     try:
                         detailed = await self._gallery(gallery.external_id)
-                        break
                     except ProviderError:
                         if attempt == 1:
-                            if authoritative_listing:
-                                return gallery
-                            raise
-                        await asyncio.sleep(0.35)
-                await asyncio.sleep(0.08)
-            if self._has_author(detailed, query_author, author_names):
-                return detailed
-            return None
+                            return gallery
+                        await self._sleep(0.35)
+                        continue
+                    return detailed if detailed.artists else gallery
+            return gallery
 
         listed = list(galleries.values())
-        detail_limit = min(8, len(listed)) if authoritative_listing else len(listed)
+        detail_limit = min(self._detail_limit, len(listed))
         enriched = await asyncio.gather(*(enrich(item) for item in listed[:detail_limit]))
-        exact = [item for item in enriched if item is not None]
-        exact.extend(listed[detail_limit:])
-        if not exact:
-            raise AuthorNotFoundError(f"nHentai 未找到作者“{author_name}”")
+        exact = [*enriched, *listed[detail_limit:]]
         return sort_discovered_works([self._discovered_work(gallery) for gallery in exact])
 
-    async def _find_author_listing(
+    async def _find_artist_tag(
         self, author_name: str, *, author_names: set[str] | None = None
-    ) -> tuple[str, str, httpx.Response]:
-        """Find an authoritative listing, resolving site-specific aliases safely."""
+    ) -> NhentaiArtistTag:
+        """Resolve an artist tag, accepting site-specific aliases only when trusted."""
 
-        path = f"/artist/{quote(self._slug(author_name), safe='')}/"
-        try:
-            response = await self._request_page(path, params={"sort": "date", "page": "1"})
-            listed_artist = self.parse_artist(response.text)
-            if listed_artist and self._identity(listed_artist) == self._identity(author_name):
-                return path, listed_artist, response
-        except ProviderError as exc:
-            # Only a missing artist page justifies searching for an alternate name.
-            # Authentication, rate limits and transport failures affect the source,
-            # so retrying another endpoint only creates extra requests and hides them.
-            cause = exc.__cause__
-            if not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code != 404:
-                raise
+        slug = self._slug(author_name)
+        if slug:
+            try:
+                tag = await self._request_api(
+                    f"/api/v2/tags/artist/{quote(slug, safe='')}", bucket="tag"
+                )
+                artist = self.parse_artist(tag)
+                if artist and self._identity(artist.name) == self._identity(author_name):
+                    return artist
+            except ProviderError as exc:
+                # Only a missing artist tag justifies searching for an alternate name.
+                # Authentication, rate limits and transport failures affect the source,
+                # so retrying another endpoint only creates extra requests and hides them.
+                cause = exc.__cause__
+                missing = (
+                    isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code == 404
+                )
+                if not missing:
+                    raise
 
-        exact_response = await self._request_page(
-            "/search/",
-            params={
-                "q": f"artist:{author_name}",
-                "sort": "date",
-                "page": "1",
-            },
+        trusted = {self._identity(name) for name in (author_names or set()) | {author_name}}
+        trusted.discard("")
+        search = await self._request_api(
+            "/api/v2/search",
+            bucket="search",
+            params={"query": f'artist:"{author_name}"', "sort": "date", "page": "1"},
         )
-        exact_galleries, _ = self.parse_listing(exact_response.text, author_name)
+        exact_galleries, _ = self.parse_listing(search, author_name)
         if exact_galleries:
-            return "/search/", author_name, exact_response
+            artists = await self._artist_tags(self._tag_frequency(exact_galleries))
+            matching = [item for item in artists if self._identity(item.name) in trusted]
+            own_identity = self._identity(author_name)
+            preferred = [item for item in matching if self._identity(item.name) == own_identity]
+            if preferred or matching:
+                return (preferred or matching)[0]
 
         alias = await self._discover_author_alias(author_name)
         if alias is None:
             raise AuthorNotFoundError(f"nHentai 未找到作者“{author_name}”")
-        trusted_names = author_names or {author_name}
-        if self._identity(alias) not in {self._identity(name) for name in trusted_names}:
-            raise AuthorIdentityUnconfirmedError(author_name, alias)
+        if self._identity(alias.name) not in trusted:
+            raise AuthorIdentityUnconfirmedError(author_name, alias.name)
+        return alias
 
-        alias_path = f"/artist/{quote(self._slug(alias), safe='')}/"
-        alias_response = await self._request_page(alias_path, params={"sort": "date", "page": "1"})
-        listed_alias = self.parse_artist(alias_response.text)
-        if not listed_alias or self._identity(listed_alias) != self._identity(alias):
-            raise AuthorNotFoundError(f"nHentai 未找到作者“{author_name}”")
-        return alias_path, listed_alias, alias_response
-
-    async def _discover_author_alias(self, author_name: str) -> str | None:
+    async def _discover_author_alias(self, author_name: str) -> NhentaiArtistTag | None:
         """Infer one dominant real artist tag from a bounded plain-search sample."""
 
-        response = await self._request_page(
-            "/search/",
-            params={"q": author_name, "sort": "date", "page": "1"},
+        payload = await self._request_api(
+            "/api/v2/search",
+            bucket="search",
+            params={"query": author_name, "sort": "date", "page": "1"},
         )
-        candidates, _ = self.parse_listing(response.text, author_name)
-        sample = candidates[:8]
+        candidates, _ = self.parse_listing(payload, author_name)
+        sample = [item for item in candidates[:8] if item.tag_ids]
         if len(sample) < 2:
             return None
 
-        semaphore = asyncio.Semaphore(2)
-
-        async def detail(gallery: NhentaiGallery) -> NhentaiGallery | None:
-            async with semaphore:
-                try:
-                    result = await self._gallery(gallery.external_id)
-                except ProviderError:
-                    return None
-                await asyncio.sleep(0.08)
-                return result
-
-        resolved = await asyncio.gather(*(detail(item) for item in sample))
-        details = [item for item in resolved if item]
-        if len(details) < 2:
+        frequency = self._tag_frequency(sample)
+        recurring = Counter({tag_id: count for tag_id, count in frequency.items() if count >= 2})
+        if not recurring:
             return None
-
+        artists = await self._artist_tags(recurring)
         counts: Counter[str] = Counter()
-        display_names: dict[str, str] = {}
-        for gallery in details:
-            for artist in set(gallery.artists):
-                identity = self._identity(artist)
-                if identity:
-                    counts[identity] += 1
-                    display_names.setdefault(identity, artist)
+        display: dict[str, NhentaiArtistTag] = {}
+        for artist in artists:
+            identity = self._identity(artist.name)
+            if identity:
+                counts[identity] += frequency[artist.id]
+                display.setdefault(identity, artist)
         if not counts:
             return None
 
         ranked = counts.most_common(2)
         identity, support = ranked[0]
         tied = len(ranked) > 1 and ranked[1][1] == support
-        if support < 2 or support / len(details) < 0.6 or tied:
+        if support < 2 or support / len(sample) < 0.6 or tied:
             return None
-        return display_names[identity]
+        return display[identity]
+
+    @staticmethod
+    def _tag_frequency(galleries: list[NhentaiGallery]) -> Counter[int]:
+        counts: Counter[int] = Counter()
+        for gallery in galleries:
+            counts.update(set(gallery.tag_ids))
+        return counts
+
+    async def _artist_tags(self, frequency: Counter[int]) -> list[NhentaiArtistTag]:
+        """Look up the most frequent tags in one request and keep artist tags."""
+
+        ids = [tag_id for tag_id, _ in frequency.most_common(self._tag_lookup_batch)]
+        if not ids:
+            return []
+        payload = await self._request_api(
+            "/api/v2/tags/ids",
+            bucket="tag",
+            params={"ids": ",".join(str(tag_id) for tag_id in ids)},
+        )
+        if not isinstance(payload, list):
+            raise ProviderError("nHentai 标签数据缺失，接口结构可能已变化")
+        artists = [self.parse_artist(item) for item in payload if isinstance(item, dict)]
+        return [item for item in artists if item is not None]
 
     async def list_chapters(self, work_external_id: str) -> list[Chapter]:
         gallery = await self._gallery(work_external_id)
@@ -296,7 +367,7 @@ class NhentaiProvider:
                         raise ProviderError(f"nHentai 第 {index} 页下载失败: {exc}") from exc
                     suffix = Path(response.url.path).suffix or Path(image_url).suffix or ".jpg"
                     archive.writestr(f"{index:04d}{suffix}", response.content)
-                    await asyncio.sleep(0.06)
+                    await self._sleep(0.06)
             temporary.replace(output)
         except Exception:
             temporary.unlink(missing_ok=True)
@@ -305,57 +376,84 @@ class NhentaiProvider:
 
     async def _gallery(self, external_id: str) -> NhentaiGallery:
         self._validate_id(external_id)
-        response = await self._request_page(f"/g/{external_id}/")
-        payload = self.extract_gallery_payload(response.text)
-        if payload is None:
-            raise ProviderError("nHentai 详情页缺少作品数据，页面结构可能已变化")
+        payload = await self._request_api(f"/api/v2/galleries/{external_id}", bucket="gallery")
+        if (
+            not isinstance(payload, dict)
+            or payload.get("media_id") is None
+            or not isinstance(payload.get("title"), dict)
+        ):
+            raise ProviderError("nHentai 详情缺少作品数据，接口结构可能已变化")
         return self.parse_gallery(payload)
 
-    async def _request_page(
-        self, path: str, params: dict[str, str] | None = None
-    ) -> httpx.Response:
+    async def _request_api(
+        self,
+        path: str,
+        *,
+        bucket: str,
+        params: dict[str, str] | None = None,
+    ) -> Any:
+        """Call the official JSON API with quota pacing and Retry-After handling.
+
+        The HTML pages sit behind a Cloudflare JavaScript challenge that a server
+        cannot pass with any User-Agent; the documented API is served without it.
+        """
+
+        limiter = self._limiters[bucket]
+        for attempt in range(self._max_rate_limit_retries + 1):
+            await limiter.acquire()
+            try:
+                response = await self._client.get(
+                    f"{self._base_url}{path}",
+                    params=params,
+                    headers=self._api_headers,
+                )
+                if response.status_code == 429:
+                    wait = self._retry_after(response)
+                    limiter.block_for(min(wait, self._max_retry_after_seconds))
+                    retryable = wait <= self._max_retry_after_seconds
+                    if retryable and attempt < self._max_rate_limit_retries:
+                        continue
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = describe_http_error(exc)
+                if exc.response.status_code in {403, 503} and self._is_challenge(exc.response.text):
+                    detail += "；触发 Cloudflare 验证，请稍后重试或更换代理出口"
+                raise ProviderError(f"nHentai 请求失败: {detail}") from exc
+            except httpx.HTTPError as exc:
+                raise ProviderError(f"nHentai 请求失败: {describe_http_error(exc)}") from exc
+
+            try:
+                return response.json()
+            except ValueError as exc:
+                if self._is_challenge(response.text):
+                    raise ProviderError(
+                        "nHentai 触发 Cloudflare 验证，请稍后重试或更换代理出口"
+                    ) from exc
+                raise ProviderError("nHentai 返回的不是 JSON，接口结构可能已变化") from exc
+        raise ProviderError("nHentai 请求失败: HTTP 429（请求过于频繁）")
+
+    @staticmethod
+    def _retry_after(response: httpx.Response) -> float:
         try:
-            response = await self._client.get(
-                f"{self._base_url}{path}",
-                params=params,
-                headers={"Referer": f"{self._base_url}/"},
-            )
-            response.raise_for_status()
-            if self._is_challenge(response.text):
-                raise ProviderError("nHentai 触发 Cloudflare，请配置可用代理或 Cookie")
-            return response
-        except ProviderError:
-            raise
-        except httpx.HTTPStatusError as exc:
-            detail = describe_http_error(exc)
-            if exc.response.status_code in {403, 503}:
-                detail += "；可能需要 Cloudflare 验证"
-            raise ProviderError(f"nHentai 请求失败: {detail}") from exc
-        except httpx.HTTPError as exc:
-            raise ProviderError(f"nHentai 请求失败: {describe_http_error(exc)}") from exc
+            return max(1.0, float(response.headers.get("retry-after", "60")))
+        except ValueError:
+            return 60.0
 
     @classmethod
-    def parse_listing(cls, html: str, assumed_author: str) -> tuple[list[NhentaiGallery], int]:
-        payload = next(
-            (
-                item
-                for item in cls.extract_embedded_payloads(html)
-                if isinstance(item.get("result"), list)
-            ),
-            None,
-        )
-        if payload is None:
-            raise ProviderError("nHentai 列表数据缺失，页面结构可能已变化")
-        raw_results = payload.get("result")
-        if not isinstance(raw_results, list):
-            return [], 1
+    def parse_listing(cls, payload: Any, assumed_author: str) -> tuple[list[NhentaiGallery], int]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("result"), list):
+            raise ProviderError("nHentai 列表数据缺失，接口结构可能已变化")
         galleries = [
             cls.parse_listing_gallery(item, assumed_author)
-            for item in raw_results
+            for item in payload["result"]
             if isinstance(item, dict)
         ]
         num_pages = payload.get("num_pages", 1)
-        return galleries, int(num_pages) if isinstance(num_pages, int | str) else 1
+        try:
+            pages = int(num_pages)
+        except (TypeError, ValueError):
+            pages = 1
+        return galleries, max(1, pages)
 
     @classmethod
     def parse_listing_gallery(cls, payload: dict[str, Any], assumed_author: str) -> NhentaiGallery:
@@ -373,6 +471,12 @@ class NhentaiProvider:
             else None
         )
         page_count = payload.get("num_pages")
+        raw_tag_ids = payload.get("tag_ids")
+        tag_ids = (
+            [item for item in raw_tag_ids if isinstance(item, int)]
+            if isinstance(raw_tag_ids, list)
+            else []
+        )
         return NhentaiGallery(
             external_id=external_id,
             media_id=media_id,
@@ -386,40 +490,18 @@ class NhentaiProvider:
             alt_titles=alt_titles,
             scanlator=None,
             page_count=page_count if isinstance(page_count, int) else 0,
+            tag_ids=tag_ids,
         )
 
     @classmethod
-    def parse_artist(cls, html: str) -> str | None:
-        for payload in cls.extract_embedded_payloads(html):
-            if payload.get("type") == "artist" and payload.get("name"):
-                return cls._text(str(payload["name"]))
-        return None
-
-    @classmethod
-    def extract_gallery_payload(cls, html: str) -> dict[str, Any] | None:
-        return next(
-            (
-                item
-                for item in cls.extract_embedded_payloads(html)
-                if item.get("media_id") is not None and isinstance(item.get("title"), dict)
-            ),
-            None,
-        )
-
-    @staticmethod
-    def extract_embedded_payloads(html: str) -> list[dict[str, Any]]:
-        payloads: list[dict[str, Any]] = []
-        soup = BeautifulSoup(html, "html.parser")
-        for script in soup.select('script[type="application/json"]'):
-            try:
-                outer = json.loads(script.string or script.get_text())
-                body = outer.get("body") if isinstance(outer, dict) else None
-                inner = json.loads(body) if isinstance(body, str) else body
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if isinstance(inner, dict):
-                payloads.append(inner)
-        return payloads
+    def parse_artist(cls, payload: Any) -> NhentaiArtistTag | None:
+        if not isinstance(payload, dict) or payload.get("type") != "artist":
+            return None
+        tag_id = payload.get("id")
+        name = cls._text(str(payload.get("name") or ""))
+        if not isinstance(tag_id, int) or not name:
+            return None
+        return NhentaiArtistTag(id=tag_id, name=name)
 
     @classmethod
     def parse_search(cls, payload: dict[str, Any]) -> tuple[list[NhentaiGallery], int]:
@@ -556,20 +638,6 @@ class NhentaiProvider:
         if "english" in values:
             return "en"
         return "und"
-
-    @staticmethod
-    def _has_author(
-        gallery: NhentaiGallery,
-        author_name: str,
-        all_names: set[str] | None = None,
-    ) -> bool:
-        check_names = all_names or {author_name}
-        identities = {
-            NhentaiProvider._identity(name)
-            for name in check_names
-            if NhentaiProvider._identity(name)
-        }
-        return any(NhentaiProvider._identity(value) in identities for value in gallery.artists)
 
     @staticmethod
     def _identity(value: str) -> str:

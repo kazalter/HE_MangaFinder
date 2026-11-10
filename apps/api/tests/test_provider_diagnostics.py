@@ -1,5 +1,3 @@
-import json
-
 import httpx
 import pytest
 
@@ -23,7 +21,7 @@ async def test_nhentai_reports_transport_failure(error_type, message):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         provider = NhentaiProvider(user_agent="test", client=client)
         with pytest.raises(ProviderError, match=message) as error:
-            await provider._request_page("/search/")
+            await provider._request_api("/api/v2/search", bucket="search")
         assert "private details" not in str(error.value)
 
 
@@ -47,10 +45,15 @@ async def test_wnacg_reports_each_mirror_without_credentials():
 
 
 def test_nhentai_distinguishes_empty_results_from_changed_page():
-    body = json.dumps({"result": [], "num_pages": 1})
-    script = json.dumps({"body": body})
-    assert NhentaiProvider.parse_listing(
-        f'<script type="application/json">{script}</script>', "x"
-    ) == ([], 1)
-    with pytest.raises(ProviderError, match="页面结构"):
-        NhentaiProvider.parse_listing("<html>unexpected page</html>", "x")
+    assert NhentaiProvider.parse_listing({"result": [], "num_pages": 1}, "x") == ([], 1)
+    with pytest.raises(ProviderError, match="接口结构"):
+        NhentaiProvider.parse_listing({"error": "unexpected"}, "x")
+
+
+async def test_nhentai_reports_non_json_response_as_changed_api():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, text="<html></html>"))
+    ) as client:
+        provider = NhentaiProvider(user_agent="test", client=client)
+        with pytest.raises(ProviderError, match="接口结构"):
+            await provider._request_api("/api/v2/search", bucket="search")

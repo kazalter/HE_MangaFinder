@@ -40,6 +40,7 @@ def build_registry(settings: Settings) -> ProviderRegistry:
                 base_url=settings.nhentai_base_url,
                 proxy_url=settings.nhentai_proxy_url,
                 cookie=settings.nhentai_cookie,
+                api_key=settings.nhentai_api_key,
                 max_search_pages=settings.nhentai_max_search_pages,
             )
         )

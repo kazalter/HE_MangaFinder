@@ -39,6 +39,7 @@ MANGAFINDER_NHENTAI_ENABLED=true
 MANGAFINDER_NHENTAI_BASE_URL=https://nhentai.net
 MANGAFINDER_NHENTAI_PROXY_URL=http://172.19.0.1:7897
 MANGAFINDER_NHENTAI_COOKIE=
+MANGAFINDER_NHENTAI_API_KEY=
 MANGAFINDER_NHENTAI_MAX_SEARCH_PAGES=10
 MANGAFINDER_PROXY_NETWORK=he-manager_default
 TZ=Asia/Shanghai
@@ -86,7 +87,7 @@ WNACG 主域可能返回 Cloudflare 403。系统会顺序尝试 `MANGAFINDER_WNA
 
 WNACG 可能包含成人内容。当前应用没有用户鉴权，启用该来源时不要直接暴露到未受保护的公网或未成年人可访问的网络。
 
-nHentai 可能返回 Cloudflare 403。代理只配置给该来源，不要在容器里填写 `127.0.0.1:7897`，因为它指向 MangaFinder 容器自身。Compose 会通过 `MANGAFINDER_PROXY_NETWORK` 加入代理桥网络，并可访问 `http://172.19.0.1:7897`；若代理监听 Docker 宿主网关，也可使用 `http://host.docker.internal:端口`。代理不足以通过来源验证时，可在自己有权使用的浏览器会话中取得 Cookie，填入 `MANGAFINDER_NHENTAI_COOKIE`。系统不会破解验证码或自动绕过 Cloudflare。
+nHentai 通过官方 JSON API（`/api/v2`）扫描，不再抓取受 Cloudflare 验证保护的网页，因此一般不需要 Cookie。匿名访问有每分钟配额（例如搜索 10 次、详情 20 次），系统会自动限速并按 `Retry-After` 重试；扫描作者很多时，可在 nHentai 账号设置中生成 API Key 填入 `MANGAFINDER_NHENTAI_API_KEY`，配额约翻倍。若出口 IP 本身被拒绝，可为该来源配置代理。代理只配置给该来源，不要在容器里填写 `127.0.0.1:7897`，因为它指向 MangaFinder 容器自身。Compose 会通过 `MANGAFINDER_PROXY_NETWORK` 加入代理桥网络，并可访问 `http://172.19.0.1:7897`；若代理监听 Docker 宿主网关，也可使用 `http://host.docker.internal:端口`。代理不足以通过来源验证时，可在自己有权使用的浏览器会话中取得 Cookie，填入 `MANGAFINDER_NHENTAI_COOKIE`。系统不会破解验证码或自动绕过 Cloudflare。
 
 若 Cookie 包含 Cloudflare 会话信息，`MANGAFINDER_USER_AGENT` 和代理出口 IP 必须与取得该 Cookie 时的浏览器一致，否则来源仍可能返回 403。
 

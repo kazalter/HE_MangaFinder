@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     nhentai_base_url: str = "https://nhentai.net"
     nhentai_proxy_url: str = ""
     nhentai_cookie: str = ""
+    nhentai_api_key: str = ""
     nhentai_max_search_pages: int = 10
     agent_enabled: bool = False
     agent_provider: str = "openai_compatible"
