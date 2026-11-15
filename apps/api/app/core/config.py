@@ -82,9 +82,14 @@ class Settings(BaseSettings):
     social_media_cache_target_ratio: float = 0.8
     social_media_max_dimension: int = 1600
     social_media_webp_quality: int = 80
+    social_media_max_pixels: int = 40_000_000
+    social_media_decode_concurrency: int = 2
     social_ocr_enabled: bool = True
     social_ocr_max_posts_per_sync: int = 12
     social_ocr_timeout_seconds: float = 30.0
+    social_ocr_max_image_bytes: int = 32 * 1024 * 1024
+    social_ocr_max_image_pixels: int = 40_000_000
+    social_ocr_concurrency: int = 2
     social_post_delete_confirm_hours: int = 24
     social_daily_digest_enabled: bool = True
     social_daily_digest_hour: int = 20

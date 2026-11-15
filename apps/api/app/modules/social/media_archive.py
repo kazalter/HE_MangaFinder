@@ -1,10 +1,13 @@
+import asyncio
 import logging
 import os
 import tempfile
+import threading
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import urlparse
 
 import httpx
@@ -22,11 +25,18 @@ from app.db.models import (
     SocialMediaAsset,
     SocialPost,
 )
+from app.modules.social.media_io import (
+    DECODE_GATE,
+    download_bounded_to_file,
+    validate_image_dimensions,
+)
 
 logger = logging.getLogger(__name__)
 ALLOWED_MEDIA_HOSTS = {"pbs.twimg.com"}
 MAX_SOURCE_BYTES = 32 * 1024 * 1024
 MAX_AVATAR_BYTES = 8 * 1024 * 1024
+_DEFAULT_MAX_PIXELS = 40_000_000
+_SPOOL_MEMORY_BYTES = 1024 * 1024
 
 
 def _http_client(settings: Settings) -> httpx.AsyncClient:
@@ -37,26 +47,117 @@ def _http_client(settings: Settings) -> httpx.AsyncClient:
     )
 
 
-def _encode_webp(
-    raw: bytes, maximum_dimension: int, quality: int
-) -> tuple[bytes, int, int]:
+def _encode_image_to_handle(
+    source: BinaryIO,
+    output: BinaryIO,
+    maximum_dimension: int,
+    quality: int,
+    *,
+    max_pixels: int = _DEFAULT_MAX_PIXELS,
+) -> tuple[int, int]:
+    """Decode, validate pixel budget, orient, resize, and save as WebP into `output`."""
     record_metric("media_decode_count")
-    with Image.open(BytesIO(raw)) as opened:
-        opened.load()
-        image = ImageOps.exif_transpose(opened)
-        if image.mode not in {"RGB", "RGBA"}:
-            image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+    source.seek(0)
+    with Image.open(source) as opened:
+        validate_image_dimensions(opened, max_pixels)
         maximum = max(320, maximum_dimension)
-        image.thumbnail((maximum, maximum), Image.Resampling.LANCZOS)
-        width, height = image.size
-        output = BytesIO()
-        image.save(
-            output,
-            format="WEBP",
-            quality=min(95, max(40, quality)),
-            method=6,
-        )
-        return output.getvalue(), width, height
+        working: Image.Image = opened
+        try:
+            # Convert palette images before resampling so alpha and colors survive LANCZOS.
+            if working.mode in {"P", "PA"}:
+                target_mode = (
+                    "RGBA" if ("transparency" in working.info or working.mode == "PA") else "RGB"
+                )
+                working = working.convert(target_mode)
+            working.thumbnail((maximum, maximum), Image.Resampling.LANCZOS)
+            # Ensure truncated small images (where thumbnail is a no-op) fail before saving.
+            working.load()
+            transposed = ImageOps.exif_transpose(working)
+            if transposed is not working:
+                if working is not opened:
+                    working.close()
+                working = transposed
+            if working.mode not in {"RGB", "RGBA"}:
+                target_mode = (
+                    "RGBA"
+                    if ("transparency" in working.info or "A" in working.mode)
+                    else "RGB"
+                )
+                converted = working.convert(target_mode)
+                if working is not opened:
+                    working.close()
+                working = converted
+            width, height = working.size
+            working.save(
+                output,
+                format="WEBP",
+                quality=min(95, max(40, quality)),
+                method=6,
+            )
+            return width, height
+        finally:
+            if working is not opened:
+                working.close()
+
+
+def _encode_webp(
+    raw: bytes | BinaryIO,
+    maximum_dimension: int,
+    quality: int,
+    *,
+    max_pixels: int = _DEFAULT_MAX_PIXELS,
+) -> tuple[bytes, int, int]:
+    source = BytesIO(raw) if isinstance(raw, (bytes, bytearray)) else raw
+    output = BytesIO()
+    width, height = _encode_image_to_handle(
+        source,
+        output,
+        maximum_dimension,
+        quality,
+        max_pixels=max_pixels,
+    )
+    return output.getvalue(), width, height
+
+
+def _encode_webp_to_temp(
+    source: BinaryIO,
+    temp_dir: Path,
+    maximum_dimension: int,
+    quality: int,
+    *,
+    max_pixels: int = _DEFAULT_MAX_PIXELS,
+    cancelled: threading.Event | None = None,
+) -> tuple[Path, str, int, int, int]:
+    """Encode `source` to a temporary WebP file in `temp_dir` and return its hash and metrics."""
+    if cancelled is not None and cancelled.is_set():
+        raise asyncio.CancelledError
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=temp_dir, prefix=".tmp-", suffix=".webp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w+b") as handle:
+            width, height = _encode_image_to_handle(
+                source,
+                handle,
+                maximum_dimension,
+                quality,
+                max_pixels=max_pixels,
+            )
+            if cancelled is not None and cancelled.is_set():
+                raise asyncio.CancelledError
+            handle.flush()
+            handle.seek(0)
+            hasher = sha256()
+            byte_size = 0
+            while chunk := handle.read(65536):
+                hasher.update(chunk)
+                byte_size += len(chunk)
+        return temporary, hasher.hexdigest(), byte_size, width, height
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _write_atomically(path: Path, content: bytes) -> None:
@@ -69,6 +170,42 @@ def _write_atomically(path: Path, content: bytes) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+async def _run_bounded_encode(
+    spool: BinaryIO,
+    temp_dir: Path,
+    maximum_dimension: int,
+    quality: int,
+    *,
+    max_pixels: int,
+    concurrency: int,
+) -> tuple[Path, str, int, int, int]:
+    """Run WebP encoding under the shared decode concurrency gate with safe cancellation cleanup."""
+    async with DECODE_GATE.slot(concurrency):
+        cancelled = threading.Event()
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                _encode_webp_to_temp,
+                spool,
+                temp_dir,
+                maximum_dimension,
+                quality,
+                max_pixels=max_pixels,
+                cancelled=cancelled,
+            )
+        )
+        try:
+            return await task
+        except BaseException:
+            cancelled.set()
+            try:
+                temp_path, *_ = await task
+            except BaseException:
+                pass
+            else:
+                temp_path.unlink(missing_ok=True)
+            raise
 
 
 class SocialAvatarArchive:
@@ -98,27 +235,37 @@ class SocialAvatarArchive:
 
         owns_client = self.client is None
         client = self.client or _http_client(self.settings)
+        temp_webp: Path | None = None
         try:
-            response = await client.get(
-                source_url, headers={"User-Agent": self.settings.user_agent}
-            )
-            response.raise_for_status()
-            record_metric("media_bytes_downloaded", len(response.content))
-            if len(response.content) > MAX_AVATAR_BYTES:
-                raise ValueError("头像超过 8 MB 归档上限")
-            encoded, _, _ = _encode_webp(
-                response.content,
-                min(800, self.settings.social_media_max_dimension),
-                self.settings.social_media_webp_quality,
-            )
+            with tempfile.SpooledTemporaryFile(
+                max_size=_SPOOL_MEMORY_BYTES, mode="w+b", dir=self.avatar_dir
+            ) as spool:
+                await download_bounded_to_file(
+                    client,
+                    source_url,
+                    spool,
+                    headers={"User-Agent": self.settings.user_agent},
+                    max_bytes=MAX_AVATAR_BYTES,
+                )
+                temp_webp, _, _, _, _ = await _run_bounded_encode(
+                    spool,
+                    self.avatar_dir,
+                    min(800, self.settings.social_media_max_dimension),
+                    self.settings.social_media_webp_quality,
+                    max_pixels=self.settings.social_media_max_pixels,
+                    concurrency=self.settings.social_media_decode_concurrency,
+                )
             path = self.avatar_dir / f"{sha256(source_url.encode()).hexdigest()}.webp"
             if not path.exists():
-                _write_atomically(path, encoded)
+                os.replace(temp_webp, path)
+                temp_webp = None
             return path
         except Exception as exc:
             logger.info("Social avatar archive skipped %s: %s", source_url, exc)
             return None
         finally:
+            if temp_webp is not None:
+                temp_webp.unlink(missing_ok=True)
             if owns_client:
                 await client.aclose()
 
@@ -207,26 +354,38 @@ class SocialMediaArchive:
         client = self.client or _http_client(self.settings)
         archived_file: tuple[str, str, int, int, int, Path] | None = None
         error_message: str | None = None
+        temp_webp: Path | None = None
         try:
-            response = await client.get(
-                source_url, headers={"User-Agent": self.settings.user_agent}
-            )
-            response.raise_for_status()
-            raw = response.content
-            record_metric("media_bytes_downloaded", len(raw))
-            if len(raw) > MAX_SOURCE_BYTES:
-                raise ValueError("图片超过 32 MB 归档上限")
-            encoded, width, height = self._encode(raw)
-            digest = sha256(encoded).hexdigest()
+            with tempfile.SpooledTemporaryFile(
+                max_size=_SPOOL_MEMORY_BYTES, mode="w+b", dir=self.archive_dir
+            ) as spool:
+                await download_bounded_to_file(
+                    client,
+                    source_url,
+                    spool,
+                    headers={"User-Agent": self.settings.user_agent},
+                    max_bytes=MAX_SOURCE_BYTES,
+                )
+                temp_webp, digest, byte_size, width, height = await _run_bounded_encode(
+                    spool,
+                    self.archive_dir,
+                    self.settings.social_media_max_dimension,
+                    self.settings.social_media_webp_quality,
+                    max_pixels=self.settings.social_media_max_pixels,
+                    concurrency=self.settings.social_media_decode_concurrency,
+                )
             filename = f"archive/{post_id}-{media_index}-{digest[:20]}.webp"
             path = self.settings.social_media_dir / filename
             if not path.exists():
-                _write_atomically(path, encoded)
-            archived_file = (filename, digest, len(encoded), width, height, path)
+                os.replace(temp_webp, path)
+                temp_webp = None
+            archived_file = (filename, digest, byte_size, width, height, path)
         except Exception as exc:
             error_message = str(exc)[:1000]
             logger.info("Social media archive skipped %s: %s", source_url, exc)
         finally:
+            if temp_webp is not None:
+                temp_webp.unlink(missing_ok=True)
             if owns_client:
                 await client.aclose()
 
@@ -269,6 +428,7 @@ class SocialMediaArchive:
             raw,
             self.settings.social_media_max_dimension,
             self.settings.social_media_webp_quality,
+            max_pixels=self.settings.social_media_max_pixels,
         )
 
     def pin_post(self, post_id: int, importance: str = "high") -> None:

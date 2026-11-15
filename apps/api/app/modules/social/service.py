@@ -35,6 +35,26 @@ from app.modules.social.repository import SocialRepository
 from app.modules.social.rules import RuleAssessment, assess_post, cluster_key
 
 
+def _merge_ocr_text(
+    existing: str | None,
+    incoming: str | None,
+    status: str,
+) -> str | None:
+    """Keep prior partial OCR blocks on retry while letting full runs replace cleanly."""
+    if not incoming:
+        return existing
+    if status != "retry" or not existing:
+        return incoming
+    merged: list[str] = []
+    seen: set[str] = set()
+    for block in [*existing.split("\n\n"), *incoming.split("\n\n")]:
+        cleaned = block.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            merged.append(cleaned)
+    return "\n\n".join(merged) or existing
+
+
 class SocialSyncService:
     def __init__(self, session: Session, settings: Settings) -> None:
         self.session = session
@@ -279,12 +299,17 @@ class SocialSyncService:
             archive.enforce_quota()
             self.session.commit()
         if post.media and state.ocr_status in {"pending", "retry", "disabled"}:
+            prior_ocr_status = state.ocr_status
             result = await LocalMediaOcr(self.settings).extract_result(post.media, local_media)
             self.session.refresh(post)
             if post.content_hash != expected:
                 raise RuntimeError("帖子在处理时发生变化，将重新处理")
             if result.text:
-                post.ocr_text = result.text
+                post.ocr_text = (
+                    _merge_ocr_text(post.ocr_text, result.text, result.status)
+                    if prior_ocr_status == "retry"
+                    else result.text
+                )
             state.ocr_status = result.status
             state.last_error = result.error
             self.session.commit()

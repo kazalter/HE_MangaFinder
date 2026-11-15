@@ -111,8 +111,11 @@ class SocialRepository:
             post = SocialPost(account_id=account_id, **values)
             self.session.add(post)
         else:
+            media_changed = post.media != values.get("media")
             for key, value in values.items():
                 setattr(post, key, value)
+            if media_changed:
+                post.ocr_text = None
         self.session.flush()
         return post, created, changed
 
