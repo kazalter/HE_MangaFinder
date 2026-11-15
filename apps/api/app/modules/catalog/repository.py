@@ -1,11 +1,12 @@
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.time import utc_timestamp
+from app.core.time import as_utc, utc_timestamp
 from app.db.models import (
     Author,
     AuthorIdentitySuggestion,
@@ -16,6 +17,8 @@ from app.db.models import (
 )
 from app.providers.base import DiscoveredWork
 
+_MIN_UTC = datetime.min.replace(tzinfo=UTC)
+
 
 @dataclass(frozen=True)
 class CatalogUpsertResult:
@@ -23,6 +26,12 @@ class CatalogUpsertResult:
     source_created: bool
     author_link_created: bool
     metadata_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DetailPlan:
+    fetch_ids: set[str]
+    cache_hits: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,8 +49,31 @@ class CatalogRepository:
     def upsert(self, author_id: int, provider: str, item: DiscoveredWork) -> Work:
         return self.upsert_with_result(author_id, provider, item).work
 
+    @staticmethod
+    def _merge_raw_metadata(
+        existing: dict[str, Any] | None, item: DiscoveredWork
+    ) -> dict[str, Any]:
+        """Merge provided raw_metadata keys without clobbering richer cached detail keys."""
+        if item.raw_metadata_provided_keys is None:
+            return dict(item.raw_metadata)
+        merged = dict(existing or {})
+        for key in item.raw_metadata_provided_keys:
+            if key in item.raw_metadata:
+                merged[key] = item.raw_metadata[key]
+            else:
+                merged.pop(key, None)
+        for key, value in item.raw_metadata.items():
+            if key not in merged:
+                merged[key] = value
+        return merged
+
     def upsert_with_result(
-        self, author_id: int, provider: str, item: DiscoveredWork
+        self,
+        author_id: int,
+        provider: str,
+        item: DiscoveredWork,
+        *,
+        now: datetime | None = None,
     ) -> CatalogUpsertResult:
         source = self.session.scalar(
             select(WorkSource)
@@ -52,41 +84,91 @@ class CatalogRepository:
             )
         )
         source_created = source is None
+        ts = now or datetime.now(UTC)
         if source is None:
-            work = Work(title=item.title)
+            work = Work(
+                title=item.title,
+                description=item.description,
+                cover_url=item.cover_url,
+                status=item.status,
+                year=item.year,
+                language=item.language,
+                tags=list(item.tags),
+            )
             source = WorkSource(
                 provider=provider,
                 external_id=item.external_id,
                 source_url=item.source_url,
+                raw_metadata=dict(item.raw_metadata),
+                source_updated_at=item.source_updated_at,
                 work=work,
             )
             self.session.add(work)
             metadata_changed = False
         else:
             work = source.work
+            provided = item.provided_fields
+            def _is_provided(field: str) -> bool:
+                return provided is None or field in provided
+
+            new_description = item.description if _is_provided("description") else work.description
+            new_cover_url = item.cover_url if _is_provided("cover_url") else work.cover_url
+            new_status = item.status if _is_provided("status") else work.status
+            new_year = item.year if _is_provided("year") else work.year
+            new_language = item.language if _is_provided("language") else work.language
+            new_tags = list(item.tags) if _is_provided("tags") else list(work.tags or [])
+            new_source_updated_at = (
+                item.source_updated_at
+                if _is_provided("source_updated_at")
+                else source.source_updated_at
+            )
+            new_raw_metadata = (
+                self._merge_raw_metadata(source.raw_metadata, item)
+                if _is_provided("raw_metadata")
+                else dict(source.raw_metadata or {})
+            )
             metadata_changed = (
                 work.title != item.title
-                or work.description != item.description
-                or work.cover_url != item.cover_url
-                or work.status != item.status
-                or work.year != item.year
-                or work.language != item.language
-                or work.tags != item.tags
+                or work.description != new_description
+                or work.cover_url != new_cover_url
+                or work.status != new_status
+                or work.year != new_year
+                or work.language != new_language
+                or list(work.tags or []) != new_tags
                 or source.source_url != item.source_url
-                or source.raw_metadata != item.raw_metadata
-                or source.source_updated_at != item.source_updated_at
+                or source.raw_metadata != new_raw_metadata
+                or source.source_updated_at != new_source_updated_at
             )
+            work.title = item.title
+            work.description = new_description
+            work.cover_url = new_cover_url
+            work.status = new_status
+            work.year = new_year
+            work.language = new_language
+            work.tags = new_tags
+            source.source_url = item.source_url
+            source.raw_metadata = new_raw_metadata
+            source.source_updated_at = new_source_updated_at
 
-        work.title = item.title
-        work.description = item.description
-        work.cover_url = item.cover_url
-        work.status = item.status
-        work.year = item.year
-        work.language = item.language
-        work.tags = item.tags
-        source.source_url = item.source_url
-        source.raw_metadata = item.raw_metadata
-        source.source_updated_at = item.source_updated_at
+        if item.detail_fetched:
+            source.detail_fetched_at = ts
+            if item.list_signature is not None:
+                source.list_signature = item.list_signature
+            source.detail_failure_count = 0
+            source.detail_next_retry_at = None
+            source.detail_last_attempted_at = ts
+        elif item.detail_failed:
+            # Never extend detail TTL or mask a changed list signature on failure.
+            source.detail_failure_count = (source.detail_failure_count or 0) + 1
+            source.detail_last_attempted_at = ts
+            delay_seconds = min(60 * (1 << min(source.detail_failure_count - 1, 5)), 3600)
+            source.detail_next_retry_at = ts + timedelta(seconds=delay_seconds)
+        elif item.is_detail_complete:
+            if item.list_signature is not None:
+                source.list_signature = item.list_signature
+            if source.detail_fetched_at is None:
+                source.detail_fetched_at = ts
+
         self.session.flush()
 
         link = self.session.get(AuthorWork, (author_id, work.id))
@@ -99,6 +181,75 @@ class CatalogRepository:
             author_link_created=author_link_created,
             metadata_changed=metadata_changed,
         )
+
+    def plan_detail_fetches(
+        self,
+        provider: str,
+        items: list[DiscoveredWork],
+        *,
+        budget: int,
+        ttl_hours: int,
+        force: bool = False,
+        now: datetime | None = None,
+    ) -> DetailPlan:
+        """Select up to `budget` works needing detail fetch with backlog rotation."""
+        if not items:
+            return DetailPlan(fetch_ids=set(), cache_hits=0)
+        current_now = as_utc(now) if now is not None else datetime.now(UTC)
+        ttl_delta = timedelta(hours=max(1, ttl_hours))
+        external_ids = [item.external_id for item in items]
+        rows = {
+            row.external_id: row
+            for row in self.session.scalars(
+                select(WorkSource).where(
+                    WorkSource.provider == provider,
+                    WorkSource.external_id.in_(external_ids),
+                )
+            )
+        }
+        prioritized: list[tuple[tuple[Any, ...], str]] = []
+        cache_hits = 0
+        for index, item in enumerate(items):
+            if item.is_detail_complete:
+                continue
+            row = rows.get(item.external_id)
+            if row is None or row.detail_fetched_at is None:
+                failures = row.detail_failure_count if row is not None else 0
+                if failures == 0:
+                    prioritized.append(((0, 0, _MIN_UTC, index), item.external_id))
+                else:
+                    last_attempt = (
+                        as_utc(row.detail_last_attempted_at)
+                        if row.detail_last_attempted_at is not None
+                        else _MIN_UTC
+                    )
+                    prioritized.append(((2, failures, last_attempt, index), item.external_id))
+                continue
+
+            signature_changed = (
+                item.list_signature is not None and row.list_signature != item.list_signature
+            )
+            fetched_at = as_utc(row.detail_fetched_at)
+            expired = fetched_at + ttl_delta <= current_now
+            if signature_changed:
+                failures = row.detail_failure_count or 0
+                if failures == 0:
+                    prioritized.append(((1, 0, _MIN_UTC, index), item.external_id))
+                else:
+                    last_attempt = (
+                        as_utc(row.detail_last_attempted_at)
+                        if row.detail_last_attempted_at is not None
+                        else _MIN_UTC
+                    )
+                    prioritized.append(((2, failures, last_attempt, index), item.external_id))
+            elif expired or force:
+                prioritized.append(((3, 0, fetched_at, index), item.external_id))
+            else:
+                cache_hits += 1
+
+        prioritized.sort(key=lambda entry: entry[0])
+        selected = {external_id for _, external_id in prioritized[: max(0, budget)]}
+        return DetailPlan(fetch_ids=selected, cache_hits=cache_hits)
 
     def get(self, work_id: int) -> Work | None:
         return self.session.scalar(

@@ -1,9 +1,17 @@
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
 from app.core.time import utc_timestamp
+
+
+def compute_list_signature(payload: Any) -> str:
+    """Compute a stable SHA-256 signature from listing-only metadata."""
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class ProviderCapability(StrEnum):
@@ -25,6 +33,12 @@ class DiscoveredWork:
     tags: list[str] = field(default_factory=list)
     source_updated_at: datetime | None = None
     raw_metadata: dict[str, Any] = field(default_factory=dict)
+    provided_fields: frozenset[str] | None = None
+    raw_metadata_provided_keys: frozenset[str] | None = None
+    list_signature: str | None = None
+    is_detail_complete: bool = True
+    detail_fetched: bool = False
+    detail_failed: bool = False
 
 
 def sort_discovered_works(works: list[DiscoveredWork]) -> list[DiscoveredWork]:

@@ -18,6 +18,7 @@ from app.providers.base import (
     DiscoveredWork,
     ProviderCapability,
     RemoteImage,
+    compute_list_signature,
     sort_discovered_works,
 )
 from app.providers.errors import AuthorNotFoundError, ProviderError, describe_http_error
@@ -35,6 +36,7 @@ class WnacgProvider:
         }
     )
     canonical_url = "https://www.wnacg.com"
+    identity_rule_version = "wnacg-v1"
 
     # Leading event / release-type markers, e.g. "(C85) (同人誌) [Circle (Artist)]".
     _event_prefix_re = re.compile(
@@ -102,43 +104,47 @@ class WnacgProvider:
             limits=httpx.Limits(max_connections=4),
         )
 
-    async def discover_by_author(
-        self, author_name: str, *, author_names: set[str] | None = None,
-    ) -> list[DiscoveredWork]:
+    @property
+    def max_search_pages(self) -> int:
+        return self._max_search_pages
+
+    def identity_config_signature(self) -> str:
+        return compute_list_signature(
+            {"base_urls": self._base_urls, "rule": self.identity_rule_version}
+        )
+
+    def scan_config_signature(self, identity_key: str) -> str:
+        return compute_list_signature(
+            {
+                "base_urls": self._base_urls,
+                "identity_key": identity_key,
+                "sort": "create_time_DESC",
+            }
+        )
+
+    async def fetch_search_page(
+        self,
+        author_name: str,
+        *,
+        page: int = 1,
+        author_names: set[str] | None = None,
+    ) -> tuple[list[DiscoveredWork], int]:
+        """Fetch one WNACG search page and keep only exact creator credits."""
         record_metric("list_requests")
         record_metric("pages_fetched")
         record_metric("pages_covered")
-        first_response, base_url = await self._request_site(
-            "/search/",
-            params={
-                "f": "_all",
-                "q": author_name,
-                "s": "create_time_DESC",
-                "syn": "yes",
-            },
-        )
-        works, page_count = self.parse_search(first_response.text, base_url)
-        for page in range(2, min(page_count, self._max_search_pages) + 1):
-            record_metric("list_requests")
-            record_metric("pages_fetched")
-            record_metric("pages_covered")
-            response, _ = await self._request_site(
-                "/search/index.php",
-                params={
-                    "f": "_all",
-                    "q": author_name,
-                    "s": "create_time_DESC",
-                    "syn": "yes",
-                    "p": str(page),
-                },
-            )
-            page_works, _ = self.parse_search(response.text, base_url)
-            works.extend(page_works)
-            await self._sleep(0.25)
-        set_metric_attr("scan_mode", "recent")
-        set_metric_attr("reached_end", page_count <= self._max_search_pages)
-        set_metric_attr("budget_truncated", page_count > self._max_search_pages)
-        unique_works = list({work.external_id: work for work in works}.values())
+        params: dict[str, str] = {
+            "f": "_all",
+            "q": author_name,
+            "s": "create_time_DESC",
+            "syn": "yes",
+        }
+        path = "/search/"
+        if page > 1:
+            path = "/search/index.php"
+            params["p"] = str(page)
+        response, base_url = await self._request_site(path, params=params)
+        page_works, page_count = self.parse_search(response.text, base_url)
         all_names = author_names or {author_name}
         verified = [
             replace(
@@ -148,16 +154,48 @@ class WnacgProvider:
                     "author_match": "creator_credit_exact",
                     "author_query": author_name,
                 },
+                list_signature=compute_list_signature(
+                    {
+                        "external_id": work.external_id,
+                        "title": work.title,
+                        "cover_url": work.cover_url,
+                        "status": work.status,
+                        "language": work.language,
+                        "tags": work.tags,
+                        "page_count": work.raw_metadata.get("page_count"),
+                        "category": work.raw_metadata.get("category"),
+                        "uploaded_at": work.raw_metadata.get("uploaded_at"),
+                    }
+                ),
+                is_detail_complete=True,
             )
-            for work in unique_works
+            for work in page_works
             if self.matches_creator_credit(work.title, author_name, all_names)
         ]
-        if not verified:
+        return verified, page_count
+
+    async def discover_by_author(
+        self, author_name: str, *, author_names: set[str] | None = None,
+    ) -> list[DiscoveredWork]:
+        works, page_count = await self.fetch_search_page(
+            author_name, page=1, author_names=author_names
+        )
+        for page in range(2, min(page_count, self._max_search_pages) + 1):
+            await self._sleep(0.25)
+            page_works, _ = await self.fetch_search_page(
+                author_name, page=page, author_names=author_names
+            )
+            works.extend(page_works)
+        set_metric_attr("scan_mode", "recent")
+        set_metric_attr("reached_end", page_count <= self._max_search_pages)
+        set_metric_attr("budget_truncated", page_count > self._max_search_pages)
+        unique_works = list({work.external_id: work for work in works}.values())
+        if not unique_works:
             raise AuthorNotFoundError(
                 f'WNACG 未找到作者署名与“{author_name}”一致的作品；'
                 "仅在汉化组、发布者或标题正文中命中不会导入"
             )
-        return sort_discovered_works(verified)
+        return sort_discovered_works(unique_works)
 
     async def list_chapters(self, work_external_id: str) -> list[Chapter]:
         self._validate_id(work_external_id)

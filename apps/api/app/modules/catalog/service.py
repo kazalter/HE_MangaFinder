@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import UTC, datetime
 from time import monotonic
@@ -10,15 +9,19 @@ from app.core.config import get_settings
 from app.core.observability import capture_metrics, record_metric
 from app.db.models import (
     AuthorIdentitySuggestion,
-    AuthorWork,
     DiscoveryRun,
     ProviderScanRun,
-    Work,
 )
 from app.modules.authors.repository import AuthorRepository
 from app.modules.catalog.aggregation import AggregationService, CoverHasher
-from app.modules.catalog.cover_fingerprint import is_current_fingerprint
 from app.modules.catalog.discovery_repository import DiscoveryRepository
+from app.modules.catalog.incremental import (
+    PrefetchedCovers,
+    populate_provider_scan_run,
+    prefetch_covers_for_page,
+    run_incremental_provider_scan,
+    supports_incremental_scan,
+)
 from app.modules.catalog.repository import CatalogRepository
 from app.modules.social.planned_releases import PlannedReleaseService
 from app.providers.base import DiscoveredWork, sort_discovered_works
@@ -26,16 +29,6 @@ from app.providers.errors import AuthorIdentityUnconfirmedError, AuthorNotFoundE
 from app.providers.registry import ProviderRegistry
 
 logger = logging.getLogger(__name__)
-
-
-class PrefetchedCovers:
-    """Only return pre-fetched cover data while the catalog transaction is writing."""
-
-    def __init__(self, values: dict[tuple[str, str | None, str | None], dict | None]):
-        self.values = values
-
-    async def fingerprint_url(self, url, provider_name=None, external_id=None):
-        return self.values.get((url, provider_name, external_id))
 
 
 class DiscoveryService:
@@ -74,49 +67,9 @@ class DiscoveryService:
         works: list[DiscoveredWork],
         hasher: CoverHasher,
     ) -> dict[tuple[str, str | None, str | None], dict | None]:
-        # Read all candidates before writing. Cover requests must never run under a
-        # SQLite write lock, including requests for existing comparison candidates.
-        existing = list(
-            self.session.scalars(
-                select(Work)
-                .join(AuthorWork, AuthorWork.work_id == Work.id)
-                .where(AuthorWork.author_id == author_id)
-            ).unique()
+        return await prefetch_covers_for_page(
+            self.session, author_id, provider_name, works, hasher
         )
-        requests: set[tuple[str, str | None, str | None]] = set()
-        for work in existing:
-            current = work.fingerprint.cover_fingerprint if work.fingerprint else None
-            if not work.cover_url or (
-                is_current_fingerprint(current) and current.get("source_url") == work.cover_url
-            ):
-                continue
-            for source in work.sources:
-                requests.add((work.cover_url, source.provider, source.external_id))
-        known = {
-            source.external_id: work
-            for work in existing
-            for source in work.sources
-            if source.provider == provider_name
-        }
-        for work in works:
-            if not work.cover_url:
-                continue
-            existing_work = known.get(work.external_id)
-            current = (
-                existing_work.fingerprint.cover_fingerprint
-                if existing_work and existing_work.fingerprint
-                else None
-            )
-            if is_current_fingerprint(current) and current.get("source_url") == work.cover_url:
-                continue
-            requests.add((work.cover_url, provider_name, work.external_id))
-        semaphore = asyncio.Semaphore(3)
-
-        async def fetch(key):
-            async with semaphore:
-                return key, await hasher.fingerprint_url(*key)
-
-        return dict(await asyncio.gather(*(fetch(key) for key in requests)))
 
     async def discover_author(
         self,
@@ -124,12 +77,18 @@ class DiscoveryService:
         *,
         trigger: str = "manual",
         provider_names: set[str] | None = None,
+        force_refresh: bool = False,
+        scan_mode: str | None = None,
     ) -> dict[str, int | str | list[str]]:
         with capture_metrics("discovery.discover_author", log_summary=True) as metrics:
             metrics.set_attr("author_id", author_id)
             metrics.set_attr("trigger", trigger)
             return await self._discover_author_impl(
-                author_id, trigger=trigger, provider_names=provider_names
+                author_id,
+                trigger=trigger,
+                provider_names=provider_names,
+                force_refresh=force_refresh or trigger == "force",
+                scan_mode=scan_mode,
             )
 
     async def _discover_author_impl(
@@ -138,6 +97,8 @@ class DiscoveryService:
         *,
         trigger: str = "manual",
         provider_names: set[str] | None = None,
+        force_refresh: bool = False,
+        scan_mode: str | None = None,
     ) -> dict[str, int | str | list[str]]:
         author = AuthorRepository(self.session).get(author_id)
         if author is None:
@@ -199,9 +160,79 @@ class DiscoveryService:
                 provider_run_id = provider_run.id
                 started = monotonic()
                 try:
+                    settings = get_settings()
+                    inferred_warning = (
+                        f"来源历史名称“{decision.query_name}”尚未确认；"
+                        "请核对后加入作者别名或来源专用名"
+                        if inferred_unconfirmed
+                        else None
+                    )
+                    if supports_incremental_scan(provider):
+                        outcome = await run_incremental_provider_scan(
+                            self.session,
+                            author,
+                            provider,
+                            search_names,
+                            all_names,
+                            cover_hasher=cover_hasher,
+                            catalog=catalog,
+                            discovery=discovery,
+                            aggregation=aggregation,
+                            settings=settings,
+                            force_refresh=force_refresh,
+                            requested_scan_mode=scan_mode,
+                        )
+                        name_errors = outcome.name_errors
+                        unconfirmed = outcome.unconfirmed
+                        if outcome.found_count == 0 and unconfirmed and not name_errors:
+                            self._record_identity_suggestions(
+                                author.id, provider.name, unconfirmed
+                            )
+                            provider_run = self.session.get(ProviderScanRun, provider_run_id)
+                            if provider_run:
+                                provider_run.status = "succeeded"
+                                provider_run.error = "; ".join(
+                                    str(item) for item in unconfirmed
+                                )[:4000]
+                                provider_run.duration_ms = round((monotonic() - started) * 1000)
+                                provider_run.finished_at = datetime.now(UTC)
+                            errors.append(
+                                f"{provider.display_name}: "
+                                + "; ".join(str(item) for item in unconfirmed)
+                            )
+                            successful_providers += 1
+                            self.session.commit()
+                            continue
+                        if outcome.found_count == 0 and name_errors:
+                            raise RuntimeError("; ".join(name_errors))
+
+                        self._record_identity_suggestions(author.id, provider.name, unconfirmed)
+                        provider_run = self.session.get(ProviderScanRun, provider_run_id)
+                        populate_provider_scan_run(
+                            provider_run,
+                            outcome,
+                            started_monotonic=started,
+                            now=datetime.now(UTC),
+                            inferred_warning=inferred_warning,
+                        )
+                        found_total += outcome.found_count
+                        new_total += outcome.new_count
+                        updated_total += outcome.updated_count
+                        excluded_total += outcome.excluded_count
+                        successful_providers += 1
+                        if name_errors:
+                            errors.append(f"{provider.display_name}: {'; '.join(name_errors)}")
+                        if unconfirmed:
+                            errors.append(
+                                f"{provider.display_name}: "
+                                + "; ".join(str(item) for item in unconfirmed)
+                            )
+                        self.session.commit()
+                        continue
+
                     merged: dict[str, DiscoveredWork] = {}
-                    name_errors: list[str] = []
-                    unconfirmed: list[AuthorIdentityUnconfirmedError] = []
+                    name_errors = []
+                    unconfirmed = []
                     for search_name in search_names:
                         try:
                             found = await provider.discover_by_author(
@@ -281,11 +312,8 @@ class DiscoveryService:
                             provider_run.error = "; ".join(name_errors)[:4000]
                         elif unconfirmed:
                             provider_run.error = "; ".join(str(item) for item in unconfirmed)[:4000]
-                        elif inferred_unconfirmed:
-                            provider_run.error = (
-                                f"来源历史名称“{decision.query_name}”尚未确认；"
-                                "请核对后加入作者别名或来源专用名"
-                            )
+                        elif inferred_warning:
+                            provider_run.error = inferred_warning
                         provider_run.found_count = found_count
                         provider_run.new_count = provider_new
                         provider_run.updated_count = provider_updated

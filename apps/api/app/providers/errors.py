@@ -15,6 +15,10 @@ class AuthorIdentityUnconfirmedError(AuthorNotFoundError):
         super().__init__(f'来源推测“{candidate}”可能对应“{original}”，请核对并加入作者别名后重试')
 
 
+class CachedIdentityInvalidError(ProviderError):
+    """Raised when a previously cached provider identity was deleted, merged, or mismatched."""
+
+
 def describe_http_error(exc: httpx.HTTPError) -> str:
     """Describe transport failures without leaking request URLs or credentials."""
     if isinstance(exc, httpx.TimeoutException):

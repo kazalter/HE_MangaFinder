@@ -173,6 +173,40 @@ def _apply_additive_migrations() -> None:
             "ON social_posts (last_availability_checked_at)"
         )
 
+    work_source_columns = {
+        item["name"] for item in inspect(engine).get_columns("work_sources")
+    }
+    work_source_additions = {
+        "list_signature": "VARCHAR(64)",
+        "detail_fetched_at": "DATETIME",
+        "detail_failure_count": "INTEGER NOT NULL DEFAULT 0",
+        "detail_next_retry_at": "DATETIME",
+        "detail_last_attempted_at": "DATETIME",
+    }
+    with engine.begin() as connection:
+        for column, declaration in work_source_additions.items():
+            if column not in work_source_columns:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE work_sources ADD COLUMN {column} {declaration}"
+                )
+
+    provider_scan_run_columns = {
+        item["name"] for item in inspect(engine).get_columns("provider_scan_runs")
+    }
+    provider_scan_run_additions = {
+        "scan_mode": "VARCHAR(20)",
+        "pages_covered": "INTEGER NOT NULL DEFAULT 0",
+        "total_pages_hint": "INTEGER",
+        "reached_end": "BOOLEAN NOT NULL DEFAULT 0",
+        "budget_truncated": "BOOLEAN NOT NULL DEFAULT 0",
+    }
+    with engine.begin() as connection:
+        for column, declaration in provider_scan_run_additions.items():
+            if column not in provider_scan_run_columns:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE provider_scan_runs ADD COLUMN {column} {declaration}"
+                )
+
 
 def get_session() -> Generator[Session, None, None]:
     with SessionLocal() as session:

@@ -5,7 +5,7 @@ import unicodedata
 import zipfile
 from collections import Counter, deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,11 +19,13 @@ from app.providers.base import (
     DiscoveredWork,
     ProviderCapability,
     RemoteImage,
+    compute_list_signature,
     sort_discovered_works,
 )
 from app.providers.errors import (
     AuthorIdentityUnconfirmedError,
     AuthorNotFoundError,
+    CachedIdentityInvalidError,
     ProviderError,
     describe_http_error,
 )
@@ -115,6 +117,35 @@ class NhentaiProvider:
     _tag_lookup_batch = 100
     _image_attempts = 4
     _download_concurrency = 3
+    identity_rule_version = "nh-v1"
+
+    @property
+    def max_search_pages(self) -> int:
+        return self._max_search_pages
+
+    def identity_config_signature(self) -> str:
+        return compute_list_signature(
+            {"base_url": self._base_url, "rule": self.identity_rule_version}
+        )
+
+    def scan_config_signature(self, identity_key: str) -> str:
+        return compute_list_signature(
+            {"base_url": self._base_url, "identity_key": identity_key, "sort": "date"}
+        )
+
+    @staticmethod
+    def listing_signature(gallery: NhentaiGallery) -> str:
+        return compute_list_signature(
+            {
+                "id": gallery.external_id,
+                "media_id": gallery.media_id,
+                "title": gallery.title,
+                "alt_titles": gallery.alt_titles,
+                "cover_url": gallery.cover_url,
+                "page_count": gallery.page_count,
+                "tag_ids": sorted(gallery.tag_ids),
+            }
+        )
 
     def __init__(
         self,
@@ -193,26 +224,106 @@ class NhentaiProvider:
 
         semaphore = asyncio.Semaphore(2)
 
-        async def enrich(gallery: NhentaiGallery) -> NhentaiGallery:
-            # The tag listing is authoritative, so details only add metadata. A
-            # failed detail lookup keeps the listed gallery instead of failing the scan.
+        async def enrich(gallery: NhentaiGallery) -> DiscoveredWork:
+            base_sig = self.listing_signature(gallery)
+            listing_work = self._discovered_work(
+                gallery, is_detail=False, list_signature=base_sig
+            )
             async with semaphore:
-                for attempt in range(2):
-                    try:
-                        detailed = await self._gallery(gallery.external_id)
-                    except ProviderError:
-                        if attempt == 1:
-                            return gallery
-                        await self._sleep(0.35)
-                        continue
-                    return detailed if detailed.artists else gallery
-            return gallery
+                return await self.fetch_work_detail(listing_work)
 
         listed = list(galleries.values())
         detail_limit = min(self._detail_limit, len(listed))
         enriched = await asyncio.gather(*(enrich(item) for item in listed[:detail_limit]))
-        exact = [*enriched, *listed[detail_limit:]]
-        return sort_discovered_works([self._discovered_work(gallery) for gallery in exact])
+        remainder = [
+            self._discovered_work(
+                item, is_detail=False, list_signature=self.listing_signature(item)
+            )
+            for item in listed[detail_limit:]
+        ]
+        return sort_discovered_works([*enriched, *remainder])
+
+    async def resolve_author_identity(
+        self, author_name: str, *, author_names: set[str] | None = None
+    ) -> tuple[str, str, str]:
+        """Resolve an author query into `(identity_key, tag_id, resolved_name)`."""
+        normalized_author = " ".join(author_name.split()).strip()
+        artist = await self._find_artist_tag(normalized_author, author_names=author_names)
+        return f"tag:{artist.id}", str(artist.id), artist.name
+
+    async def fetch_tagged_page(
+        self,
+        resolved_id: str,
+        artist_name: str,
+        page: int,
+        *,
+        verify_cached_identity: bool = False,
+    ) -> tuple[list[DiscoveredWork], int]:
+        """Fetch one tagged gallery page without fetching per-work details."""
+        record_metric("list_requests")
+        record_metric("pages_fetched")
+        record_metric("pages_covered")
+        try:
+            payload = await self._request_api(
+                "/api/v2/galleries/tagged",
+                bucket="tagged",
+                params={
+                    "tag_id": str(resolved_id),
+                    "sort": "date",
+                    "page": str(page),
+                    "per_page": str(self._tagged_page_size),
+                },
+            )
+        except ProviderError as exc:
+            cause = exc.__cause__
+            if (
+                verify_cached_identity
+                and isinstance(cause, httpx.HTTPStatusError)
+                and cause.response.status_code == 404
+            ):
+                raise CachedIdentityInvalidError("nHentai 缓存作者标签已失效 (404)") from exc
+            raise
+        parsed, total_pages = self.parse_listing(payload, artist_name)
+        if verify_cached_identity:
+            try:
+                expected_tag_id = int(resolved_id)
+            except ValueError as exc:
+                raise CachedIdentityInvalidError("nHentai 缓存作者标签格式无效") from exc
+            if page == 1 and not parsed:
+                raise CachedIdentityInvalidError("nHentai 缓存作者标签返回空列表")
+            if parsed and all(
+                gallery.tag_ids and expected_tag_id not in gallery.tag_ids
+                for gallery in parsed
+            ):
+                raise CachedIdentityInvalidError("nHentai 缓存作者标签与返回作品不符")
+        works = [
+            self._discovered_work(
+                gallery,
+                is_detail=False,
+                list_signature=self.listing_signature(gallery),
+            )
+            for gallery in parsed
+        ]
+        return works, total_pages
+
+    async def fetch_work_detail(self, item: DiscoveredWork) -> DiscoveredWork:
+        """Fetch detail metadata for a listed work; never clears existing detail on failure."""
+        for attempt in range(2):
+            try:
+                detailed = await self._gallery(item.external_id)
+            except ProviderError:
+                if attempt == 1:
+                    return replace(item, detail_failed=True)
+                await self._sleep(0.35)
+                continue
+            if detailed.artists:
+                return self._discovered_work(
+                    detailed,
+                    is_detail=True,
+                    list_signature=item.list_signature,
+                )
+            return replace(item, detail_failed=True)
+        return replace(item, detail_failed=True)
 
     async def _find_artist_tag(
         self, author_name: str, *, author_names: set[str] | None = None
@@ -667,7 +778,19 @@ class NhentaiProvider:
             page_count=page_count,
         )
 
-    def _discovered_work(self, gallery: NhentaiGallery) -> DiscoveredWork:
+    _listing_provided_fields = frozenset({"cover_url", "status", "raw_metadata"})
+    _listing_raw_keys = frozenset({"altTitles", "page_count", "media_id"})
+    _detail_provided_fields = frozenset(
+        {"cover_url", "status", "year", "language", "tags", "source_updated_at", "raw_metadata"}
+    )
+
+    def _discovered_work(
+        self,
+        gallery: NhentaiGallery,
+        *,
+        is_detail: bool = True,
+        list_signature: str | None = None,
+    ) -> DiscoveredWork:
         return DiscoveredWork(
             external_id=gallery.external_id,
             title=gallery.title,
@@ -686,6 +809,13 @@ class NhentaiProvider:
                 "scanlator": gallery.scanlator,
                 "uploaded_at": (gallery.upload_date.isoformat() if gallery.upload_date else None),
             },
+            provided_fields=(
+                self._detail_provided_fields if is_detail else self._listing_provided_fields
+            ),
+            raw_metadata_provided_keys=(None if is_detail else self._listing_raw_keys),
+            list_signature=list_signature,
+            is_detail_complete=is_detail,
+            detail_fetched=is_detail,
         )
 
     @classmethod

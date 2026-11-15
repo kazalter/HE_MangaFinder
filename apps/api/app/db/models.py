@@ -98,6 +98,11 @@ class WorkSource(Base):
     source_url: Mapped[str] = mapped_column(Text)
     raw_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     source_updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    list_signature: Mapped[str | None] = mapped_column(String(64))
+    detail_fetched_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    detail_failure_count: Mapped[int] = mapped_column(default=0)
+    detail_next_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    detail_last_attempted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     work: Mapped[Work] = relationship(back_populates="sources")
 
@@ -355,14 +360,64 @@ class ProviderScanRun(Base):
     provider: Mapped[str] = mapped_column(String(80), index=True)
     query_name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(30), default="running", index=True)
+    scan_mode: Mapped[str | None] = mapped_column(String(20))
     found_count: Mapped[int] = mapped_column(default=0)
     new_count: Mapped[int] = mapped_column(default=0)
     updated_count: Mapped[int] = mapped_column(default=0)
     excluded_count: Mapped[int] = mapped_column(default=0)
+    pages_covered: Mapped[int] = mapped_column(default=0)
+    total_pages_hint: Mapped[int | None] = mapped_column(default=None)
+    reached_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    budget_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
     duration_ms: Mapped[int] = mapped_column(default=0)
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class ProviderAuthorIdentity(Base):
+    """Cached confirmed provider identity / tag mapping for an author query."""
+
+    __tablename__ = "provider_author_identities"
+    __table_args__ = (UniqueConstraint("author_id", "provider", "normalized_query"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    normalized_query: Mapped[str] = mapped_column(String(200))
+    author_config_signature: Mapped[str] = mapped_column(String(64))
+    rule_version: Mapped[str] = mapped_column(String(32))
+    resolved_identity: Mapped[str] = mapped_column(String(200))
+    resolved_name: Mapped[str] = mapped_column(String(200))
+    confirmed_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    last_verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class ProviderScanState(Base):
+    """Resumable scan cursor & history state isolated by author, provider, and identity."""
+
+    __tablename__ = "provider_scan_states"
+    __table_args__ = (UniqueConstraint("author_id", "provider", "identity_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    identity_key: Mapped[str] = mapped_column(String(250))
+    config_signature: Mapped[str] = mapped_column(String(64))
+    last_recent_scan_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_deep_scan_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    runs_since_deep_scan: Mapped[int] = mapped_column(default=0)
+    deep_cursor_page: Mapped[int] = mapped_column(default=1)
+    total_pages_hint: Mapped[int | None] = mapped_column(default=None)
+    deep_completed_once: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utcnow, onupdate=utcnow
+    )
 
 
 class CatalogEvent(Base):
