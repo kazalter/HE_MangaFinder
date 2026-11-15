@@ -1,7 +1,7 @@
 import asyncio
 import os
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -37,19 +37,36 @@ class BrowserCollector:
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.lock = asyncio.Lock()
+        self._session_generation: int = 0
+        self._closing: bool = False
+
+    async def _ensure_started_locked(self) -> None:
+        """Lazily initialize Playwright, Chromium, and BrowserContext while holding `self.lock`."""
+        if self.browser is not None and self.context is not None:
+            return
+        try:
+            if self.playwright is None:
+                self.playwright = await async_playwright().start()
+            if self.browser is None:
+                launch_options: dict[str, Any] = {
+                    "headless": HEADLESS,
+                    "executable_path": CHROMIUM_EXECUTABLE,
+                    "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+                }
+                if PROXY_URL:
+                    launch_options["proxy"] = {"server": PROXY_URL}
+                self.browser = await self.playwright.chromium.launch(**launch_options)
+                record_metric("chromium_launches")
+            if self.context is None:
+                self.context = await self._new_context()
+        except BaseException:
+            await self._close_locked(save_state=False)
+            raise
 
     async def start(self) -> None:
-        self.playwright = await async_playwright().start()
-        launch_options: dict[str, Any] = {
-            "headless": HEADLESS,
-            "executable_path": CHROMIUM_EXECUTABLE,
-            "args": ["--no-sandbox", "--disable-dev-shm-usage"],
-        }
-        if PROXY_URL:
-            launch_options["proxy"] = {"server": PROXY_URL}
-        self.browser = await self.playwright.chromium.launch(**launch_options)
-        record_metric("chromium_launches")
-        self.context = await self._new_context()
+        async with self.lock:
+            self._closing = False
+            await self._ensure_started_locked()
 
     async def _new_context(self) -> BrowserContext:
         if not self.browser:
@@ -71,10 +88,15 @@ class BrowserCollector:
 
     async def reload_session(self) -> None:
         async with self.lock:
-            if self.context:
-                await self.context.close()
+            self._session_generation += 1
+            if self.context is not None:
+                ctx = self.context
+                self.context = None
+                with suppress(Exception):
+                    await ctx.close()
             STATE_RUNTIME.unlink(missing_ok=True)
-            self.context = await self._new_context()
+            if self.browser is not None:
+                self.context = await self._new_context()
 
     async def check_session(self) -> bool:
         record_metric("browser_calls")
@@ -86,24 +108,67 @@ class BrowserCollector:
                 await self.ensure_access(page)
                 return "/home" in page.url
             finally:
-                await page.close()
+                with suppress(Exception):
+                    await page.close()
+
+    async def _close_locked(self, *, save_state: bool = True) -> None:
+        ctx = self.context
+        self.context = None
+        if ctx is not None:
+            try:
+                if save_state:
+                    STATE_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
+                    with suppress(Exception):
+                        await ctx.storage_state(path=str(STATE_RUNTIME))
+            finally:
+                with suppress(Exception):
+                    await ctx.close()
+        browser = self.browser
+        self.browser = None
+        if browser is not None:
+            with suppress(Exception):
+                await browser.close()
+        pw = self.playwright
+        self.playwright = None
+        if pw is not None:
+            with suppress(Exception):
+                await pw.stop()
 
     async def close(self) -> None:
-        if self.context:
-            try:
-                STATE_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
-                await self.context.storage_state(path=str(STATE_RUNTIME))
-            finally:
-                await self.context.close()
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        self._closing = True
+        async with self.lock:
+            await self._close_locked(save_state=True)
 
     async def page(self) -> Page:
+        """Open a new browser page; caller must hold `self.lock`."""
+        await self._ensure_started_locked()
         if not self.context:
             raise RuntimeError("浏览器尚未启动")
         return await self.context.new_page()
+
+    async def _finalize_page_locked(
+        self,
+        page: Page,
+        *,
+        save_runtime_state: bool = False,
+        session_gen: int | None = None,
+        cancelled: bool = False,
+    ) -> None:
+        """Persist runtime storage state only if session generation is unchanged."""
+        try:
+            if (
+                save_runtime_state
+                and not cancelled
+                and not self._closing
+                and self.context is not None
+                and session_gen == self._session_generation
+            ):
+                STATE_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
+                with suppress(Exception):
+                    await self.context.storage_state(path=str(STATE_RUNTIME))
+        finally:
+            with suppress(Exception):
+                await page.close()
 
     async def ensure_access(self, page: Page) -> None:
         if "/login" in page.url or "/i/flow/login" in page.url:
@@ -176,12 +241,15 @@ class BrowserCollector:
                     )
                 return results
             finally:
-                await page.close()
+                with suppress(Exception):
+                    await page.close()
 
     async def posts(self, handle: str, since_id: str | None, limit: int) -> list[dict[str, Any]]:
         record_metric("browser_calls")
         async with self.lock:
+            session_gen = self._session_generation
             page = await self.page()
+            cancelled = False
             try:
                 await self.navigate(page, f"https://x.com/{handle}")
                 await page.wait_for_timeout(2500)
@@ -210,11 +278,16 @@ class BrowserCollector:
                     await page.mouse.wheel(0, 3000)
                     await page.wait_for_timeout(1100)
                 return sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
             finally:
-                STATE_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
-                if self.context:
-                    await self.context.storage_state(path=str(STATE_RUNTIME))
-                await page.close()
+                await self._finalize_page_locked(
+                    page,
+                    save_runtime_state=True,
+                    session_gen=session_gen,
+                    cancelled=cancelled,
+                )
 
     async def posts_batch(
         self,
@@ -227,7 +300,9 @@ class BrowserCollector:
         # anchor is no longer visible, fail closed instead of silently skipping data.
         record_metric("browser_calls")
         async with self.lock:
+            session_gen = self._session_generation
             page = await self.page()
+            cancelled = False
             try:
                 await self.navigate(page, f"https://x.com/{handle}")
                 await page.wait_for_timeout(2500)
@@ -274,11 +349,16 @@ class BrowserCollector:
                     await page.mouse.wheel(0, 3000)
                     await page.wait_for_timeout(1100)
                 raise RuntimeError("X 浏览器翻页未完成，保留扫描进度")
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
             finally:
-                STATE_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
-                if self.context:
-                    await self.context.storage_state(path=str(STATE_RUNTIME))
-                await page.close()
+                await self._finalize_page_locked(
+                    page,
+                    save_runtime_state=True,
+                    session_gen=session_gen,
+                    cancelled=cancelled,
+                )
 
     async def post_status(self, handle: str, post_id: str) -> dict[str, str | None]:
         record_metric("browser_calls")
@@ -309,7 +389,8 @@ class BrowserCollector:
                 )
                 return {"status": status, "reason": body[:500] or "X 页面没有返回帖子"}
             finally:
-                await page.close()
+                with suppress(Exception):
+                    await page.close()
 
     async def _parse_article(self, article: Any, handle: str) -> dict[str, Any] | None:
         time_locator = article.locator("time")
@@ -406,7 +487,7 @@ graphql_collector = WebGraphQLCollector(
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await collector.start()
+    collector._closing = False
     yield
     await collector.close()
 
@@ -438,6 +519,9 @@ def health(_: Annotated[None, Depends(authorize)]) -> dict[str, object]:
 @app.post("/session/reload", dependencies=[Depends(authorize)])
 async def reload_session() -> dict[str, bool]:
     await collector.reload_session()
+    invalidate = getattr(graphql_collector, "invalidate_session", None)
+    if callable(invalidate):
+        invalidate()
     return {"reloaded": True}
 
 
