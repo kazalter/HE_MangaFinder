@@ -13,6 +13,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.observability import record_metric
 from app.db.models import (
     ActivityItem,
     ActivityItemPost,
@@ -39,6 +40,7 @@ def _http_client(settings: Settings) -> httpx.AsyncClient:
 def _encode_webp(
     raw: bytes, maximum_dimension: int, quality: int
 ) -> tuple[bytes, int, int]:
+    record_metric("media_decode_count")
     with Image.open(BytesIO(raw)) as opened:
         opened.load()
         image = ImageOps.exif_transpose(opened)
@@ -101,6 +103,7 @@ class SocialAvatarArchive:
                 source_url, headers={"User-Agent": self.settings.user_agent}
             )
             response.raise_for_status()
+            record_metric("media_bytes_downloaded", len(response.content))
             if len(response.content) > MAX_AVATAR_BYTES:
                 raise ValueError("头像超过 8 MB 归档上限")
             encoded, _, _ = _encode_webp(
@@ -210,6 +213,7 @@ class SocialMediaArchive:
             )
             response.raise_for_status()
             raw = response.content
+            record_metric("media_bytes_downloaded", len(raw))
             if len(raw) > MAX_SOURCE_BYTES:
                 raise ValueError("图片超过 32 MB 归档上限")
             encoded, width, height = self._encode(raw)

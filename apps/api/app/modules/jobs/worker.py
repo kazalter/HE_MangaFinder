@@ -2,12 +2,15 @@ import asyncio
 import logging
 import threading
 from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.observability import capture_metrics, record_metric
+from app.core.time import as_utc
 from app.db.models import Job, JobStatus, SocialPostProcessing
 from app.db.session import SessionLocal
 from app.modules.agent_review.service import AgentReviewService
@@ -122,6 +125,7 @@ class JobWorker:
             except OperationalError as lock_error:
                 if not _should_retry_sqlite_lock(lock_error, attempt):
                     raise
+                record_metric("db_lock_retries")
                 session.rollback()
                 await self._sleep_before_retry(attempt)
         return None
@@ -152,6 +156,7 @@ class JobWorker:
             except OperationalError as lock_error:
                 if not _should_retry_sqlite_lock(lock_error, attempt):
                     raise
+                record_metric("db_lock_retries")
                 session.rollback()
                 await self._sleep_before_retry(attempt)
 
@@ -171,6 +176,7 @@ class JobWorker:
             except OperationalError as lock_error:
                 if not _should_retry_sqlite_lock(lock_error, attempt):
                     raise
+                record_metric("db_lock_retries")
                 session.rollback()
                 await self._sleep_before_retry(attempt)
 
@@ -197,6 +203,7 @@ class JobWorker:
             except OperationalError as lock_error:
                 if not _should_retry_sqlite_lock(lock_error, attempt):
                     raise
+                record_metric("db_lock_retries")
                 session.rollback()
                 await self._sleep_before_retry(attempt)
 
@@ -208,99 +215,109 @@ class JobWorker:
                 return False
             job_id = job.id
             job_kind = job.kind
+            scheduled_at = job.next_attempt_at or job.created_at
+            queue_wait_ms = (
+                max(0, round((datetime.now(UTC) - as_utc(scheduled_at)).total_seconds() * 1000))
+                if scheduled_at
+                else 0
+            )
             enqueue_agent_after_discovery = False
             enqueue_notifications = False
-            try:
-                if job.kind == DISCOVER_AUTHOR:
-                    discovery = DiscoveryService(session, self.providers)
-                    trigger = str(job.payload.get("trigger", "manual"))
-                    if trigger == "manual":
-                        result = await discovery.discover_author(int(job.payload["author_id"]))
-                    else:
-                        provider_names = {
-                            str(provider) for provider in job.payload.get("providers", [])
-                        }
-                        result = await discovery.discover_author(
-                            int(job.payload["author_id"]),
-                            trigger=trigger,
-                            provider_names=(
-                                provider_names if trigger == "provider_retry" else None
-                            ),
+            with capture_metrics(f"job.{job_kind}", log_summary=True) as metrics:
+                metrics.set_attr("job_id", job_id)
+                metrics.set_attr("queue_wait_ms", queue_wait_ms)
+                try:
+                    if job.kind == DISCOVER_AUTHOR:
+                        discovery = DiscoveryService(session, self.providers)
+                        trigger = str(job.payload.get("trigger", "manual"))
+                        if trigger == "manual":
+                            result = await discovery.discover_author(int(job.payload["author_id"]))
+                        else:
+                            provider_names = {
+                                str(provider) for provider in job.payload.get("providers", [])
+                            }
+                            result = await discovery.discover_author(
+                                int(job.payload["author_id"]),
+                                trigger=trigger,
+                                provider_names=(
+                                    provider_names if trigger == "provider_retry" else None
+                                ),
+                            )
+                        final_payload = {**job.payload, **result}
+                        enqueue_agent_after_discovery = (
+                            self.settings.agent_review_after_discovery
+                            and self.settings.agent_configured
                         )
-                    final_payload = {**job.payload, **result}
-                    enqueue_agent_after_discovery = (
-                        self.settings.agent_review_after_discovery
-                        and self.settings.agent_configured
-                    )
-                elif job.kind == DOWNLOAD_CHAPTER:
-                    path, verification = await DownloadService(
-                        session, self.providers, self.settings
-                    ).download(
-                        int(job.payload["work_id"]),
-                        str(job.payload["provider"]),
-                        str(job.payload["chapter_id"]),
-                    )
-                    final_payload = {
-                        **job.payload,
-                        "output_path": path,
-                        "verification": asdict(verification),
-                    }
-                elif job.kind == REFRESH_COVER_FINGERPRINTS:
-                    result = await CoverFingerprintRefreshService(session, self.providers).run(
-                        bool(job.payload.get("force", False))
-                    )
-                    final_payload = {**job.payload, **result}
-                elif job.kind == AGENT_REVIEW_SUGGESTIONS:
-                    result = await AgentReviewService(session, self.settings).run_pending(
-                        job.payload.get("max_reviews")
-                    )
-                    final_payload = {**job.payload, **result}
-                elif job.kind == SOCIAL_SYNC_ACCOUNT:
-                    result = await SocialSyncService(session, self.settings).sync_account(
-                        int(job.payload["account_id"])
-                    )
-                    final_payload = {**job.payload, **result}
-                    enqueue_notifications = True
-                elif job.kind == SOCIAL_PROCESS_POST:
-                    result = await SocialSyncService(session, self.settings).process_post(
-                        int(job.payload["post_id"])
-                    )
-                    final_payload = {**job.payload, **result}
-                    enqueue_notifications = True
-                elif job.kind == REFRESH_SOCIAL_DIGEST:
-                    digest = await DigestService(session, self.settings).refresh(
-                        int(job.payload["author_id"])
-                    )
-                    session.commit()
-                    final_payload = {**job.payload, "digest_id": digest.id if digest else None}
-                elif job.kind == BUILD_DAILY_DIGEST:
-                    result = await DailyDigestService(session, self.settings).build(
-                        force=bool(job.payload.get("force", False))
-                    )
-                    session.commit()
-                    final_payload = {**job.payload, **result}
-                    enqueue_notifications = True
-                elif job.kind == DELIVER_NOTIFICATIONS:
-                    result = await NotificationService(session, self.settings).deliver_pending()
-                    final_payload = {**job.payload, **result}
-                else:
-                    raise ValueError(f"未知任务类型: {job.kind}")
-            except Exception as exc:
-                logger.warning("Job %s failed: %s", job_id, exc)
-                session.rollback()
-                await self._fail_with_retry(session, jobs, job_id, str(exc))
-                return True
+                    elif job.kind == DOWNLOAD_CHAPTER:
+                        path, verification = await DownloadService(
+                            session, self.providers, self.settings
+                        ).download(
+                            int(job.payload["work_id"]),
+                            str(job.payload["provider"]),
+                            str(job.payload["chapter_id"]),
+                        )
+                        final_payload = {
+                            **job.payload,
+                            "output_path": path,
+                            "verification": asdict(verification),
+                        }
+                    elif job.kind == REFRESH_COVER_FINGERPRINTS:
+                        result = await CoverFingerprintRefreshService(session, self.providers).run(
+                            bool(job.payload.get("force", False))
+                        )
+                        final_payload = {**job.payload, **result}
+                    elif job.kind == AGENT_REVIEW_SUGGESTIONS:
+                        result = await AgentReviewService(session, self.settings).run_pending(
+                            job.payload.get("max_reviews")
+                        )
+                        final_payload = {**job.payload, **result}
+                    elif job.kind == SOCIAL_SYNC_ACCOUNT:
+                        result = await SocialSyncService(session, self.settings).sync_account(
+                            int(job.payload["account_id"])
+                        )
+                        final_payload = {**job.payload, **result}
+                        enqueue_notifications = True
+                    elif job.kind == SOCIAL_PROCESS_POST:
+                        result = await SocialSyncService(session, self.settings).process_post(
+                            int(job.payload["post_id"])
+                        )
+                        final_payload = {**job.payload, **result}
+                        enqueue_notifications = True
+                    elif job.kind == REFRESH_SOCIAL_DIGEST:
+                        digest = await DigestService(session, self.settings).refresh(
+                            int(job.payload["author_id"])
+                        )
+                        session.commit()
+                        final_payload = {**job.payload, "digest_id": digest.id if digest else None}
+                    elif job.kind == BUILD_DAILY_DIGEST:
+                        result = await DailyDigestService(session, self.settings).build(
+                            force=bool(job.payload.get("force", False))
+                        )
+                        session.commit()
+                        final_payload = {**job.payload, **result}
+                        enqueue_notifications = True
+                    elif job.kind == DELIVER_NOTIFICATIONS:
+                        result = await NotificationService(session, self.settings).deliver_pending()
+                        final_payload = {**job.payload, **result}
+                    else:
+                        raise ValueError(f"未知任务类型: {job.kind}")
+                except Exception as exc:
+                    logger.warning("Job %s failed: %s", job_id, exc)
+                    session.rollback()
+                    await self._fail_with_retry(session, jobs, job_id, str(exc))
+                    return True
 
-            await self._succeed_with_retry(
-                session,
-                jobs,
-                job_id,
-                job_kind,
-                final_payload,
-                enqueue_agent_after_discovery=enqueue_agent_after_discovery,
-                enqueue_notifications=enqueue_notifications,
-            )
-            return True
+                await self._succeed_with_retry(
+                    session,
+                    jobs,
+                    job_id,
+                    job_kind,
+                    final_payload,
+                    enqueue_agent_after_discovery=enqueue_agent_after_discovery,
+                    enqueue_notifications=enqueue_notifications,
+                )
+                record_metric("succeeded_count")
+                return True
 
 
 class CoverWorkerThread:

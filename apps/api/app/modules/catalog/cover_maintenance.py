@@ -1,10 +1,12 @@
 import asyncio
+import time
 from typing import Any
 
 from sqlalchemy import exists, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from app.core.observability import capture_metrics, record_metric
 from app.db.models import MergeSuggestion, Work, WorkFingerprint, WorkGroup
 from app.modules.agent_review.candidates import build_candidate_evidence
 from app.modules.catalog.aggregation import CoverHasher
@@ -30,6 +32,12 @@ class CoverFingerprintRefreshService:
         self.concurrency = max(1, min(concurrency, 6))
 
     async def run(self, force: bool = False, batch_size: int = 75) -> dict[str, int]:
+        with capture_metrics("cover_maintenance.run", log_summary=True) as metrics:
+            metrics.set_attr("force", force)
+            metrics.set_attr("batch_size", batch_size)
+            return await self._run_impl(force=force, batch_size=batch_size)
+
+    async def _run_impl(self, force: bool = False, batch_size: int = 75) -> dict[str, int]:
         rows = list(
             self.session.scalars(
                 select(WorkFingerprint)
@@ -38,6 +46,7 @@ class CoverFingerprintRefreshService:
                 .order_by(WorkFingerprint.work_id)
             )
         )
+        record_metric("cover_works_loaded", len(rows))
         all_pending = [item for item in rows if force or self._needs_refresh(item)]
         pending = all_pending if force else all_pending[: max(1, batch_size)]
         work_items: list[tuple[int, str, str | None, str | None]] = [
@@ -76,6 +85,8 @@ class CoverFingerprintRefreshService:
             await hasher.close()
 
         changed_suggestions = await self._refresh_suggestion_reasons_with_retry()
+        record_metric("cover_works_refreshed", refreshed)
+        record_metric("cover_works_failed", failed)
         return {
             "eligible": len(rows),
             "pending": len(all_pending),
@@ -90,6 +101,7 @@ class CoverFingerprintRefreshService:
         self, updates: list[tuple[int, str, dict[str, Any]]]
     ) -> tuple[int, int]:
         for attempt in range(_LOCK_RETRY_ATTEMPTS):
+            started = time.monotonic()
             try:
                 batch_refreshed = 0
                 batch_stale = 0
@@ -116,10 +128,12 @@ class CoverFingerprintRefreshService:
                     else:
                         batch_stale += 1
                 self.session.commit()
+                record_metric("db_write_ms", round((time.monotonic() - started) * 1000))
                 return batch_refreshed, batch_stale
             except OperationalError as exc:
                 if not _is_sqlite_lock_error(exc) or attempt >= _LOCK_RETRY_ATTEMPTS - 1:
                     raise
+                record_metric("db_lock_retries")
                 self.session.rollback()
                 await asyncio.sleep(min(1.0, 0.1 * (attempt + 1)))
         raise RuntimeError("unreachable")

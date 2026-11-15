@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.core.observability import capture_metrics, record_metric
 from app.core.time import as_utc, utc_timestamp
 from app.db.models import (
     AuthorWork,
@@ -41,6 +42,11 @@ class SocialSyncService:
         self.repository = SocialRepository(session)
 
     async def sync_account(self, account_id: int) -> dict[str, int]:
+        with capture_metrics("social.sync_account", log_summary=True) as metrics:
+            metrics.set_attr("account_id", account_id)
+            return await self._sync_account_impl(account_id)
+
+    async def _sync_account_impl(self, account_id: int) -> dict[str, int]:
         account = self.repository.get_account(account_id)
         if not account:
             raise ValueError("社交账号不存在")
@@ -212,6 +218,12 @@ class SocialSyncService:
                 },
             )
             created_count += int(created)
+            if created:
+                record_metric("social_posts_created")
+            elif changed:
+                record_metric("social_posts_changed")
+            else:
+                record_metric("social_posts_unchanged")
             if item.post_type == "retweet":
                 continue
             state = self.session.get(SocialPostProcessing, post.id)

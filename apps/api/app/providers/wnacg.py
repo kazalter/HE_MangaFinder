@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from app.core.observability import record_metric, set_metric_attr
 from app.providers.base import (
     Chapter,
     DiscoveredWork,
@@ -104,6 +105,9 @@ class WnacgProvider:
     async def discover_by_author(
         self, author_name: str, *, author_names: set[str] | None = None,
     ) -> list[DiscoveredWork]:
+        record_metric("list_requests")
+        record_metric("pages_fetched")
+        record_metric("pages_covered")
         first_response, base_url = await self._request_site(
             "/search/",
             params={
@@ -115,6 +119,9 @@ class WnacgProvider:
         )
         works, page_count = self.parse_search(first_response.text, base_url)
         for page in range(2, min(page_count, self._max_search_pages) + 1):
+            record_metric("list_requests")
+            record_metric("pages_fetched")
+            record_metric("pages_covered")
             response, _ = await self._request_site(
                 "/search/index.php",
                 params={
@@ -128,6 +135,9 @@ class WnacgProvider:
             page_works, _ = self.parse_search(response.text, base_url)
             works.extend(page_works)
             await self._sleep(0.25)
+        set_metric_attr("scan_mode", "recent")
+        set_metric_attr("reached_end", page_count <= self._max_search_pages)
+        set_metric_attr("budget_truncated", page_count > self._max_search_pages)
         unique_works = list({work.external_id: work for work in works}.values())
         all_names = author_names or {author_name}
         verified = [
@@ -303,6 +313,9 @@ class WnacgProvider:
                 response = await self._client.get(
                     f"{base_url}{path}", params=params, headers={"Referer": f"{base_url}/"}
                 )
+                record_metric("bytes_transferred", len(response.content))
+                if response.status_code == 429:
+                    record_metric("rate_limited_429")
                 response.raise_for_status()
                 if self._is_challenge(response.text):
                     errors.append(f"{base_url}: Cloudflare/重定向挑战")

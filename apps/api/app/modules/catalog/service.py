@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.observability import capture_metrics, record_metric
 from app.db.models import (
     AuthorIdentitySuggestion,
     AuthorWork,
@@ -118,6 +119,20 @@ class DiscoveryService:
         return dict(await asyncio.gather(*(fetch(key) for key in requests)))
 
     async def discover_author(
+        self,
+        author_id: int,
+        *,
+        trigger: str = "manual",
+        provider_names: set[str] | None = None,
+    ) -> dict[str, int | str | list[str]]:
+        with capture_metrics("discovery.discover_author", log_summary=True) as metrics:
+            metrics.set_attr("author_id", author_id)
+            metrics.set_attr("trigger", trigger)
+            return await self._discover_author_impl(
+                author_id, trigger=trigger, provider_names=provider_names
+            )
+
+    async def _discover_author_impl(
         self,
         author_id: int,
         *,
@@ -249,11 +264,16 @@ class DiscoveryService:
                                 title=result.work.title,
                             )
                             provider_new += 1
+                            record_metric("new_works")
                         elif result.metadata_changed:
                             provider_updated += 1
+                            record_metric("updated_works")
+                        else:
+                            record_metric("known_works")
 
                     found_count = len(works)
                     excluded_count = len(works) - len(accepted)
+                    record_metric("excluded_works", excluded_count)
                     provider_run = self.session.get(ProviderScanRun, provider_run_id)
                     if provider_run:
                         provider_run.status = "failed" if name_errors else "succeeded"

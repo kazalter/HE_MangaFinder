@@ -19,6 +19,8 @@ from urllib.parse import urlencode
 from curl_cffi import requests
 from curl_cffi.requests.exceptions import RequestException
 
+from app.observability import record_metric
+
 WEB_BEARER_TOKEN = (
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
     "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
@@ -163,7 +165,8 @@ class WebGraphQLCollector:
         errors: list[str] = []
         for profile in ("chrome124", "chrome101", "firefox135", "safari184"):
             try:
-                return requests.get(
+                record_metric("graphql_calls")
+                response = requests.get(
                     url,
                     headers=self._headers() if authenticated else {"User-Agent": self.user_agent},
                     proxies=proxies,
@@ -171,7 +174,14 @@ class WebGraphQLCollector:
                     timeout=45,
                     allow_redirects=True,
                 )
+                content = getattr(response, "content", b"")
+                if isinstance(content, (bytes, bytearray)):
+                    record_metric("bytes_transferred", len(content))
+                if getattr(response, "status_code", 0) == 429:
+                    record_metric("rate_limited_429")
+                return response
             except RequestException as exc:
+                record_metric("retries")
                 errors.append(f"{profile}: {exc}")
         raise GraphQLTransientError("X GraphQL 网络连接失败：" + " | ".join(errors))
 
@@ -268,6 +278,7 @@ class WebGraphQLCollector:
         return str(text or result.get("reason") or result.get("message") or "").strip()
 
     def lookup_user(self, handle: str) -> dict[str, Any] | None:
+        record_metric("identity_lookups")
         body = self._request(
             "UserByScreenName",
             {"screen_name": handle.removeprefix("@"), "withGrokTranslatedBio": False},
@@ -382,6 +393,7 @@ class WebGraphQLCollector:
             }
             if current:
                 variables["cursor"] = current
+            record_metric("timeline_pages")
             body = self._request("UserTweets", variables, TIMELINE_FEATURES, TIMELINE_TOGGLES)
             result = ((body.get("data") or {}).get("user") or {}).get("result") or {}
             timeline = (result.get("timeline") or {}).get("timeline") or {}

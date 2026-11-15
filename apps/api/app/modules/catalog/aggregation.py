@@ -10,6 +10,7 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.observability import record_metric
 from app.core.time import as_utc
 from app.db.models import (
     Author,
@@ -240,6 +241,7 @@ class AggregationService:
         self.cover_hasher = cover_hasher
 
     async def assign(self, work: Work, author: Author) -> WorkGroup:
+        record_metric("aggregation_executed")
         fingerprint = self._upsert_fingerprint(work, author.name)
         if self.cover_hasher:
             await self._ensure_cover_fingerprint(fingerprint, work.cover_url)
@@ -550,6 +552,7 @@ class AggregationService:
                 other = member.work.fingerprint
                 if not other:
                     continue
+                record_metric("candidate_comparisons")
                 other_names = self._fingerprint_names(other)
                 other_primary_names = self._primary_fingerprint_names(other)
                 overlap = names & other_names
@@ -589,6 +592,7 @@ class AggregationService:
                 candidate = member.work.fingerprint
                 if not candidate:
                     continue
+                record_metric("candidate_comparisons")
                 distance, mode, _ = cover_fingerprint_distance(fingerprint, candidate)
                 if distance is not None and (best_distance is None or distance < best_distance):
                     best_group = group

@@ -11,6 +11,7 @@ import httpx
 from PIL import Image
 
 from app.core.config import Settings
+from app.core.observability import record_metric
 
 logger = logging.getLogger(__name__)
 ALLOWED_MEDIA_HOSTS = {"pbs.twimg.com", "video.twimg.com"}
@@ -73,6 +74,7 @@ class LocalMediaOcr:
                         )
                         response.raise_for_status()
                         raw = response.content
+                        record_metric("media_bytes_downloaded", len(raw))
                         image = Image.open(BytesIO(raw))
                         image.verify()
                         suffix = ".png" if image.format == "PNG" else ".jpg"
@@ -96,6 +98,7 @@ class LocalMediaOcr:
         return OcrResult("text" if text else "empty", text=text)
 
     async def _recognize(self, path: str) -> bytes | None:
+        record_metric("ocr_calls")
         result = await asyncio.create_subprocess_exec(
             "tesseract",
             path,

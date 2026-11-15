@@ -19,6 +19,7 @@ from playwright.async_api import (
 )
 
 from app.graphql import GraphQLTransientError, GraphQLUnavailable, WebGraphQLCollector
+from app.observability import global_metrics, record_metric
 
 TOKEN = os.getenv("SOCIAL_COLLECTOR_TOKEN", "")
 STATE_SOURCE = Path(os.getenv("SOCIAL_COLLECTOR_STORAGE_STATE", "/session/storage-state.json"))
@@ -47,6 +48,7 @@ class BrowserCollector:
         if PROXY_URL:
             launch_options["proxy"] = {"server": PROXY_URL}
         self.browser = await self.playwright.chromium.launch(**launch_options)
+        record_metric("chromium_launches")
         self.context = await self._new_context()
 
     async def _new_context(self) -> BrowserContext:
@@ -75,6 +77,7 @@ class BrowserCollector:
             self.context = await self._new_context()
 
     async def check_session(self) -> bool:
+        record_metric("browser_calls")
         async with self.lock:
             page = await self.page()
             try:
@@ -123,6 +126,7 @@ class BrowserCollector:
             raise HTTPException(status_code=503, detail=detail) from exc
 
     async def suggest(self, query: str) -> list[dict[str, Any]]:
+        record_metric("browser_calls")
         async with self.lock:
             page = await self.page()
             try:
@@ -175,6 +179,7 @@ class BrowserCollector:
                 await page.close()
 
     async def posts(self, handle: str, since_id: str | None, limit: int) -> list[dict[str, Any]]:
+        record_metric("browser_calls")
         async with self.lock:
             page = await self.page()
             try:
@@ -220,6 +225,7 @@ class BrowserCollector:
     ) -> dict[str, Any]:
         # Browser fallback resumes by locating the last collected post again. If the
         # anchor is no longer visible, fail closed instead of silently skipping data.
+        record_metric("browser_calls")
         async with self.lock:
             page = await self.page()
             try:
@@ -275,6 +281,7 @@ class BrowserCollector:
                 await page.close()
 
     async def post_status(self, handle: str, post_id: str) -> dict[str, str | None]:
+        record_metric("browser_calls")
         async with self.lock:
             page = await self.page()
             try:
@@ -414,6 +421,7 @@ def authorize(authorization: Annotated[str | None, Header()] = None) -> None:
 
 @app.get("/health")
 def health(_: Annotated[None, Depends(authorize)]) -> dict[str, object]:
+    snap = global_metrics().snapshot()
     return {
         "status": "ok",
         "session_present": STATE_SOURCE.exists() or STATE_RUNTIME.exists(),
@@ -421,6 +429,9 @@ def health(_: Annotated[None, Depends(authorize)]) -> dict[str, object]:
         "primary_provider": "x_web_graphql" if graphql_collector.available else "browser",
         "session_valid": None,
         "headless": HEADLESS,
+        "browser_started": collector.browser is not None,
+        "chromium_launches": snap["counters"].get("chromium_launches", 0),
+        "metrics": snap,
     }
 
 

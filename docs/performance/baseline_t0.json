@@ -1,0 +1,318 @@
+{
+  "generated_at": "2026-11-15T11:17:29.758554+00:00",
+  "repeats": 5,
+  "b0": {
+    "health_status": "ok",
+    "graphql_session_present": true,
+    "browser_started": true,
+    "chromium_launches": 1,
+    "mock_launch_calls": 1,
+    "collector_rss_kib": 52396
+  },
+  "b1_b2": {
+    "b1_cold_counters": {
+      "identity_lookups": 3,
+      "bytes_transferred": 22464,
+      "list_requests": 6,
+      "pages_fetched": 6,
+      "pages_covered": 6,
+      "detail_requests": 24,
+      "aggregation_executed": 15,
+      "new_works": 15,
+      "candidate_comparisons": 5
+    },
+    "b1_warm_wall_ms": {
+      "median": 420.088,
+      "min": 385.11,
+      "max": 481.564,
+      "raw": [
+        420.088,
+        418.726,
+        442.973,
+        385.11,
+        481.564
+      ]
+    },
+    "b1_warm_cpu_ms": {
+      "median": 419.935,
+      "min": 385.085,
+      "max": 481.317,
+      "raw": [
+        419.935,
+        418.707,
+        442.728,
+        385.085,
+        481.317
+      ]
+    },
+    "b1_warm_counters": {
+      "identity_lookups": 6,
+      "bytes_transferred": 43283,
+      "list_requests": 11,
+      "pages_fetched": 11,
+      "pages_covered": 11,
+      "detail_requests": 48,
+      "aggregation_executed": 25,
+      "known_works": 21,
+      "updated_works": 4
+    },
+    "b2_result": {
+      "run_id": 13,
+      "found": 16,
+      "new": 1,
+      "updated": 4,
+      "excluded": 0,
+      "status": "succeeded",
+      "skipped_providers": []
+    },
+    "b2_counters": {
+      "identity_lookups": 4,
+      "bytes_transferred": 29295,
+      "list_requests": 7,
+      "pages_fetched": 7,
+      "pages_covered": 7,
+      "detail_requests": 32,
+      "aggregation_executed": 16,
+      "new_works": 1,
+      "updated_works": 4,
+      "known_works": 11
+    },
+    "b2_total_works": 16,
+    "b2_total_events": 26
+  },
+  "b3": {
+    "collector_wall_ms": {
+      "median": 1.066,
+      "min": 1.034,
+      "max": 1.323,
+      "raw": [
+        1.323,
+        1.238,
+        1.034,
+        1.038,
+        1.066
+      ]
+    },
+    "collector_cpu_ms": {
+      "median": 1.067,
+      "min": 1.035,
+      "max": 1.323,
+      "raw": [
+        1.323,
+        1.239,
+        1.035,
+        1.039,
+        1.067
+      ]
+    },
+    "collector_counters": {
+      "identity_lookups": 2,
+      "graphql_calls": 4,
+      "bytes_transferred": 1794,
+      "timeline_pages": 2
+    },
+    "collector_batch": {
+      "b1_ids": [
+        "205",
+        "204",
+        "100"
+      ],
+      "b1_complete": false,
+      "b2_ids": [
+        "204",
+        "203"
+      ],
+      "b2_complete": true
+    },
+    "api_sync_step1": {
+      "fetched": 2,
+      "created": 2,
+      "queued": 2,
+      "complete": false
+    },
+    "api_sync_step2": {
+      "fetched": 1,
+      "created": 1,
+      "queued": 1,
+      "complete": true
+    },
+    "api_saved_posts": 3,
+    "api_final_watermark": "205"
+  },
+  "b4": {
+    "num_works": 200,
+    "cold_first_batch": {
+      "result": {
+        "eligible": 200,
+        "pending": 200,
+        "processed": 75,
+        "remaining": 125,
+        "refreshed": 75,
+        "failed": 0,
+        "suggestions_updated": 0
+      },
+      "counters": {
+        "cover_works_loaded": 200,
+        "db_write_ms": 55,
+        "cover_works_refreshed": 75
+      },
+      "wall_ms": 4297.256,
+      "cpu_ms": 4218.5
+    },
+    "warm_noop": {
+      "result": {
+        "eligible": 200,
+        "pending": 0,
+        "processed": 0,
+        "remaining": 0,
+        "refreshed": 0,
+        "failed": 0,
+        "suggestions_updated": 0
+      },
+      "counters": {
+        "cover_works_loaded": 200
+      },
+      "wall_ms": {
+        "median": 296.094,
+        "min": 262.892,
+        "max": 318.992,
+        "raw": [
+          293.204,
+          316.85,
+          296.094,
+          318.992,
+          262.892
+        ]
+      },
+      "cpu_ms": {
+        "median": 284.446,
+        "min": 258.917,
+        "max": 314.82,
+        "raw": [
+          275.815,
+          314.82,
+          284.446,
+          295.54,
+          258.917
+        ]
+      }
+    },
+    "force_run": {
+      "result": {
+        "eligible": 200,
+        "pending": 200,
+        "processed": 200,
+        "remaining": 0,
+        "refreshed": 200,
+        "failed": 0,
+        "suggestions_updated": 0
+      },
+      "counters": {
+        "cover_works_loaded": 200,
+        "db_write_ms": 136,
+        "cover_works_refreshed": 200
+      },
+      "wall_ms": {
+        "median": 11164.921,
+        "min": 11054.77,
+        "max": 12004.784,
+        "raw": [
+          12004.784,
+          11312.943,
+          11164.921,
+          11054.77,
+          11145.469
+        ]
+      },
+      "cpu_ms": {
+        "median": 11156.528,
+        "min": 11037.936,
+        "max": 11656.556,
+        "raw": [
+          11656.556,
+          11273.474,
+          11156.528,
+          11037.936,
+          11139.368
+        ]
+      },
+      "peak_rss_kib": 94356
+    }
+  },
+  "b5": {
+    "image_sizes_bytes": {
+      "valid.jpg": 133264,
+      "rotated.jpg": 15664,
+      "trans.png": 5153,
+      "corrupt.jpg": 27
+    },
+    "archived_output_dimensions": [
+      [
+        800,
+        1200
+      ],
+      [
+        900,
+        900
+      ],
+      [
+        1200,
+        1600
+      ]
+    ],
+    "ocr_status": "retry",
+    "wall_ms": {
+      "median": 1152.52,
+      "min": 1139.675,
+      "max": 1175.296,
+      "raw": [
+        1175.296,
+        1152.52,
+        1156.445,
+        1140.212,
+        1139.675
+      ]
+    },
+    "cpu_ms": {
+      "median": 1152.423,
+      "min": 1139.443,
+      "max": 1175.123,
+      "raw": [
+        1175.123,
+        1152.423,
+        1156.293,
+        1140.09,
+        1139.443
+      ]
+    },
+    "counters": {
+      "media_bytes_downloaded": 154108,
+      "media_decode_count": 4
+    },
+    "peak_rss_kib": 153428
+  },
+  "b6": {
+    "rate_limit_works": 1,
+    "rate_limit_counters": {
+      "identity_lookups": 1,
+      "rate_limited_429": 1,
+      "retries": 1,
+      "bytes_transferred": 356,
+      "list_requests": 1,
+      "pages_fetched": 1,
+      "pages_covered": 1,
+      "detail_requests": 1
+    },
+    "rate_limit_sleep_delays": [
+      2.0
+    ],
+    "jobs_recovered": 1,
+    "sqlite_lock_counters": {
+      "cover_works_loaded": 1,
+      "db_lock_retries": 1,
+      "db_write_ms": 1,
+      "cover_works_refreshed": 1
+    },
+    "sqlite_lock_refreshed": 1
+  }
+}

@@ -13,6 +13,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from app.core.observability import record_metric, set_metric_attr
 from app.providers.base import (
     Chapter,
     DiscoveredWork,
@@ -166,6 +167,9 @@ class NhentaiProvider:
         total_pages = 1
         page = 1
         while page <= min(total_pages, self._max_search_pages):
+            record_metric("list_requests")
+            record_metric("pages_fetched")
+            record_metric("pages_covered")
             payload = await self._request_api(
                 "/api/v2/galleries/tagged",
                 bucket="tagged",
@@ -180,6 +184,9 @@ class NhentaiProvider:
             for gallery in parsed:
                 galleries.setdefault(gallery.external_id, gallery)
             page += 1
+        set_metric_attr("scan_mode", "recent")
+        set_metric_attr("reached_end", total_pages <= self._max_search_pages)
+        set_metric_attr("budget_truncated", total_pages > self._max_search_pages)
 
         if not galleries:
             raise AuthorNotFoundError(f"nHentai 未找到作者“{author_name}”")
@@ -212,6 +219,7 @@ class NhentaiProvider:
     ) -> NhentaiArtistTag:
         """Resolve an artist tag, accepting site-specific aliases only when trusted."""
 
+        record_metric("identity_lookups")
         slug = self._slug(author_name)
         if slug:
             try:
@@ -444,6 +452,7 @@ class NhentaiProvider:
 
     async def _gallery(self, external_id: str) -> NhentaiGallery:
         self._validate_id(external_id)
+        record_metric("detail_requests")
         payload = await self._request_api(f"/api/v2/galleries/{external_id}", bucket="gallery")
         if (
             not isinstance(payload, dict)
@@ -475,11 +484,14 @@ class NhentaiProvider:
                     params=params,
                     headers=self._api_headers,
                 )
+                record_metric("bytes_transferred", len(response.content))
                 if response.status_code == 429:
+                    record_metric("rate_limited_429")
                     wait = self._retry_after(response)
                     limiter.block_for(min(wait, self._max_retry_after_seconds))
                     retryable = wait <= self._max_retry_after_seconds
                     if retryable and attempt < self._max_rate_limit_retries:
+                        record_metric("retries")
                         continue
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
