@@ -1,7 +1,8 @@
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, event, inspect, select
+from sqlalchemy import Engine, create_engine, event, inspect, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
@@ -47,7 +48,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _apply_additive_migrations()
     # Additive, idempotent migration: legacy source records remain untouched.
-    from app.db.models import WorkFingerprint
+    from app.db.models import Work, WorkFingerprint
     from app.modules.agent_review.repairs import repair_historical_rationales
     from app.modules.catalog.aggregation import backfill_work_groups, prune_invalid_suggestions
     from app.modules.catalog.repairs import (
@@ -68,10 +69,22 @@ def init_db() -> None:
         seed_event_registry(session)
         if backfill_planned_releases(session):
             session.commit()
+        now = datetime.now(UTC)
         if session.scalar(
-            select(WorkFingerprint.work_id).where(
-                WorkFingerprint.cover_fingerprint.is_(None)
-            ).limit(1)
+            select(WorkFingerprint.work_id)
+            .join(Work, Work.id == WorkFingerprint.work_id)
+            .where(
+                Work.cover_url.is_not(None),
+                Work.cover_url != "",
+                WorkFingerprint.cover_fingerprint.is_(None),
+                or_(
+                    WorkFingerprint.cover_next_retry_at.is_(None),
+                    WorkFingerprint.cover_next_retry_at <= now,
+                    WorkFingerprint.cover_failed_url.is_(None),
+                    WorkFingerprint.cover_failed_url != Work.cover_url,
+                ),
+            )
+            .limit(1)
         ) is not None:
             JobRepository(session).enqueue_cover_fingerprint_refresh()
             session.commit()
@@ -96,11 +109,18 @@ def _apply_additive_migrations() -> None:
     fingerprint_columns = {
         item["name"] for item in inspect(engine).get_columns("work_fingerprints")
     }
-    if "cover_fingerprint" not in fingerprint_columns:
-        with engine.begin() as connection:
-            connection.exec_driver_sql(
-                "ALTER TABLE work_fingerprints ADD COLUMN cover_fingerprint JSON"
-            )
+    fingerprint_additions = {
+        "cover_fingerprint": "JSON",
+        "cover_failure_count": "INTEGER NOT NULL DEFAULT 0",
+        "cover_next_retry_at": "DATETIME",
+        "cover_failed_url": "TEXT",
+    }
+    with engine.begin() as connection:
+        for column, declaration in fingerprint_additions.items():
+            if column not in fingerprint_columns:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE work_fingerprints ADD COLUMN {column} {declaration}"
+                )
 
     group_columns = {item["name"] for item in inspect(engine).get_columns("work_groups")}
     if "manual_metadata" not in group_columns:

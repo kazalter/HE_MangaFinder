@@ -256,11 +256,30 @@ class WorkFingerprint(Base):
     page_count: Mapped[int | None]
     cover_hash: Mapped[str | None] = mapped_column(String(16), index=True)
     cover_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    cover_failure_count: Mapped[int] = mapped_column(default=0)
+    cover_next_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    cover_failed_url: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
     work: Mapped[Work] = relationship(back_populates="fingerprint")
+
+
+class CoverMaintenanceState(Base):
+    """Durable keyset cursor and retry state for batched cover fingerprint maintenance."""
+
+    __tablename__ = "cover_maintenance_state"
+
+    mode: Mapped[str] = mapped_column(String(20), primary_key=True)
+    cursor_work_id: Mapped[int] = mapped_column(default=0)
+    max_work_id: Mapped[int | None]
+    phase: Mapped[str] = mapped_column(String(20), default="scan")
+    retry_work_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    round_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utcnow, onupdate=utcnow
+    )
 
 
 class MergeSuggestion(Base):

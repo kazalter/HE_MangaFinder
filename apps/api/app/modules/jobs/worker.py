@@ -162,13 +162,17 @@ class JobWorker:
 
         if job_kind != REFRESH_COVER_FINGERPRINTS:
             return
-        remaining = int(final_payload.get("remaining", 0))
-        if remaining <= 0 and not self.settings.agent_configured:
+        if "has_more" in final_payload:
+            should_continue = bool(final_payload["has_more"])
+        else:
+            should_continue = int(final_payload.get("remaining") or 0) > 0
+        force = bool(final_payload.get("force", False))
+        if not should_continue and not self.settings.agent_configured:
             return
         for attempt in range(_SQLITE_LOCK_RETRY_ATTEMPTS):
             try:
-                if remaining > 0:
-                    jobs.enqueue_cover_fingerprint_refresh()
+                if should_continue:
+                    jobs.enqueue_cover_fingerprint_refresh(force=force)
                 elif self.settings.agent_configured:
                     jobs.enqueue_agent_reviews()
                 session.commit()

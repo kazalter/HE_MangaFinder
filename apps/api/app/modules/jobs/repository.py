@@ -99,6 +99,13 @@ class JobRepository:
             )
         )
         if active:
+            if (
+                force
+                and active.status == JobStatus.PENDING
+                and not active.payload.get("force")
+            ):
+                active.payload = {**active.payload, "force": True}
+                self.session.flush()
             return active
         job = Job(kind=REFRESH_COVER_FINGERPRINTS, payload={"force": force})
         self.session.add(job)
