@@ -420,6 +420,25 @@ class ProviderScanState(Base):
     )
 
 
+class AuthorAggregationState(Base):
+    """Tracks input revisions and completed aggregation state per author."""
+
+    __tablename__ = "author_aggregation_states"
+
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("authors.id", ondelete="CASCADE"), primary_key=True
+    )
+    input_revision: Mapped[int] = mapped_column(default=1)
+    completed_revision: Mapped[int] = mapped_column(default=0)
+    needs_full_reconcile: Mapped[bool] = mapped_column(Boolean, default=True)
+    algorithm_version: Mapped[str | None] = mapped_column(String(32))
+    dirty_reason: Mapped[str | None] = mapped_column(String(120))
+    last_aggregated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), default=utcnow, onupdate=utcnow
+    )
+
+
 class CatalogEvent(Base):
     """Durable discovery inbox item and the source of catalog growth statistics."""
 

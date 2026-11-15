@@ -11,6 +11,7 @@ from app.db.models import MergeSuggestion, Work, WorkFingerprint, WorkGroup
 from app.modules.agent_review.candidates import build_candidate_evidence
 from app.modules.catalog.aggregation import CoverHasher
 from app.modules.catalog.cover_fingerprint import is_current_fingerprint
+from app.modules.catalog.invalidation import bump_authors_for_works
 from app.providers.registry import ProviderRegistry
 
 _LOCK_RETRY_ATTEMPTS = 10
@@ -105,6 +106,7 @@ class CoverFingerprintRefreshService:
             try:
                 batch_refreshed = 0
                 batch_stale = 0
+                refreshed_work_ids: list[int] = []
                 for work_id, url, payload in updates:
                     variants = payload.get("variants", [])
                     updated = self.session.execute(
@@ -125,8 +127,16 @@ class CoverFingerprintRefreshService:
                     )
                     if updated.rowcount:
                         batch_refreshed += 1
+                        refreshed_work_ids.append(work_id)
                     else:
                         batch_stale += 1
+                if refreshed_work_ids:
+                    bump_authors_for_works(
+                        self.session,
+                        refreshed_work_ids,
+                        reason="cover_fingerprint_updated",
+                        full_reconcile=True,
+                    )
                 self.session.commit()
                 record_metric("db_write_ms", round((time.monotonic() - started) * 1000))
                 return batch_refreshed, batch_stale

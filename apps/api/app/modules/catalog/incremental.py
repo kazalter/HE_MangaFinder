@@ -75,6 +75,7 @@ class IncrementalProviderOutcome:
     scan_mode: str = "recent"
     reached_end: bool = False
     budget_truncated: bool = False
+    aggregation_ran: bool = False
     name_errors: list[str] = field(default_factory=list)
     unconfirmed: list[AuthorIdentityUnconfirmedError] = field(default_factory=list)
 
@@ -524,6 +525,7 @@ async def run_incremental_provider_scan(
     aggregation: AggregationService,
     settings: Settings,
     force_refresh: bool = False,
+    force_aggregation: bool = False,
     requested_scan_mode: str | None = None,
     now: datetime | None = None,
 ) -> IncrementalProviderOutcome:
@@ -684,6 +686,7 @@ async def run_incremental_provider_scan(
                     )
 
             # Prefetch cover fingerprints before beginning SQLite writes.
+            prefetched: dict[tuple[str, str | None, str | None], dict | None] = {}
             if page_unique:
                 prefetched = await prefetch_covers_for_page(
                     session,
@@ -696,30 +699,44 @@ async def run_incremental_provider_scan(
                 prefetched_existing_covers = True
                 aggregation.cover_hasher = PrefetchedCovers(prefetched)
 
-            # Atomic commit of page works, events, and scan cursor progression.
+            # Write works first, decide whether aggregation is needed, then commit atomically.
             try:
+                touched_works: list[Work] = []
+                pending_events: list[tuple[Work, str]] = []
                 for work in page_unique:
                     result = catalog.upsert_with_result(
                         author.id, provider.name, work, now=current_now
                     )
-                    group = await aggregation.assign(result.work, author)
-                    planned_releases.suggest_catalog_match(author.id, group)
                     if result.source_created or result.author_link_created:
-                        discovery.record_event(
-                            author_id=author.id,
-                            group=group,
-                            work_id=result.work.id,
-                            provider=provider.name,
-                            external_id=work.external_id,
-                            title=result.work.title,
-                        )
+                        touched_works.append(result.work)
+                        pending_events.append((result.work, work.external_id))
                         outcome.new_count += 1
                         record_metric("new_works")
                     elif result.metadata_changed:
+                        touched_works.append(result.work)
                         outcome.updated_count += 1
                         record_metric("updated_works")
                     else:
                         record_metric("known_works")
+
+                ran_agg = await aggregation.sync_author_after_writes(
+                    author,
+                    touched_works=touched_works,
+                    prefetched_covers=prefetched,
+                    force=force_aggregation,
+                )
+                if ran_agg:
+                    outcome.aggregation_ran = True
+                emit_catalog_sync_outputs(
+                    session,
+                    author_id=author.id,
+                    provider_name=provider.name,
+                    discovery=discovery,
+                    planned_releases=planned_releases,
+                    touched_works=touched_works,
+                    pending_events=pending_events,
+                    ran_agg=ran_agg,
+                )
 
                 page_state = _get_or_init_scan_state(
                     session, author.id, provider.name, target, current_now
@@ -816,6 +833,38 @@ async def run_incremental_provider_scan(
         )
 
     return outcome
+
+
+def emit_catalog_sync_outputs(
+    session: Session,
+    *,
+    author_id: int,
+    provider_name: str,
+    discovery: DiscoveryRepository,
+    planned_releases: PlannedReleaseService,
+    touched_works: list[Work],
+    pending_events: list[tuple[Work, str]],
+    ran_agg: bool,
+) -> None:
+    """Update planned-release suggestions and discovery events once works have final groups."""
+    if ran_agg:
+        for touched in touched_works:
+            if touched.group_membership is not None:
+                planned_releases.suggest_catalog_match(
+                    author_id, touched.group_membership.group
+                )
+    for created_work, external_id in pending_events:
+        if created_work.group_membership is not None:
+            group = created_work.group_membership.group
+            planned_releases.suggest_catalog_match(author_id, group)
+            discovery.record_event(
+                author_id=author_id,
+                group=group,
+                work_id=created_work.id,
+                provider=provider_name,
+                external_id=external_id,
+                title=created_work.title,
+            )
 
 
 def populate_provider_scan_run(

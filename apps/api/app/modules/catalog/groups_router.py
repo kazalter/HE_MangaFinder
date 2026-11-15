@@ -22,6 +22,7 @@ from app.modules.agent_review.schemas import CandidateEvidence
 from app.modules.catalog.aggregation import AggregationService
 from app.modules.catalog.exclusions import WorkExclusionService
 from app.modules.catalog.group_repository import WorkGroupRepository
+from app.modules.catalog.invalidation import bump_authors_for_groups
 from app.modules.catalog.operation_history import lock_catalog_write, record_operation
 from app.modules.catalog.pair_identity import candidate_key
 from app.modules.catalog.schemas import (
@@ -354,6 +355,12 @@ def reject_suggestion(suggestion_id: int, session: SessionDep) -> MergeSuggestio
             review_id=latest.id if latest else None,
             note="用户在聚合候选审核中选择保持分开",
         )
+        bump_authors_for_groups(
+            session,
+            [source.id, target.id],
+            reason="pair_constrained",
+            full_reconcile=True,
+        )
     item.status = "rejected"
     session.commit()
     return _suggestion(item, repository)
@@ -397,6 +404,13 @@ def apply_group_metadata_update(
         overrides[key] = value
     group.manual_metadata = overrides
     AggregationService(session).recompute(group)
+    if values:
+        bump_authors_for_groups(
+            session,
+            [group.id],
+            reason="manual_metadata_updated",
+            full_reconcile=True,
+        )
     session.commit()
     return group
 

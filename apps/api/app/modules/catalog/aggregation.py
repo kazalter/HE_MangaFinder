@@ -2,13 +2,14 @@ import html
 import io
 import re
 import unicodedata
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import delete, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.observability import record_metric
 from app.core.time import as_utc
@@ -27,6 +28,16 @@ from app.modules.catalog.cover_fingerprint import (
     fingerprint_image,
     hash_distance,
     is_current_fingerprint,
+)
+from app.modules.catalog.invalidation import (
+    authors_for_groups,
+    authors_for_works,
+    bump_authors_for_groups,
+    bump_authors_for_works,
+    capture_author_revision,
+    complete_author_revision,
+    needs_author_aggregation,
+    should_full_reconcile,
 )
 from app.modules.catalog.pair_identity import candidate_key
 from app.modules.catalog.title_identity import (
@@ -239,6 +250,127 @@ class AggregationService:
     def __init__(self, session: Session, cover_hasher: CoverHasher | None = None) -> None:
         self.session = session
         self.cover_hasher = cover_hasher
+        self._batch_groups: dict[int, dict[int, WorkGroup]] = {}
+        self._active_author_id: int | None = None
+        self._fp_names_cache: dict[int, set[str]] = {}
+        self._fp_primary_names_cache: dict[int, set[str]] = {}
+        self._fp_num_sig_cache: dict[int, tuple[str, ...]] = {}
+
+    def begin_author_batch(self, author_id: int) -> list[WorkGroup]:
+        """Preload candidate groups once for an author's aggregation round."""
+        if author_id in self._batch_groups:
+            return list(self._batch_groups[author_id].values())
+        record_metric("candidate_loads")
+        groups = list(
+            self.session.scalars(
+                select(WorkGroup)
+                .join(WorkGroupMember)
+                .join(AuthorWork, AuthorWork.work_id == WorkGroupMember.work_id)
+                .where(AuthorWork.author_id == author_id)
+                .options(
+                    selectinload(WorkGroup.members)
+                    .selectinload(WorkGroupMember.work)
+                    .selectinload(Work.fingerprint)
+                )
+                .distinct()
+            )
+        )
+        self._batch_groups[author_id] = {group.id: group for group in groups}
+        return groups
+
+    def end_author_batch(self, author_id: int) -> None:
+        self._batch_groups.pop(author_id, None)
+        if not self._batch_groups:
+            self._fp_names_cache.clear()
+            self._fp_primary_names_cache.clear()
+            self._fp_num_sig_cache.clear()
+
+    def _invalidate_fp_cache(self, work_id: int | None) -> None:
+        if work_id is None:
+            return
+        self._fp_names_cache.pop(work_id, None)
+        self._fp_primary_names_cache.pop(work_id, None)
+        self._fp_num_sig_cache.pop(work_id, None)
+
+    def _cache_add_group(self, group: WorkGroup) -> None:
+        if group.id is None or not self._batch_groups:
+            return
+        if self._active_author_id is not None and self._active_author_id in self._batch_groups:
+            self._batch_groups[self._active_author_id][group.id] = group
+            return
+        member_authors = authors_for_groups(self.session, [group.id])
+        for aid in member_authors:
+            if aid in self._batch_groups:
+                self._batch_groups[aid][group.id] = group
+
+    def _cache_remove_group(self, group_id: int) -> None:
+        for mapping in self._batch_groups.values():
+            mapping.pop(group_id, None)
+
+    async def reconcile_author(
+        self,
+        author: Author,
+        *,
+        works: Sequence[Work] | None = None,
+    ) -> int:
+        """Aggregate/reconcile works for `author` using a single preloaded candidate index."""
+        if works is None:
+            target_works = list(
+                self.session.scalars(
+                    select(Work)
+                    .join(AuthorWork, AuthorWork.work_id == Work.id)
+                    .where(AuthorWork.author_id == author.id)
+                    .order_by(Work.id)
+                )
+            )
+        else:
+            seen_ids: set[int] = set()
+            target_works = []
+            for item in works:
+                if item.id not in seen_ids:
+                    seen_ids.add(item.id)
+                    target_works.append(item)
+            ungrouped = list(
+                self.session.scalars(
+                    select(Work)
+                    .join(AuthorWork, AuthorWork.work_id == Work.id)
+                    .outerjoin(WorkGroupMember, WorkGroupMember.work_id == Work.id)
+                    .where(
+                        AuthorWork.author_id == author.id,
+                        WorkGroupMember.work_id.is_(None),
+                    )
+                    .order_by(Work.id)
+                )
+            )
+            for item in ungrouped:
+                if item.id not in seen_ids:
+                    seen_ids.add(item.id)
+                    target_works.append(item)
+
+        if not target_works:
+            return 0
+
+        self.begin_author_batch(author.id)
+        prev_active = self._active_author_id
+        self._active_author_id = author.id
+        processed = 0
+        try:
+            for item in target_works:
+                await self.assign(item, author)
+                processed += 1
+        finally:
+            self._active_author_id = prev_active
+            self.end_author_batch(author.id)
+        return processed
+
+    async def reaggregate_author(self, author: Author) -> bool:
+        """Forced full reconciliation entry point with atomic revision completion."""
+        snapshot_revision = capture_author_revision(
+            self.session, author.id, reason="manual_force"
+        )
+        await self.reconcile_author(author)
+        self.prune_pending_suggestions(author.id)
+        return complete_author_revision(self.session, author.id, snapshot_revision)
 
     async def assign(self, work: Work, author: Author) -> WorkGroup:
         record_metric("aggregation_executed")
@@ -356,6 +488,7 @@ class AggregationService:
     ) -> WorkGroup:
         if target.id == source.id:
             return target
+        affected_authors = authors_for_groups(self.session, [target.id, source.id])
         target_overrides = dict(target.manual_metadata or {})
         source_overrides = dict(source.manual_metadata or {})
         conflicts = [
@@ -384,8 +517,18 @@ class AggregationService:
             )
         )
         self.session.flush()
+        self._cache_remove_group(source.id)
         self.session.delete(source)
         self.recompute(target)
+        self._cache_add_group(target)
+        bump_authors_for_groups(
+            self.session,
+            [target.id],
+            reason="group_merged" if manual else "shared_group_merged",
+            full_reconcile=True,
+            extra_author_ids=affected_authors,
+            exclude_author_id=None if manual else self._active_author_id,
+        )
         return target
 
     def split_member(self, group: WorkGroup, work_id: int) -> WorkGroup:
@@ -394,6 +537,9 @@ class AggregationService:
             raise LookupError("版本不属于该作品")
         if len(group.members) == 1:
             raise ValueError("该作品只有一个版本，无法拆分")
+        affected_authors = authors_for_groups(self.session, [group.id]) | authors_for_works(
+            self.session, [work_id]
+        )
         work = member.work
         fingerprint = work.fingerprint or self._upsert_fingerprint(work, "")
         group.members.remove(member)
@@ -410,6 +556,14 @@ class AggregationService:
         new_group.manual_metadata = moved
         self.recompute(group)
         self.recompute(new_group)
+        bump_authors_for_groups(
+            self.session,
+            [group.id, new_group.id],
+            reason="group_split",
+            full_reconcile=True,
+            extra_author_ids=affected_authors,
+            exclude_author_id=self._active_author_id,
+        )
         return new_group
 
     def recompute(self, group: WorkGroup) -> None:
@@ -500,6 +654,7 @@ class AggregationService:
             fingerprint.variant_labels = labels
             fingerprint.page_count = page_count
         self.session.flush()
+        self._invalidate_fp_cache(work.id)
         return fingerprint
 
     async def _ensure_cover_fingerprint(
@@ -510,6 +665,7 @@ class AggregationService:
         current = fingerprint.cover_fingerprint
         if is_current_fingerprint(current) and current.get("source_url") == cover_url:
             return
+        before_hash = fingerprint.cover_hash
         source = next(iter(fingerprint.work.sources), None)
         computed = await self.cover_hasher.fingerprint_url(
             cover_url,
@@ -520,13 +676,32 @@ class AggregationService:
             if not current or current.get("source_url") != cover_url:
                 fingerprint.cover_hash = None
                 fingerprint.cover_fingerprint = None
+                if current is not None or before_hash is not None:
+                    bump_authors_for_works(
+                        self.session,
+                        [fingerprint.work_id],
+                        reason="cover_fingerprint_cleared",
+                        full_reconcile=True,
+                        exclude_author_id=self._active_author_id,
+                    )
             return
         computed["source_url"] = cover_url
         fingerprint.cover_fingerprint = computed
         variants = computed.get("variants", [])
         fingerprint.cover_hash = variants[0].get("dhash") if variants else None
+        if current != computed or before_hash != fingerprint.cover_hash:
+            bump_authors_for_works(
+                self.session,
+                [fingerprint.work_id],
+                reason="cover_fingerprint_updated",
+                full_reconcile=True,
+                exclude_author_id=self._active_author_id,
+            )
 
     def _candidate_groups(self, author_id: int) -> list[WorkGroup]:
+        if author_id in self._batch_groups:
+            return list(self._batch_groups[author_id].values())
+        record_metric("candidate_loads")
         return list(
             self.session.scalars(
                 select(WorkGroup)
@@ -543,8 +718,8 @@ class AggregationService:
         best_group: WorkGroup | None = None
         best_score = 0.0
         exact = False
-        names = self._fingerprint_names(fingerprint)
-        primary_names = self._primary_fingerprint_names(fingerprint)
+        names = self._cached_fingerprint_names(fingerprint)
+        primary_names = self._cached_primary_fingerprint_names(fingerprint)
         for group in groups:
             if not self._group_numbering_matches(fingerprint, group):
                 continue
@@ -553,8 +728,8 @@ class AggregationService:
                 if not other:
                     continue
                 record_metric("candidate_comparisons")
-                other_names = self._fingerprint_names(other)
-                other_primary_names = self._primary_fingerprint_names(other)
+                other_names = self._cached_fingerprint_names(other)
+                other_primary_names = self._cached_primary_fingerprint_names(other)
                 overlap = names & other_names
                 valid_exact = any(len(_compact(value)) >= 3 for value in overlap)
                 score = best_identity_similarity(primary_names, other_primary_names)
@@ -567,13 +742,13 @@ class AggregationService:
     def _best_fingerprint(
         self, fingerprint: WorkFingerprint, group: WorkGroup
     ) -> WorkFingerprint | None:
-        names = self._primary_fingerprint_names(fingerprint)
+        names = self._cached_primary_fingerprint_names(fingerprint)
         candidates = [member.work.fingerprint for member in group.members]
         candidates = [candidate for candidate in candidates if candidate]
         return max(
             candidates,
             key=lambda candidate: best_identity_similarity(
-                names, self._primary_fingerprint_names(candidate)
+                names, self._cached_primary_fingerprint_names(candidate)
             ),
             default=None,
         )
@@ -601,15 +776,28 @@ class AggregationService:
                     best_mode = mode
         return best_group, best_fingerprint, best_distance, best_mode
 
+    def _cached_numbering_signature(self, fingerprint: WorkFingerprint) -> tuple[str, ...]:
+        work_id = fingerprint.work_id
+        if work_id is not None and work_id in self._fp_num_sig_cache:
+            return self._fp_num_sig_cache[work_id]
+        sig = tuple(identity_number_signature(fingerprint.normalized_title))
+        if work_id is not None and self._batch_groups:
+            self._fp_num_sig_cache[work_id] = sig
+        return sig
+
+    def _numbering_pair_matches(self, left: WorkFingerprint, right: WorkFingerprint) -> bool:
+        left_numbers = self._cached_numbering_signature(left)
+        right_numbers = self._cached_numbering_signature(right)
+        return not left_numbers or not right_numbers or left_numbers == right_numbers
+
     @staticmethod
     def _numbering_matches(left: WorkFingerprint, right: WorkFingerprint) -> bool:
         left_numbers = identity_number_signature(left.normalized_title)
         right_numbers = identity_number_signature(right.normalized_title)
         return not left_numbers or not right_numbers or left_numbers == right_numbers
 
-    @classmethod
     def _group_numbering_matches(
-        cls,
+        self,
         fingerprint: WorkFingerprint,
         group: WorkGroup,
         *,
@@ -617,7 +805,7 @@ class AggregationService:
     ) -> bool:
         return all(
             member.work.fingerprint is None
-            or cls._numbering_matches(fingerprint, member.work.fingerprint)
+            or self._numbering_pair_matches(fingerprint, member.work.fingerprint)
             for member in group.members
             if member.work_id != excluding_work_id
         )
@@ -630,6 +818,7 @@ class AggregationService:
         if group.members:
             self.recompute(group)
         else:
+            self._cache_remove_group(group.id)
             self.session.delete(group)
             self.session.flush()
 
@@ -726,6 +915,7 @@ class AggregationService:
         self.session.add(group)
         self.session.flush()
         self.recompute(group)
+        self._cache_add_group(group)
         return group
 
     def _attach(self, work: Work, group: WorkGroup, confidence: float, method: str) -> WorkGroup:
@@ -738,6 +928,7 @@ class AggregationService:
         )
         self.session.flush()
         self.recompute(group)
+        self._cache_add_group(group)
         return group
 
     def _suggest(
@@ -815,6 +1006,122 @@ class AggregationService:
                 removed += 1
         self.session.flush()
         return removed
+
+    def apply_prefetched_covers(
+        self,
+        works: Sequence[Work],
+        prefetched: dict[tuple[str, str | None, str | None], dict | None],
+        *,
+        author_id: int | None = None,
+    ) -> int:
+        """Persist prefetched cover hashes for existing works before skip checks."""
+        if not prefetched or not any(val is not None for val in prefetched.values()):
+            return 0
+        candidates = list(works)
+        seen_work_ids = {work.id for work in candidates}
+        if author_id is not None:
+            prefetched_urls = {url for (url, _, _), val in prefetched.items() if val is not None}
+            if prefetched_urls:
+                extra_works = list(
+                    self.session.scalars(
+                        select(Work)
+                        .join(AuthorWork, AuthorWork.work_id == Work.id)
+                        .where(
+                            AuthorWork.author_id == author_id,
+                            Work.cover_url.in_(prefetched_urls),
+                        )
+                    ).unique()
+                )
+                for extra in extra_works:
+                    if extra.id not in seen_work_ids:
+                        candidates.append(extra)
+                        seen_work_ids.add(extra.id)
+
+        updated_ids: list[int] = []
+        for work in candidates:
+            if not work.cover_url or work.fingerprint is None:
+                continue
+            current = work.fingerprint.cover_fingerprint
+            if is_current_fingerprint(current) and current.get("source_url") == work.cover_url:
+                continue
+            source = next(
+                (
+                    src
+                    for src in work.sources
+                    if prefetched.get((work.cover_url, src.provider, src.external_id))
+                    is not None
+                ),
+                None,
+            )
+            if source is None:
+                continue
+            key = (work.cover_url, source.provider, source.external_id)
+            computed = prefetched.get(key)
+            if computed is None:
+                continue
+            payload = dict(computed)
+            payload["source_url"] = work.cover_url
+            variants = payload.get("variants", [])
+            next_hash = variants[0].get("dhash") if variants else None
+            if (
+                current != payload
+                or work.fingerprint.cover_hash != next_hash
+            ):
+                work.fingerprint.cover_fingerprint = payload
+                work.fingerprint.cover_hash = next_hash
+                updated_ids.append(work.id)
+        if updated_ids:
+            self.session.flush()
+            bump_authors_for_works(
+                self.session,
+                updated_ids,
+                reason="cover_fingerprint_updated",
+                full_reconcile=True,
+                exclude_author_id=self._active_author_id,
+            )
+        return len(updated_ids)
+
+    async def sync_author_after_writes(
+        self,
+        author: Author,
+        *,
+        touched_works: Sequence[Work],
+        prefetched_covers: dict[tuple[str, str | None, str | None], dict | None] | None = None,
+        force: bool = False,
+    ) -> bool:
+        """Decide whether aggregation is needed after writing works; run batch or skip."""
+        if prefetched_covers:
+            self.apply_prefetched_covers(
+                touched_works, prefetched_covers, author_id=author.id
+            )
+        self.session.flush()
+        if not needs_author_aggregation(self.session, author.id, force=force):
+            record_metric("aggregation_skipped")
+            return False
+
+        snapshot_revision = capture_author_revision(self.session, author.id)
+        full_reconcile = should_full_reconcile(self.session, author.id, force=force)
+        await self.reconcile_author(author, works=None if full_reconcile else touched_works)
+        complete_author_revision(self.session, author.id, snapshot_revision)
+        return True
+
+    def _cached_fingerprint_names(self, fingerprint: WorkFingerprint) -> set[str]:
+        work_id = fingerprint.work_id
+        if work_id is not None and work_id in self._fp_names_cache:
+            return self._fp_names_cache[work_id]
+        names = self._fingerprint_names(fingerprint)
+        if work_id is not None and self._batch_groups:
+            self._fp_names_cache[work_id] = names
+        return names
+
+    def _cached_primary_fingerprint_names(self, fingerprint: WorkFingerprint) -> set[str]:
+        work_id = fingerprint.work_id
+        if work_id is not None and work_id in self._fp_primary_names_cache:
+            return self._fp_primary_names_cache[work_id]
+        names = self._primary_fingerprint_names(fingerprint)
+        if work_id is not None and self._batch_groups:
+            self._fp_primary_names_cache[work_id] = names
+        return names
 
     @staticmethod
     def _fingerprint_names(fingerprint: WorkFingerprint) -> set[str]:

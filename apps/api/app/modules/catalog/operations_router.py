@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.db.models import CatalogOperation
 from app.db.session import get_session
+from app.modules.catalog.invalidation import (
+    bump_author_aggregation,
+    extract_author_ids_from_operation,
+)
 from app.modules.catalog.operation_history import UndoConflict, undo_operation
 
 router = APIRouter(prefix="/catalog-operations", tags=["catalog-operations"])
@@ -91,7 +95,22 @@ def list_operations(
 @router.post("/{operation_id}/undo", response_model=OperationRead)
 def undo(operation_id: int, session: SessionDep):
     try:
+        existing_op = session.get(CatalogOperation, operation_id)
+        pre_authors = (
+            extract_author_ids_from_operation(
+                session, existing_op.changes or [], existing_op.group_ids or []
+            )
+            if existing_op is not None
+            else set()
+        )
         operation = undo_operation(session, operation_id)
+        post_authors = extract_author_ids_from_operation(
+            session, operation.changes or [], operation.group_ids or []
+        )
+        for author_id in sorted(pre_authors | post_authors):
+            bump_author_aggregation(
+                session, author_id, reason="operation_undo", full_reconcile=True
+            )
         session.commit()
         return operation
     except LookupError as exc:

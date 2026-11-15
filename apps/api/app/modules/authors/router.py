@@ -15,6 +15,7 @@ from app.modules.authors.schemas import (
     AuthorQueryNameRead,
     AuthorRead,
 )
+from app.modules.catalog.invalidation import bump_author_aggregation
 from app.modules.catalog.repository import CatalogRepository
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.schemas import JobRead
@@ -95,6 +96,15 @@ def update_author_identity(
                 "conflicts": conflicts,
             },
         )
+    profile_changed = (
+        next_name != author.name
+        or next_aliases != author.aliases
+        or next_circles != author.circle_names
+        or (
+            payload.provider_query_names is not None
+            and payload.provider_query_names != author.provider_query_names
+        )
+    )
     author.name = next_name
     author.aliases = next_aliases
     author.circle_names = next_circles
@@ -102,6 +112,10 @@ def update_author_identity(
         author.provider_query_names = payload.provider_query_names
     if "identity_note" in payload.model_fields_set:
         author.identity_note = payload.identity_note
+    if profile_changed:
+        bump_author_aggregation(
+            session, author.id, reason="author_identity_updated", full_reconcile=True
+        )
     session.commit()
     return AuthorRead.model_validate(author)
 

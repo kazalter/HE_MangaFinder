@@ -15,6 +15,7 @@ from app.db.models import (
     Work,
     WorkSource,
 )
+from app.modules.catalog.invalidation import bump_authors_for_works
 from app.providers.base import DiscoveredWork
 
 _MIN_UTC = datetime.min.replace(tzinfo=UTC)
@@ -112,7 +113,17 @@ class CatalogRepository:
                 return provided is None or field in provided
 
             new_description = item.description if _is_provided("description") else work.description
-            new_cover_url = item.cover_url if _is_provided("cover_url") else work.cover_url
+            preserve_detail_cover = (
+                not item.is_detail_complete
+                and not item.detail_fetched
+                and source.detail_fetched_at is not None
+                and work.cover_url is not None
+            )
+            new_cover_url = (
+                work.cover_url
+                if preserve_detail_cover
+                else (item.cover_url if _is_provided("cover_url") else work.cover_url)
+            )
             new_status = item.status if _is_provided("status") else work.status
             new_year = item.year if _is_provided("year") else work.year
             new_language = item.language if _is_provided("language") else work.language
@@ -175,6 +186,15 @@ class CatalogRepository:
         author_link_created = link is None
         if link is None:
             self.session.add(AuthorWork(author_id=author_id, work_id=work.id))
+        if source_created or author_link_created or metadata_changed:
+            bump_authors_for_works(
+                self.session,
+                [work.id],
+                reason="work_upserted",
+                full_reconcile=False,
+                extra_author_ids=(author_id,),
+                now=ts,
+            )
         return CatalogUpsertResult(
             work=work,
             source_created=source_created,

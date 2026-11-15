@@ -9,6 +9,11 @@ from app.db.models import (
     WorkGroup,
 )
 from app.modules.catalog.aggregation import AggregationService
+from app.modules.catalog.invalidation import (
+    authors_for_groups,
+    authors_for_works,
+    bump_author_aggregation,
+)
 
 
 class WorkExclusionService:
@@ -21,6 +26,12 @@ class WorkExclusionService:
         link = self.session.get(AuthorWork, (author.id, work.id))
         if link is None:
             raise LookupError("该版本不属于所选作者")
+
+        affected_authors = authors_for_works(self.session, [work.id]) | {author.id}
+        if work.group_membership is not None:
+            affected_authors |= authors_for_groups(
+                self.session, [work.group_membership.group_id]
+            )
 
         for source in work.sources:
             existing = self.session.scalar(
@@ -46,18 +57,27 @@ class WorkExclusionService:
         if self.session.scalar(
             select(AuthorWork.work_id).where(AuthorWork.work_id == work.id).limit(1)
         ) is not None:
+            for aid in sorted(affected_authors):
+                bump_author_aggregation(
+                    self.session, aid, reason="work_excluded", full_reconcile=True
+                )
             return work.group_membership.group if work.group_membership else None
 
         membership = work.group_membership
         group = membership.group if membership else None
         self.session.delete(work)
         self.session.flush()
-        if group is None:
-            return None
-        self.session.expire(group, ["members"])
-        if group.members:
-            AggregationService(self.session).recompute(group)
-            return group
-        self.session.delete(group)
-        self.session.flush()
-        return None
+        result_group: WorkGroup | None = None
+        if group is not None:
+            self.session.expire(group, ["members"])
+            if group.members:
+                AggregationService(self.session).recompute(group)
+                result_group = group
+            else:
+                self.session.delete(group)
+                self.session.flush()
+        for aid in sorted(affected_authors):
+            bump_author_aggregation(
+                self.session, aid, reason="work_excluded", full_reconcile=True
+            )
+        return result_group

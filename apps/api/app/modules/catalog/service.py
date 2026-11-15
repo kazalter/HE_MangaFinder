@@ -11,17 +11,20 @@ from app.db.models import (
     AuthorIdentitySuggestion,
     DiscoveryRun,
     ProviderScanRun,
+    Work,
 )
 from app.modules.authors.repository import AuthorRepository
 from app.modules.catalog.aggregation import AggregationService, CoverHasher
 from app.modules.catalog.discovery_repository import DiscoveryRepository
 from app.modules.catalog.incremental import (
     PrefetchedCovers,
+    emit_catalog_sync_outputs,
     populate_provider_scan_run,
     prefetch_covers_for_page,
     run_incremental_provider_scan,
     supports_incremental_scan,
 )
+from app.modules.catalog.invalidation import needs_author_aggregation
 from app.modules.catalog.repository import CatalogRepository
 from app.modules.social.planned_releases import PlannedReleaseService
 from app.providers.base import DiscoveredWork, sort_discovered_works
@@ -78,6 +81,7 @@ class DiscoveryService:
         trigger: str = "manual",
         provider_names: set[str] | None = None,
         force_refresh: bool = False,
+        force_aggregation: bool = False,
         scan_mode: str | None = None,
     ) -> dict[str, int | str | list[str]]:
         with capture_metrics("discovery.discover_author", log_summary=True) as metrics:
@@ -88,6 +92,7 @@ class DiscoveryService:
                 trigger=trigger,
                 provider_names=provider_names,
                 force_refresh=force_refresh or trigger == "force",
+                force_aggregation=force_aggregation or force_refresh or trigger == "force",
                 scan_mode=scan_mode,
             )
 
@@ -98,6 +103,7 @@ class DiscoveryService:
         trigger: str = "manual",
         provider_names: set[str] | None = None,
         force_refresh: bool = False,
+        force_aggregation: bool = False,
         scan_mode: str | None = None,
     ) -> dict[str, int | str | list[str]]:
         author = AuthorRepository(self.session).get(author_id)
@@ -119,6 +125,7 @@ class DiscoveryService:
         errors: list[str] = []
         successful_providers = 0
         skipped_providers: list[str] = []
+        aggregation_ran = False
         providers = [
             provider
             for provider in self.providers.all()
@@ -180,8 +187,11 @@ class DiscoveryService:
                             aggregation=aggregation,
                             settings=settings,
                             force_refresh=force_refresh,
+                            force_aggregation=force_aggregation,
                             requested_scan_mode=scan_mode,
                         )
+                        if outcome.aggregation_ran:
+                            aggregation_ran = True
                         name_errors = outcome.name_errors
                         unconfirmed = outcome.unconfirmed
                         if outcome.found_count == 0 and unconfirmed and not name_errors:
@@ -281,26 +291,40 @@ class DiscoveryService:
                     self._record_identity_suggestions(author.id, provider.name, unconfirmed)
                     provider_new = 0
                     provider_updated = 0
+                    touched_works: list[Work] = []
+                    pending_events: list[tuple[Work, str]] = []
                     for work in accepted:
                         result = catalog.upsert_with_result(author.id, provider.name, work)
-                        group = await aggregation.assign(result.work, author)
-                        PlannedReleaseService(self.session).suggest_catalog_match(author.id, group)
                         if result.source_created or result.author_link_created:
-                            discovery.record_event(
-                                author_id=author.id,
-                                group=group,
-                                work_id=result.work.id,
-                                provider=provider.name,
-                                external_id=work.external_id,
-                                title=result.work.title,
-                            )
+                            touched_works.append(result.work)
+                            pending_events.append((result.work, work.external_id))
                             provider_new += 1
                             record_metric("new_works")
                         elif result.metadata_changed:
+                            touched_works.append(result.work)
                             provider_updated += 1
                             record_metric("updated_works")
                         else:
                             record_metric("known_works")
+
+                    ran_agg = await aggregation.sync_author_after_writes(
+                        author,
+                        touched_works=touched_works,
+                        prefetched_covers=prefetched,
+                        force=force_aggregation,
+                    )
+                    if ran_agg:
+                        aggregation_ran = True
+                    emit_catalog_sync_outputs(
+                        self.session,
+                        author_id=author.id,
+                        provider_name=provider.name,
+                        discovery=discovery,
+                        planned_releases=PlannedReleaseService(self.session),
+                        touched_works=touched_works,
+                        pending_events=pending_events,
+                        ran_agg=ran_agg,
+                    )
 
                     found_count = len(works)
                     excluded_count = len(works) - len(accepted)
@@ -357,7 +381,16 @@ class DiscoveryService:
             await cover_hasher.close()
 
         if successful_providers:
-            aggregation.prune_pending_suggestions(author.id)
+            if not aggregation_ran and needs_author_aggregation(
+                self.session, author.id, force=force_aggregation
+            ):
+                aggregation.cover_hasher = None
+                if await aggregation.sync_author_after_writes(
+                    author, touched_works=(), force=force_aggregation
+                ):
+                    aggregation_ran = True
+            if aggregation_ran or force_aggregation:
+                aggregation.prune_pending_suggestions(author.id)
             if provider_names is None:
                 author = AuthorRepository(self.session).get(author_id)
                 if author:
