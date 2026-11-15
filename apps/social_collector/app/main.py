@@ -1,6 +1,9 @@
 import asyncio
 import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,8 +21,19 @@ from playwright.async_api import (
     Error as PlaywrightError,
 )
 
-from app.graphql import GraphQLTransientError, GraphQLUnavailable, WebGraphQLCollector
+from app.graphql import (
+    DEFAULT_BATCH_BUDGET_SECONDS,
+    GraphQLTransientError,
+    GraphQLUnavailable,
+    WebGraphQLCollector,
+)
 from app.observability import global_metrics, record_metric
+
+GRAPHQL_MAX_WORKERS = max(1, int(os.getenv("SOCIAL_COLLECTOR_GRAPHQL_WORKERS", "4")))
+GRAPHQL_SLOT_WAIT_SECONDS = float(os.getenv("SOCIAL_COLLECTOR_GRAPHQL_SLOT_WAIT_SECONDS", "2.0"))
+BROWSER_BATCH_BUDGET_SECONDS = float(
+    os.getenv("SOCIAL_COLLECTOR_BROWSER_BATCH_BUDGET_SECONDS", str(DEFAULT_BATCH_BUDGET_SECONDS))
+)
 
 TOKEN = os.getenv("SOCIAL_COLLECTOR_TOKEN", "")
 STATE_SOURCE = Path(os.getenv("SOCIAL_COLLECTOR_STORAGE_STATE", "/session/storage-state.json"))
@@ -177,9 +191,9 @@ class BrowserCollector:
         if "something went wrong" in body or "問題が発生しました" in body:
             raise HTTPException(status_code=503, detail="X 页面加载失败或触发访问限制")
 
-    async def navigate(self, page: Page, url: str) -> None:
+    async def navigate(self, page: Page, url: str, *, timeout_ms: int = 60000) -> None:
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=max(1000, timeout_ms))
         except PlaywrightError as exc:
             message = str(exc).casefold()
             if "err_timed_out" in message or "timeout" in message:
@@ -295,23 +309,47 @@ class BrowserCollector:
         since_id: str | None,
         limit: int,
         cursor: str | None = None,
+        *,
+        budget_seconds: float | None = None,
     ) -> dict[str, Any]:
         # Browser fallback resumes by locating the last collected post again. If the
         # anchor is no longer visible, fail closed instead of silently skipping data.
         record_metric("browser_calls")
+        budget = BROWSER_BATCH_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+        deadline = (time.monotonic() + budget) if budget and budget > 0 else None
         async with self.lock:
             session_gen = self._session_generation
             page = await self.page()
             cancelled = False
             try:
-                await self.navigate(page, f"https://x.com/{handle}")
+                nav_timeout_ms = 60000
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.2:
+                        raise RuntimeError("X 浏览器翻页超出时间预算，保留扫描进度")
+                    nav_timeout_ms = min(60000, max(1000, int(remaining * 1000)))
+                try:
+                    await self.navigate(
+                        page, f"https://x.com/{handle}", timeout_ms=nav_timeout_ms
+                    )
+                except TypeError:
+                    await self.navigate(page, f"https://x.com/{handle}")
                 await page.wait_for_timeout(2500)
                 await self.ensure_access(page)
                 found: dict[str, dict[str, Any]] = {}
+                last_post_id: str | None = None
                 seen: set[str] = set()
                 seeking = bool(cursor)
                 stalled = 0
                 for _ in range(80):
+                    if deadline is not None and (deadline - time.monotonic()) <= 0.2:
+                        if not seeking and found and last_post_id and last_post_id != cursor:
+                            return {
+                                "posts": list(found.values()),
+                                "complete": False,
+                                "next_cursor": "browser:" + last_post_id,
+                            }
+                        raise RuntimeError("X 浏览器翻页超出时间预算，保留扫描进度")
                     articles = page.locator('article[data-testid="tweet"]')
                     before = len(seen)
                     for index in range(await articles.count()):
@@ -331,6 +369,7 @@ class BrowserCollector:
                                 "next_cursor": None,
                             }
                         found[post_id] = parsed
+                        last_post_id = post_id
                         if len(found) >= limit:
                             return {
                                 "posts": list(found.values()),
@@ -346,6 +385,14 @@ class BrowserCollector:
                             "complete": True,
                             "next_cursor": None,
                         }
+                    if deadline is not None and (deadline - time.monotonic()) <= 1.2:
+                        if not seeking and found and last_post_id and last_post_id != cursor:
+                            return {
+                                "posts": list(found.values()),
+                                "complete": False,
+                                "next_cursor": "browser:" + last_post_id,
+                            }
+                        raise RuntimeError("X 浏览器翻页超出时间预算，保留扫描进度")
                     await page.mouse.wheel(0, 3000)
                     await page.wait_for_timeout(1100)
                 raise RuntimeError("X 浏览器翻页未完成，保留扫描进度")
@@ -485,11 +532,96 @@ graphql_collector = WebGraphQLCollector(
 )
 
 
+_graphql_executor: ThreadPoolExecutor | None = None
+_graphql_slots: asyncio.Semaphore | None = None
+_graphql_slots_loop: asyncio.AbstractEventLoop | None = None
+_active_cancel_events: set[threading.Event] = set()
+_active_cancel_lock = threading.Lock()
+
+
+def _ensure_graphql_runtime() -> tuple[
+    ThreadPoolExecutor, asyncio.Semaphore, asyncio.AbstractEventLoop
+]:
+    global _graphql_executor, _graphql_slots, _graphql_slots_loop
+    loop = asyncio.get_running_loop()
+    if _graphql_executor is None:
+        _graphql_executor = ThreadPoolExecutor(
+            max_workers=GRAPHQL_MAX_WORKERS,
+            thread_name_prefix="graphql-worker",
+        )
+    if _graphql_slots is None or _graphql_slots_loop is not loop:
+        _graphql_slots = asyncio.Semaphore(GRAPHQL_MAX_WORKERS)
+        _graphql_slots_loop = loop
+    return _graphql_executor, _graphql_slots, loop
+
+
+def _shutdown_graphql_runtime() -> None:
+    global _graphql_executor, _graphql_slots, _graphql_slots_loop
+    with _active_cancel_lock:
+        for ev in list(_active_cancel_events):
+            ev.set()
+    executor = _graphql_executor
+    _graphql_executor = None
+    _graphql_slots = None
+    _graphql_slots_loop = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+async def _run_graphql(
+    fn: Any,
+    *args: Any,
+    cancel_event: threading.Event | None = None,
+    pass_cancel: bool = False,
+    **kwargs: Any,
+) -> Any:
+    """Run blocking GraphQL call in bounded worker pool; keep slot held until thread finishes."""
+    executor, slots, loop = _ensure_graphql_runtime()
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout=GRAPHQL_SLOT_WAIT_SECONDS)
+    except TimeoutError as exc:
+        raise GraphQLTransientError("X GraphQL 并发处理队列繁忙，请稍后重试") from exc
+
+    local_cancel = cancel_event or threading.Event()
+    if pass_cancel:
+        kwargs["cancel_event"] = local_cancel
+    with _active_cancel_lock:
+        _active_cancel_events.add(local_cancel)
+
+    def _release() -> None:
+        with _active_cancel_lock:
+            _active_cancel_events.discard(local_cancel)
+        with suppress(RuntimeError):
+            slots.release()
+
+    try:
+        concurrent_future = executor.submit(lambda: fn(*args, **kwargs))
+    except BaseException:
+        _release()
+        raise
+
+    # Bind slot release to the OS-thread Future, NOT the asyncio wrapper Future,
+    # so asyncio cancellation cannot free the concurrency slot while the thread is still blocked.
+    concurrent_future.add_done_callback(
+        lambda _cf: loop.call_soon_threadsafe(_release) if not loop.is_closed() else None
+    )
+    async_future = asyncio.wrap_future(concurrent_future, loop=loop)
+    try:
+        return await async_future
+    except asyncio.CancelledError:
+        local_cancel.set()
+        raise
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     collector._closing = False
-    yield
-    await collector.close()
+    _ensure_graphql_runtime()
+    try:
+        yield
+    finally:
+        _shutdown_graphql_runtime()
+        await collector.close()
 
 
 app = FastAPI(title="MangaFinder Social Collector", lifespan=lifespan)
@@ -529,7 +661,7 @@ async def reload_session() -> dict[str, bool]:
 async def check_session() -> dict[str, object]:
     if graphql_collector.available:
         try:
-            user = await asyncio.to_thread(graphql_collector.lookup_user, "X")
+            user = await _run_graphql(graphql_collector.lookup_user, "X")
             if user:
                 return {"valid": True, "provider": "x_web_graphql"}
         except GraphQLTransientError as exc:
@@ -548,7 +680,7 @@ async def check_session() -> dict[str, object]:
 async def suggest(q: Annotated[str, Query(min_length=1, max_length=200)]) -> list[dict[str, Any]]:
     if graphql_collector.available:
         try:
-            exact = await asyncio.to_thread(graphql_collector.suggestions, q)
+            exact = await _run_graphql(graphql_collector.suggestions, q)
             if exact:
                 return exact
         except (GraphQLUnavailable, GraphQLTransientError):
@@ -563,7 +695,7 @@ async def account_profile(handle: str) -> dict[str, Any] | None:
         raise HTTPException(status_code=422, detail="X 账号格式无效")
     if graphql_collector.available:
         try:
-            user = await asyncio.to_thread(graphql_collector.lookup_user, clean)
+            user = await _run_graphql(graphql_collector.lookup_user, clean)
             if not user:
                 return None
             return {
@@ -595,8 +727,17 @@ async def posts(
     if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", clean):
         raise HTTPException(status_code=422, detail="X 账号格式无效")
     if graphql_collector.available:
+        cancel_event = threading.Event()
         try:
-            return await asyncio.to_thread(graphql_collector.posts, clean, since_id, limit)
+            return await _run_graphql(
+                graphql_collector.posts,
+                clean,
+                since_id,
+                limit,
+                cancel_event=cancel_event,
+                pass_cancel=True,
+                budget_seconds=DEFAULT_BATCH_BUDGET_SECONDS,
+            )
         except GraphQLUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except GraphQLTransientError as exc:
@@ -611,6 +752,9 @@ async def posts_batch(
     cursor: str | None = None,
     stop_before: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    x_request_budget_seconds: Annotated[
+        str | None, Header(alias="X-Request-Budget-Seconds")
+    ] = None,
 ) -> dict[str, Any]:
     clean = handle.removeprefix("@")
     if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", clean):
@@ -624,11 +768,26 @@ async def posts_batch(
             raise HTTPException(status_code=422, detail="无效的回溯时间") from exc
     if cursor and not cursor.startswith(("graphql:", "browser:")):
         raise HTTPException(status_code=422, detail="无效的扫描续页位置")
+    budget_seconds: float | None = None
+    if x_request_budget_seconds is not None:
+        with suppress(ValueError):
+            parsed_budget = float(x_request_budget_seconds)
+            if parsed_budget > 0:
+                budget_seconds = min(parsed_budget, DEFAULT_BATCH_BUDGET_SECONDS)
     if graphql_collector.available and (not cursor or cursor.startswith("graphql:")):
+        cancel_event = threading.Event()
         try:
             raw_cursor = cursor.removeprefix("graphql:") if cursor else None
-            return await asyncio.to_thread(
-                graphql_collector.posts_batch, clean, since_id, limit, raw_cursor, stop_before
+            return await _run_graphql(
+                graphql_collector.posts_batch,
+                clean,
+                since_id,
+                limit,
+                raw_cursor,
+                stop_before,
+                cancel_event=cancel_event,
+                pass_cancel=True,
+                budget_seconds=budget_seconds,
             )
         except GraphQLUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -638,7 +797,13 @@ async def posts_batch(
         raise HTTPException(status_code=503, detail="原 GraphQL 采集不可用，保留扫描进度等待恢复")
     try:
         raw_cursor = cursor.removeprefix("browser:") if cursor else None
-        return await collector.posts_batch(clean, since_id, limit, raw_cursor)
+        return await collector.posts_batch(
+            clean,
+            since_id,
+            limit,
+            raw_cursor,
+            budget_seconds=budget_seconds,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -650,7 +815,7 @@ async def post_status(post_id: str, handle: str) -> dict[str, str | None]:
         raise HTTPException(status_code=422, detail="X 帖子参数无效")
     if graphql_collector.available:
         try:
-            return await asyncio.to_thread(graphql_collector.post_status, post_id)
+            return await _run_graphql(graphql_collector.post_status, post_id)
         except GraphQLUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except GraphQLTransientError as exc:

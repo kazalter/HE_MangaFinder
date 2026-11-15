@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     social_enabled: bool = False
     social_collector_base_url: str = "http://social-collector:8010"
     social_collector_token: str = ""
+    social_collector_batch_budget_seconds: float = 65.0
+    social_collector_request_timeout_seconds: float = 95.0
     x_session_dir: Path = Path("./data/x-session")
     x_proxy_url: str = ""
     x_user_agent: str = ""

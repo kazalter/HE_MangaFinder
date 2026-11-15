@@ -53,51 +53,52 @@ class SocialSyncService:
         if account.status != "confirmed":
             raise ValueError("必须先人工确认账号才能同步")
         try:
-            collector = XBrowserCollector(self.settings)
-            profile = None
-            if not account.avatar_url:
-                try:
-                    profile = await collector.profile(account.handle)
-                except CollectorUnavailableError:
-                    raise
-                except RuntimeError:
-                    # A missing avatar must not prevent post collection. Profile metadata
-                    # will be retried on the next sync while the account has no avatar.
-                    pass
-            avatar_url = (
-                profile.avatar_url if profile and profile.avatar_url else account.avatar_url
-            )
-            if avatar_url:
-                await SocialAvatarArchive(self.settings).archive(avatar_url)
-            progress = self.session.get(SocialSyncProgress, account.id)
-            stale_progress = None
-            if progress and (
-                progress.handle.casefold() != account.handle.casefold()
-                or progress.since_id != account.last_post_id
-            ):
-                stale_progress = progress
-                progress = None
-            cutoff = (
-                progress.backfill_cutoff
-                if progress
-                else datetime.now(UTC) - timedelta(days=self.settings.social_initial_backfill_days)
-            )
-            watermark_time = None
-            if account.last_post_id:
-                watermark_time = self.session.scalar(
-                    select(SocialPost.posted_at).where(
-                        SocialPost.account_id == account.id,
-                        SocialPost.platform_post_id == account.last_post_id,
-                    )
+            async with XBrowserCollector(self.settings) as collector:
+                profile = None
+                if not account.avatar_url:
+                    try:
+                        profile = await collector.profile(account.handle)
+                    except CollectorUnavailableError:
+                        raise
+                    except RuntimeError:
+                        # A missing avatar must not prevent post collection. Profile metadata
+                        # will be retried on the next sync while the account has no avatar.
+                        pass
+                avatar_url = (
+                    profile.avatar_url if profile and profile.avatar_url else account.avatar_url
                 )
-            batch = await collector.posts_batch(
-                account.handle,
-                account.last_post_id,
-                self.settings.social_max_posts_per_sync,
-                cursor=progress.cursor if progress else None,
-                stop_before=cutoff if account.last_post_id is None else watermark_time,
-            )
-            incoming = batch.posts
+                if avatar_url:
+                    await SocialAvatarArchive(self.settings).archive(avatar_url)
+                progress = self.session.get(SocialSyncProgress, account.id)
+                stale_progress = None
+                if progress and (
+                    progress.handle.casefold() != account.handle.casefold()
+                    or progress.since_id != account.last_post_id
+                ):
+                    stale_progress = progress
+                    progress = None
+                cutoff = (
+                    progress.backfill_cutoff
+                    if progress
+                    else datetime.now(UTC)
+                    - timedelta(days=self.settings.social_initial_backfill_days)
+                )
+                watermark_time = None
+                if account.last_post_id:
+                    watermark_time = self.session.scalar(
+                        select(SocialPost.posted_at).where(
+                            SocialPost.account_id == account.id,
+                            SocialPost.platform_post_id == account.last_post_id,
+                        )
+                    )
+                batch = await collector.posts_batch(
+                    account.handle,
+                    account.last_post_id,
+                    self.settings.social_max_posts_per_sync,
+                    cursor=progress.cursor if progress else None,
+                    stop_before=cutoff if account.last_post_id is None else watermark_time,
+                )
+                incoming = batch.posts
             if stale_progress:
                 self.session.delete(stale_progress)
                 self.session.flush()

@@ -44,6 +44,31 @@ class XBrowserCollector:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
         self._client = client
+        self._owned_client: httpx.AsyncClient | None = None
+
+    async def __aenter__(self) -> "XBrowserCollector":
+        if self._client is None and self._owned_client is None:
+            self._owned_client = httpx.AsyncClient(
+                timeout=self._default_timeout(),
+                follow_redirects=True,
+            )
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        if self._owned_client is not None:
+            client = self._owned_client
+            self._owned_client = None
+            await client.aclose()
+
+    def _default_timeout(self) -> httpx.Timeout:
+        read_timeout = max(
+            float(self.settings.social_collector_request_timeout_seconds),
+            float(self.settings.social_collector_batch_budget_seconds) + 20.0,
+        )
+        return httpx.Timeout(connect=10.0, read=read_timeout, write=15.0, pool=10.0)
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}
@@ -62,13 +87,21 @@ class XBrowserCollector:
         return response.text.strip()[:500] or "采集器没有返回错误说明"
 
     async def _request(self, method: str, path: str, **kwargs: object) -> Any:
-        owns_client = self._client is None
-        client = self._client or httpx.AsyncClient(timeout=90, follow_redirects=True)
+        extra_headers = kwargs.pop("headers", None)
+        headers = self._headers()
+        if isinstance(extra_headers, dict):
+            headers.update(extra_headers)
+        active_client = self._client or self._owned_client
+        owns_client = active_client is None
+        client = active_client or httpx.AsyncClient(
+            timeout=self._default_timeout(),
+            follow_redirects=True,
+        )
         try:
             response = await client.request(
                 method,
                 f"{self.settings.social_collector_base_url.rstrip('/')}{path}",
-                headers=self._headers(),
+                headers=headers,
                 **kwargs,
             )
             response.raise_for_status()
@@ -130,7 +163,14 @@ class XBrowserCollector:
             params["cursor"] = cursor
         if stop_before is not None:
             params["stop_before"] = stop_before.isoformat()
-        body = await self._request("GET", f"/accounts/{handle}/posts/batch", params=params)
+        budget = float(self.settings.social_collector_batch_budget_seconds)
+        body = await self._request(
+            "GET",
+            f"/accounts/{handle}/posts/batch",
+            params=params,
+            headers={"X-Request-Budget-Seconds": f"{budget:.3f}"},
+            timeout=self._default_timeout(),
+        )
         batch = CollectorBatch.model_validate(body)
         if not batch.complete and (not batch.next_cursor or batch.next_cursor == cursor):
             raise RuntimeError("X 采集未完成且没有可用的续页位置，保留原扫描位置")

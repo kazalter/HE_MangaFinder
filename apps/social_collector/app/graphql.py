@@ -10,6 +10,12 @@ import json
 import math
 import os
 import re
+import threading
+import time
+from collections import OrderedDict
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -20,6 +26,20 @@ from curl_cffi import requests
 from curl_cffi.requests.exceptions import RequestException
 
 from app.observability import record_metric
+
+_ORIG_REQUESTS_GET = requests.get
+
+DEFAULT_BATCH_BUDGET_SECONDS = float(
+    os.getenv("SOCIAL_COLLECTOR_BATCH_BUDGET_SECONDS", "65.0")
+)
+DEFAULT_REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("SOCIAL_COLLECTOR_GRAPHQL_REQUEST_TIMEOUT_SECONDS", "25.0")
+)
+USER_CACHE_TTL_SECONDS = float(os.getenv("SOCIAL_COLLECTOR_USER_CACHE_TTL_SECONDS", "900.0"))
+NEGATIVE_USER_CACHE_TTL_SECONDS = float(
+    os.getenv("SOCIAL_COLLECTOR_NEGATIVE_USER_CACHE_TTL_SECONDS", "30.0")
+)
+USER_CACHE_MAX_SIZE = max(16, int(os.getenv("SOCIAL_COLLECTOR_USER_CACHE_MAX_SIZE", "512")))
 
 WEB_BEARER_TOKEN = (
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
@@ -108,11 +128,36 @@ class GraphQLTransientError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class _CredentialSnapshot:
+    generation: int
+    mtime_ns: int
+    size: int
+    cookie_header: str
+    csrf: str
+    names: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _UserCacheEntry:
+    user: dict[str, Any] | None
+    expires_at: float
+    generation: int
+
+
 class WebGraphQLCollector:
-    def __init__(self, state_path: Path, proxy_url: str, user_agent: str) -> None:
+    def __init__(
+        self,
+        state_path: Path,
+        proxy_url: str,
+        user_agent: str,
+        *,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         self.state_path = state_path
         self.proxy_url = proxy_url
         self.user_agent = user_agent
+        self.clock: Callable[[], float] = clock or time.monotonic
         self.query_ids = {
             "UserByScreenName": os.getenv(
                 "SOCIAL_COLLECTOR_USER_LOOKUP_QUERY_ID", "2qvSHpkWTMS9i0zJAwDNiA"
@@ -124,28 +169,137 @@ class WebGraphQLCollector:
                 "SOCIAL_COLLECTOR_TWEET_RESULT_QUERY_ID", "D_jNhjWZeRZT5NURzfJZSQ"
             ),
         }
+        self._ensure_state()
+
+    def _ensure_state(self) -> None:
+        if not hasattr(self, "clock"):
+            self.clock = time.monotonic
+        if not hasattr(self, "_lock"):
+            self._lock = threading.RLock()
+        if not hasattr(self, "_query_refresh_lock"):
+            self._query_refresh_lock = threading.Lock()
+        if not hasattr(self, "_local"):
+            self._local = threading.local()
+        if not hasattr(self, "_credential_generation"):
+            self._credential_generation = 0
+        if not hasattr(self, "_cached_creds"):
+            self._cached_creds: _CredentialSnapshot | None = None
+        if not hasattr(self, "_user_cache"):
+            self._user_cache: OrderedDict[str, _UserCacheEntry] = OrderedDict()
+        if not hasattr(self, "_query_id_version"):
+            self._query_id_version = 0
+
+    def invalidate_session(self) -> None:
+        self._ensure_state()
+        with self._lock:
+            self._credential_generation += 1
+            self._cached_creds = None
+            self._user_cache.clear()
+
+    def invalidate_user(self, handle: str) -> None:
+        self._ensure_state()
+        norm = handle.strip().removeprefix("@").casefold()
+        with self._lock:
+            self._user_cache.pop(norm, None)
+
+    def _load_credentials(self) -> _CredentialSnapshot | None:
+        self._ensure_state()
+        state_path = getattr(self, "state_path", None)
+        if state_path is None:
+            return None
+        try:
+            stat = state_path.stat()
+        except OSError:
+            with self._lock:
+                if self._cached_creds is not None:
+                    self._credential_generation += 1
+                    self._cached_creds = None
+                    self._user_cache.clear()
+            return None
+        with self._lock:
+            gen = self._credential_generation
+            cached = self._cached_creds
+            if (
+                cached is not None
+                and cached.generation == gen
+                and cached.mtime_ns == stat.st_mtime_ns
+                and cached.size == stat.st_size
+            ):
+                return cached
+        try:
+            body = json.loads(state_path.read_text(encoding="utf-8"))
+            cookies = [item for item in body.get("cookies", []) if item.get("name")]
+            cookie_header = "; ".join(
+                f"{item['name']}={item.get('value', '')}" for item in cookies
+            )
+            csrf = next(
+                (str(item.get("value", "")) for item in cookies if item.get("name") == "ct0"),
+                "",
+            )
+            names = frozenset(str(item["name"]) for item in cookies)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        with self._lock:
+            if self._credential_generation != gen:
+                # Re-run if session was invalidated while reading.
+                return self._load_credentials()
+            if self._cached_creds is not None and (
+                self._cached_creds.mtime_ns != stat.st_mtime_ns
+                or self._cached_creds.size != stat.st_size
+            ):
+                self._credential_generation += 1
+                self._user_cache.clear()
+                gen = self._credential_generation
+            snap = _CredentialSnapshot(
+                generation=gen,
+                mtime_ns=stat.st_mtime_ns,
+                size=stat.st_size,
+                cookie_header=cookie_header,
+                csrf=csrf,
+                names=names,
+            )
+            self._cached_creds = snap
+            return snap
 
     @property
     def available(self) -> bool:
-        try:
-            names = {item["name"] for item in self._cookies()}
-        except (OSError, ValueError, KeyError, TypeError):
+        snap = self._load_credentials()
+        if snap is None:
             return False
-        return {"auth_token", "ct0"}.issubset(names)
+        return {"auth_token", "ct0"}.issubset(snap.names)
 
     def _cookies(self) -> list[dict[str, Any]]:
         body = json.loads(self.state_path.read_text(encoding="utf-8"))
         return [item for item in body.get("cookies", []) if item.get("name")]
 
     def _cookie_header(self) -> str:
+        snap = self._load_credentials()
+        if snap is not None:
+            return snap.cookie_header
         return "; ".join(f"{item['name']}={item.get('value', '')}" for item in self._cookies())
 
+    def _headers_from_snapshot(self, snap: _CredentialSnapshot) -> dict[str, str]:
+        return {
+            "User-Agent": self.user_agent,
+            "Accept": "*/*",
+            "Accept-Language": "ja,en;q=0.8",
+            "Authorization": f"Bearer {WEB_BEARER_TOKEN}",
+            "Cookie": snap.cookie_header,
+            "x-csrf-token": snap.csrf,
+            "x-twitter-active-user": "yes",
+            "x-twitter-auth-type": "OAuth2Session",
+            "x-twitter-client-language": "ja",
+            "Referer": "https://x.com/",
+            "Origin": "https://x.com",
+        }
+
     def _headers(self) -> dict[str, str]:
-        cookie = self._cookie_header()
-        csrf = next(
-            (item.get("value", "") for item in self._cookies() if item.get("name") == "ct0"),
-            "",
-        )
+        snap = self._load_credentials()
+        if snap is not None:
+            return self._headers_from_snapshot(snap)
+        cookies = self._cookies()
+        cookie = "; ".join(f"{item['name']}={item.get('value', '')}" for item in cookies)
+        csrf = next((item.get("value", "") for item in cookies if item.get("name") == "ct0"), "")
         return {
             "User-Agent": self.user_agent,
             "Accept": "*/*",
@@ -160,29 +314,117 @@ class WebGraphQLCollector:
             "Origin": "https://x.com",
         }
 
+    @contextmanager
+    def _execution_scope(
+        self,
+        *,
+        deadline: float | None = None,
+        cancel_event: threading.Event | None = None,
+        use_session: bool = False,
+    ) -> Iterator[None]:
+        self._ensure_state()
+        prev_deadline = getattr(self._local, "deadline", None)
+        prev_cancel = getattr(self._local, "cancel_event", None)
+        prev_session = getattr(self._local, "session", None)
+        prev_session_gen = getattr(self._local, "session_gen", None)
+        created_session = None
+        if deadline is not None:
+            self._local.deadline = (
+                min(prev_deadline, deadline) if prev_deadline is not None else deadline
+            )
+        if cancel_event is not None:
+            self._local.cancel_event = cancel_event
+        if use_session and prev_session is None and requests.get is _ORIG_REQUESTS_GET:
+            created_session = requests.Session()
+            record_metric("graphql_pool_opens")
+            self._local.session = created_session
+            self._local.session_gen = self._credential_generation
+        try:
+            yield
+        finally:
+            self._local.deadline = prev_deadline
+            self._local.cancel_event = prev_cancel
+            self._local.session = prev_session
+            self._local.session_gen = prev_session_gen
+            if created_session is not None:
+                try:
+                    created_session.close()
+                finally:
+                    record_metric("graphql_pool_closes")
+
+    def _remaining_budget(self) -> float | None:
+        self._ensure_state()
+        cancel_event = getattr(self._local, "cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            raise GraphQLTransientError("X GraphQL 请求已取消")
+        deadline = getattr(self._local, "deadline", None)
+        if deadline is None:
+            return None
+        remaining = deadline - self.clock()
+        if remaining <= 0.05:
+            raise GraphQLTransientError("X GraphQL 采集超出时间预算，保留扫描进度")
+        return remaining
+
     def _get(self, url: str, *, authenticated: bool = True) -> requests.Response:
+        self._ensure_state()
         proxies = {"http": self.proxy_url, "https": self.proxy_url} if self.proxy_url else None
         errors: list[str] = []
+        session = getattr(self._local, "session", None)
+        use_session = session is not None and requests.get is _ORIG_REQUESTS_GET
         for profile in ("chrome124", "chrome101", "firefox135", "safari184"):
+            remaining = self._remaining_budget()
+            req_timeout = (
+                min(DEFAULT_REQUEST_TIMEOUT_SECONDS, max(0.2, remaining))
+                if remaining is not None
+                else DEFAULT_REQUEST_TIMEOUT_SECONDS
+            )
+            if authenticated:
+                snap = self._load_credentials()
+                if snap is None or not {"auth_token", "ct0"}.issubset(snap.names):
+                    raise GraphQLUnavailable("X GraphQL 会话缺少 auth_token 或 ct0")
+                headers = self._headers_from_snapshot(snap)
+                active_gen = snap.generation
+            else:
+                headers = {"User-Agent": self.user_agent}
+                active_gen = self._credential_generation
             try:
                 record_metric("graphql_calls")
-                response = requests.get(
-                    url,
-                    headers=self._headers() if authenticated else {"User-Agent": self.user_agent},
-                    proxies=proxies,
-                    impersonate=profile,
-                    timeout=45,
-                    allow_redirects=True,
-                )
+                if use_session:
+                    if getattr(self._local, "session_gen", None) != active_gen:
+                        session.cookies.clear()
+                        self._local.session_gen = active_gen
+                    elif getattr(session, "cookies", None) is not None:
+                        session.cookies.clear()
+                    response = session.get(
+                        url,
+                        headers=headers,
+                        proxies=proxies,
+                        impersonate=profile,
+                        timeout=req_timeout,
+                        allow_redirects=True,
+                    )
+                else:
+                    response = requests.get(
+                        url,
+                        headers=headers,
+                        proxies=proxies,
+                        impersonate=profile,
+                        timeout=req_timeout,
+                        allow_redirects=True,
+                    )
                 content = getattr(response, "content", b"")
                 if isinstance(content, (bytes, bytearray)):
                     record_metric("bytes_transferred", len(content))
                 if getattr(response, "status_code", 0) == 429:
                     record_metric("rate_limited_429")
+                cancel_event = getattr(self._local, "cancel_event", None)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise GraphQLTransientError("X GraphQL 请求已取消")
                 return response
             except RequestException as exc:
                 record_metric("retries")
                 errors.append(f"{profile}: {exc}")
+                self._remaining_budget()
         raise GraphQLTransientError("X GraphQL 网络连接失败：" + " | ".join(errors))
 
     def _discover_query_ids(self) -> None:
@@ -196,6 +438,14 @@ class WebGraphQLCollector:
             if found:
                 self.query_ids[operation] = found.group(1)
 
+    def _refresh_query_ids(self, seen_version: int) -> None:
+        self._ensure_state()
+        with self._query_refresh_lock:
+            if self._query_id_version != seen_version:
+                return
+            self._discover_query_ids()
+            self._query_id_version += 1
+
     def _request(
         self,
         operation: str,
@@ -205,8 +455,10 @@ class WebGraphQLCollector:
         *,
         refreshed: bool = False,
     ) -> dict[str, Any]:
+        self._ensure_state()
         if not self.available:
             raise GraphQLUnavailable("X GraphQL 会话缺少 auth_token 或 ct0")
+        seen_version = self._query_id_version
         params = urlencode(
             {
                 "variables": json.dumps(variables, separators=(",", ":")),
@@ -217,7 +469,7 @@ class WebGraphQLCollector:
         url = f"{GRAPHQL_BASE}/{self.query_ids[operation]}/{operation}?{params}"
         response = self._get(url)
         if response.status_code in {400, 404} and not refreshed:
-            self._discover_query_ids()
+            self._refresh_query_ids(seen_version)
             return self._request(operation, variables, features, toggles, refreshed=True)
         if response.status_code in {401, 403}:
             raise GraphQLUnavailable(f"X GraphQL 登录会话失效或受限（HTTP {response.status_code}）")
@@ -277,29 +529,74 @@ class WebGraphQLCollector:
             text = text.get("text") or ""
         return str(text or result.get("reason") or result.get("message") or "").strip()
 
+    def _cache_user_entry(self, norm_handle: str, entry: _UserCacheEntry) -> None:
+        with self._lock:
+            self._user_cache[norm_handle] = entry
+            self._user_cache.move_to_end(norm_handle)
+            while len(self._user_cache) > USER_CACHE_MAX_SIZE:
+                self._user_cache.popitem(last=False)
+
     def lookup_user(self, handle: str) -> dict[str, Any] | None:
+        self._ensure_state()
+        clean = handle.strip().removeprefix("@")
+        norm = clean.casefold()
+        # Check on-disk file generation before reading user cache so external
+        # storage-state updates invalidate stale cached accounts too.
+        snap = self._load_credentials()
+        gen = snap.generation if snap is not None else self._credential_generation
+        now = self.clock()
+        with self._lock:
+            cached = self._user_cache.get(norm)
+            if cached is not None:
+                if cached.generation == gen and cached.expires_at > now:
+                    self._user_cache.move_to_end(norm)
+                    record_metric("identity_cache_hits")
+                    return dict(cached.user) if cached.user is not None else None
+                self._user_cache.pop(norm, None)
+
         record_metric("identity_lookups")
         body = self._request(
             "UserByScreenName",
-            {"screen_name": handle.removeprefix("@"), "withGrokTranslatedBio": False},
+            {"screen_name": clean, "withGrokTranslatedBio": False},
             USER_FEATURES,
             {"withPayments": False, "withAuxiliaryUserLabels": False},
         )
         result = ((body.get("data") or {}).get("user") or {}).get("result") or {}
         if result.get("__typename") != "User":
+            self._cache_user_entry(
+                norm,
+                _UserCacheEntry(
+                    user=None,
+                    expires_at=self.clock() + NEGATIVE_USER_CACHE_TTL_SECONDS,
+                    generation=gen,
+                ),
+            )
             return None
         core = result.get("core") or {}
         legacy = result.get("legacy") or {}
         avatar = (result.get("avatar") or {}).get("image_url") or legacy.get(
             "profile_image_url_https"
         )
-        return {
+        user_dict = {
             "id": str(result.get("rest_id") or ""),
-            "handle": core.get("screen_name") or legacy.get("screen_name") or handle,
-            "display_name": core.get("name") or legacy.get("name") or handle,
+            "handle": core.get("screen_name") or legacy.get("screen_name") or clean,
+            "display_name": core.get("name") or legacy.get("name") or clean,
             "description": legacy.get("description") or "",
             "avatar_url": avatar,
         }
+        if not user_dict["id"] or user_dict["handle"].casefold() != norm:
+            with self._lock:
+                self._user_cache.pop(norm, None)
+            return user_dict
+        self._cache_user_entry(
+            norm,
+            _UserCacheEntry(
+                user=dict(user_dict),
+                expires_at=self.clock() + USER_CACHE_TTL_SECONDS,
+                generation=gen,
+            ),
+        )
+        return user_dict
 
     def suggestions(self, query: str) -> list[dict[str, Any]]:
         clean = query.strip().removeprefix("@").strip()
@@ -319,55 +616,74 @@ class WebGraphQLCollector:
             }
         ]
 
-    def posts(self, handle: str, since_id: str | None, limit: int) -> list[dict[str, Any]]:
-        user = self.lookup_user(handle)
-        if not user or not user["id"]:
-            raise GraphQLUnavailable(f"X 账号 @{handle} 不存在或不可访问")
-        found: dict[str, dict[str, Any]] = {}
-        cursor: str | None = None
-        max_pages = max(1, min(12, math.ceil(limit / 20) + 2))
-        reached_since = False
-        for _ in range(max_pages):
-            variables: dict[str, Any] = {
-                "userId": user["id"],
-                "count": min(100, max(20, limit)),
-                "includePromotedContent": False,
-                "withQuickPromoteEligibilityTweetFields": False,
-                "withVoice": True,
-            }
-            if cursor:
-                variables["cursor"] = cursor
-            body = self._request("UserTweets", variables, TIMELINE_FEATURES, TIMELINE_TOGGLES)
-            result = ((body.get("data") or {}).get("user") or {}).get("result") or {}
-            timeline = (result.get("timeline") or {}).get("timeline") or {}
-            next_cursor: str | None = None
-            for instruction in timeline.get("instructions") or []:
-                for entry in instruction.get("entries") or []:
-                    content = entry.get("content") or {}
-                    if "Cursor" in (content.get("entryType") or content.get("__typename") or ""):
-                        if content.get("cursorType") == "Bottom":
-                            next_cursor = content.get("value")
-                        continue
-                    for item in self._entry_items(content):
-                        tweet = (item.get("tweet_results") or {}).get("result") or {}
-                        parsed = self._parse_tweet(tweet, user["handle"])
-                        if not parsed:
+    def posts(
+        self,
+        handle: str,
+        since_id: str | None,
+        limit: int,
+        *,
+        budget_seconds: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> list[dict[str, Any]]:
+        self._ensure_state()
+        budget = DEFAULT_BATCH_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+        deadline = (self.clock() + budget) if budget and budget > 0 else None
+        with self._execution_scope(
+            deadline=deadline,
+            cancel_event=cancel_event,
+            use_session=True,
+        ):
+            user = self.lookup_user(handle)
+            if not user or not user["id"]:
+                raise GraphQLUnavailable(f"X 账号 @{handle} 不存在或不可访问")
+            found: dict[str, dict[str, Any]] = {}
+            cursor: str | None = None
+            max_pages = max(1, min(12, math.ceil(limit / 20) + 2))
+            reached_since = False
+            for _ in range(max_pages):
+                variables: dict[str, Any] = {
+                    "userId": user["id"],
+                    "count": min(100, max(20, limit)),
+                    "includePromotedContent": False,
+                    "withQuickPromoteEligibilityTweetFields": False,
+                    "withVoice": True,
+                }
+                if cursor:
+                    variables["cursor"] = cursor
+                body = self._request("UserTweets", variables, TIMELINE_FEATURES, TIMELINE_TOGGLES)
+                result = ((body.get("data") or {}).get("user") or {}).get("result") or {}
+                if result.get("__typename") in {"UserUnavailable", "UserSuspended"}:
+                    self.invalidate_user(handle)
+                timeline = (result.get("timeline") or {}).get("timeline") or {}
+                next_cursor: str | None = None
+                for instruction in timeline.get("instructions") or []:
+                    for entry in instruction.get("entries") or []:
+                        content = entry.get("content") or {}
+                        kind = content.get("entryType") or content.get("__typename") or ""
+                        if "Cursor" in kind:
+                            if content.get("cursorType") == "Bottom":
+                                next_cursor = content.get("value")
                             continue
-                        if since_id and parsed["id"] == since_id:
-                            reached_since = True
-                            break
-                        found[parsed["id"]] = parsed
-                        if len(found) >= limit:
-                            reached_since = True
+                        for item in self._entry_items(content):
+                            tweet = (item.get("tweet_results") or {}).get("result") or {}
+                            parsed = self._parse_tweet(tweet, user["handle"])
+                            if not parsed:
+                                continue
+                            if since_id and parsed["id"] == since_id:
+                                reached_since = True
+                                break
+                            found[parsed["id"]] = parsed
+                            if len(found) >= limit:
+                                reached_since = True
+                                break
+                        if reached_since:
                             break
                     if reached_since:
                         break
-                if reached_since:
+                if reached_since or not next_cursor or next_cursor == cursor:
                     break
-            if reached_since or not next_cursor or next_cursor == cursor:
-                break
-            cursor = next_cursor
-        return sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
+                cursor = next_cursor
+            return sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
 
     def posts_batch(
         self,
@@ -376,70 +692,108 @@ class WebGraphQLCollector:
         limit: int,
         cursor: str | None = None,
         stop_before: str | None = None,
+        *,
+        budget_seconds: float | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         """Return complete pages and a durable continuation; never split a page."""
-        user = self.lookup_user(handle)
-        if not user or not user["id"]:
-            raise GraphQLUnavailable(f"X 账号 @{handle} 不存在或不可访问")
-        found: dict[str, dict[str, Any]] = {}
-        current = cursor
-        for _ in range(max(1, min(12, math.ceil(limit / 20) + 2))):
-            variables: dict[str, Any] = {
-                "userId": user["id"],
-                "count": min(100, max(20, limit)),
-                "includePromotedContent": False,
-                "withQuickPromoteEligibilityTweetFields": False,
-                "withVoice": True,
-            }
-            if current:
-                variables["cursor"] = current
-            record_metric("timeline_pages")
-            body = self._request("UserTweets", variables, TIMELINE_FEATURES, TIMELINE_TOGGLES)
-            result = ((body.get("data") or {}).get("user") or {}).get("result") or {}
-            timeline = (result.get("timeline") or {}).get("timeline") or {}
-            instructions = timeline.get("instructions")
-            if not isinstance(instructions, list):
-                raise GraphQLTransientError("X 时间线结构不完整，未推进扫描位置")
-            next_cursor = None
-            reached_since = False
-            page_times: list[datetime] = []
-            for instruction in instructions:
-                for entry in instruction.get("entries") or []:
-                    content = entry.get("content") or {}
-                    if "Cursor" in (content.get("entryType") or content.get("__typename") or ""):
-                        if content.get("cursorType") == "Bottom":
-                            next_cursor = content.get("value")
-                        continue
-                    for item in self._entry_items(content):
-                        tweet = (item.get("tweet_results") or {}).get("result") or {}
-                        parsed = self._parse_tweet(tweet, user["handle"])
-                        if not parsed:
+        self._ensure_state()
+        budget = DEFAULT_BATCH_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+        deadline = (self.clock() + budget) if budget and budget > 0 else None
+        with self._execution_scope(
+            deadline=deadline,
+            cancel_event=cancel_event,
+            use_session=True,
+        ):
+            user = self.lookup_user(handle)
+            if not user or not user["id"]:
+                raise GraphQLUnavailable(f"X 账号 @{handle} 不存在或不可访问")
+            found: dict[str, dict[str, Any]] = {}
+            initial_cursor = cursor
+            current = cursor
+            posts: list[dict[str, Any]] = []
+            pages_completed = 0
+            max_pages = max(1, min(12, math.ceil(limit / 20) + 2))
+            for page_idx in range(max_pages):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise GraphQLTransientError("X GraphQL 采集已取消")
+                if deadline is not None and (deadline - self.clock()) <= 0.15:
+                    if (
+                        page_idx > 0
+                        and pages_completed >= 1
+                        and current is not None
+                        and current != initial_cursor
+                    ):
+                        return {
+                            "posts": posts,
+                            "complete": False,
+                            "next_cursor": "graphql:" + current,
+                        }
+                    raise GraphQLTransientError("X GraphQL 采集超出单批时间预算，保留扫描进度")
+                variables: dict[str, Any] = {
+                    "userId": user["id"],
+                    "count": min(100, max(20, limit)),
+                    "includePromotedContent": False,
+                    "withQuickPromoteEligibilityTweetFields": False,
+                    "withVoice": True,
+                }
+                if current:
+                    variables["cursor"] = current
+                record_metric("timeline_pages")
+                body = self._request("UserTweets", variables, TIMELINE_FEATURES, TIMELINE_TOGGLES)
+                result = ((body.get("data") or {}).get("user") or {}).get("result") or {}
+                if result.get("__typename") in {"UserUnavailable", "UserSuspended"}:
+                    self.invalidate_user(handle)
+                timeline = (result.get("timeline") or {}).get("timeline") or {}
+                instructions = timeline.get("instructions")
+                if not isinstance(instructions, list):
+                    raise GraphQLTransientError("X 时间线结构不完整，未推进扫描位置")
+                next_cursor = None
+                reached_since = False
+                page_times: list[datetime] = []
+                for instruction in instructions:
+                    for entry in instruction.get("entries") or []:
+                        content = entry.get("content") or {}
+                        kind = content.get("entryType") or content.get("__typename") or ""
+                        if "Cursor" in kind:
+                            if content.get("cursorType") == "Bottom":
+                                next_cursor = content.get("value")
                             continue
-                        if since_id and parsed["id"] == since_id:
-                            reached_since = True
+                        for item in self._entry_items(content):
+                            tweet = (item.get("tweet_results") or {}).get("result") or {}
+                            parsed = self._parse_tweet(tweet, user["handle"])
+                            if not parsed:
+                                continue
+                            if since_id and parsed["id"] == since_id:
+                                reached_since = True
+                                break
+                            page_times.append(datetime.fromisoformat(parsed["posted_at"]))
+                            found[parsed["id"]] = parsed
+                        if reached_since:
                             break
-                        page_times.append(datetime.fromisoformat(parsed["posted_at"]))
-                        found[parsed["id"]] = parsed
                     if reached_since:
                         break
-                if reached_since:
-                    break
-            posts = sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
-            old_page = bool(stop_before and page_times) and all(
-                value < datetime.fromisoformat(stop_before) for value in page_times
-            )
-            if reached_since or old_page:
-                return {"posts": posts, "complete": True, "next_cursor": None}
-            if not next_cursor:
-                if since_id:
-                    raise GraphQLTransientError("X 时间线未到达上次扫描位置，无法确认完整性")
-                return {"posts": posts, "complete": True, "next_cursor": None}
-            if next_cursor == current:
-                raise GraphQLTransientError("X 时间线分页位置没有推进，未推进扫描位置")
-            current = next_cursor
-            if len(found) >= limit:
-                return {"posts": posts, "complete": False, "next_cursor": "graphql:" + current}
-        return {"posts": posts, "complete": False, "next_cursor": "graphql:" + current}
+                posts = sorted(found.values(), key=lambda item: item["posted_at"], reverse=True)
+                old_page = bool(stop_before and page_times) and all(
+                    value < datetime.fromisoformat(stop_before) for value in page_times
+                )
+                if reached_since or old_page:
+                    return {"posts": posts, "complete": True, "next_cursor": None}
+                if not next_cursor:
+                    if since_id:
+                        raise GraphQLTransientError("X 时间线未到达上次扫描位置，无法确认完整性")
+                    return {"posts": posts, "complete": True, "next_cursor": None}
+                if next_cursor == current:
+                    raise GraphQLTransientError("X 时间线分页位置没有推进，未推进扫描位置")
+                current = next_cursor
+                pages_completed += 1
+                if len(found) >= limit:
+                    return {
+                        "posts": posts,
+                        "complete": False,
+                        "next_cursor": "graphql:" + current,
+                    }
+            return {"posts": posts, "complete": False, "next_cursor": "graphql:" + current}
 
     @staticmethod
     def _entry_items(content: dict[str, Any]) -> list[dict[str, Any]]:
