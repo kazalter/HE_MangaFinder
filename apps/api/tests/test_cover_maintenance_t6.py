@@ -1,6 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import create_engine, inspect, select
+from sqlalchemy.orm import sessionmaker
+
 from app.core.config import Settings
 from app.core.observability import capture_metrics
 from app.db import session as db_session
@@ -23,8 +26,6 @@ from app.modules.jobs import worker as worker_module
 from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.worker import JobWorker
 from app.providers.registry import ProviderRegistry
-from sqlalchemy import create_engine, inspect, select
-from sqlalchemy.orm import sessionmaker
 
 
 def _seed_works(

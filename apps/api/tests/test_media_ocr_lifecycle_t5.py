@@ -9,6 +9,10 @@ from io import BytesIO
 
 import httpx
 import pytest
+from PIL import Image
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import Author, SocialAccount, SocialMediaAsset, SocialPost, SocialPostProcessing
@@ -17,9 +21,6 @@ from app.modules.social.media_archive import SocialAvatarArchive, SocialMediaArc
 from app.modules.social.media_io import AsyncConcurrencyGate
 from app.modules.social.ocr import LocalMediaOcr, OcrResult
 from app.modules.social.service import SocialSyncService
-from PIL import Image
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
 
 
 def _make_image_bytes(
