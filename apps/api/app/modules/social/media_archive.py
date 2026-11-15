@@ -167,39 +167,43 @@ class SocialMediaArchive:
     async def archive(
         self, post_id: int, media_index: int, source_url: str
     ) -> SocialMediaAsset:
-        asset = self.asset(post_id, media_index)
+        # Avoid flushing earlier dirty ORM changes before remote HTTP I/O.
+        with self.session.no_autoflush:
+            asset = self.asset(post_id, media_index)
         previous_path: Path | None = None
-        source_changed = False
+        existing_source_url: str | None = None
         is_new = asset is None
-        if asset is None:
-            asset = SocialMediaAsset(
-                post_id=post_id,
-                media_index=media_index,
-                source_url=source_url,
-                status="pending",
-            )
-        else:
+        if asset is not None:
             local = self.local_file(asset)
             if local and asset.status == "archived" and asset.source_url == source_url:
                 asset.last_accessed_at = datetime.now(UTC)
                 return asset
             previous_path = local
-            source_changed = asset.source_url != source_url
-            asset.source_url = source_url
-            asset.status = "pending"
-            asset.error = None
+            existing_source_url = asset.source_url
+        source_changed = not is_new and existing_source_url != source_url
 
         parsed = urlparse(source_url)
         if parsed.scheme != "https" or parsed.hostname not in ALLOWED_MEDIA_HOSTS:
-            asset.status = "failed"
-            asset.error = "不允许归档该媒体来源"
-            if is_new:
+            if asset is None:
+                asset = SocialMediaAsset(
+                    post_id=post_id,
+                    media_index=media_index,
+                    source_url=source_url,
+                    status="failed",
+                    error="不允许归档该媒体来源",
+                )
                 self.session.add(asset)
+            else:
+                asset.source_url = source_url
+                asset.status = "failed"
+                asset.error = "不允许归档该媒体来源"
             self.session.flush()
             return asset
 
         owns_client = self.client is None
         client = self.client or _http_client(self.settings)
+        archived_file: tuple[str, str, int, int, int, Path] | None = None
+        error_message: str | None = None
         try:
             response = await client.get(
                 source_url, headers={"User-Agent": self.settings.user_agent}
@@ -214,10 +218,30 @@ class SocialMediaArchive:
             path = self.settings.social_media_dir / filename
             if not path.exists():
                 _write_atomically(path, encoded)
+            archived_file = (filename, digest, len(encoded), width, height, path)
+        except Exception as exc:
+            error_message = str(exc)[:1000]
+            logger.info("Social media archive skipped %s: %s", source_url, exc)
+        finally:
+            if owns_client:
+                await client.aclose()
+
+        if asset is None:
+            asset = SocialMediaAsset(
+                post_id=post_id,
+                media_index=media_index,
+                source_url=source_url,
+            )
+            self.session.add(asset)
+        else:
+            asset.source_url = source_url
+
+        if archived_file is not None:
+            filename, digest, byte_size, width, height, path = archived_file
             asset.local_path = filename
             asset.content_hash = digest
             asset.mime_type = "image/webp"
-            asset.byte_size = len(encoded)
+            asset.byte_size = byte_size
             asset.width = width
             asset.height = height
             asset.status = "archived"
@@ -225,19 +249,14 @@ class SocialMediaArchive:
             asset.error = None
             if previous_path and previous_path != path:
                 previous_path.unlink(missing_ok=True)
-        except Exception as exc:
+        else:
             asset.status = "failed"
-            asset.error = str(exc)[:1000]
+            asset.error = error_message
             if source_changed and previous_path:
                 previous_path.unlink(missing_ok=True)
                 asset.local_path = None
                 asset.byte_size = 0
-            logger.info("Social media archive skipped %s: %s", source_url, exc)
-        finally:
-            if owns_client:
-                await client.aclose()
-        if is_new:
-            self.session.add(asset)
+
         self.session.flush()
         return asset
 

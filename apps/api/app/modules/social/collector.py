@@ -8,6 +8,10 @@ from app.core.config import Settings
 from app.modules.social.schemas import SocialAccountSuggestion
 
 
+class CollectorUnavailableError(RuntimeError):
+    """Raised when the social collector service cannot be reached yet."""
+
+
 class CollectorPost(BaseModel):
     id: str
     text: str = ""
@@ -72,8 +76,8 @@ class XBrowserCollector:
         except httpx.HTTPStatusError as exc:
             detail = self._response_error_detail(exc.response)
             raise RuntimeError(f"X 采集器暂时不可用：{detail}") from exc
-        except httpx.ConnectError as exc:
-            raise RuntimeError(
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise CollectorUnavailableError(
                 "无法连接 X 采集器：采集器尚未启动、正在重启，或容器网络不可达"
             ) from exc
         except httpx.TimeoutException as exc:

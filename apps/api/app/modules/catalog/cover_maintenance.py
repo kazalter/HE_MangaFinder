@@ -1,6 +1,8 @@
 import asyncio
+from typing import Any
 
 from sqlalchemy import exists, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.db.models import MergeSuggestion, Work, WorkFingerprint, WorkGroup
@@ -8,6 +10,13 @@ from app.modules.agent_review.candidates import build_candidate_evidence
 from app.modules.catalog.aggregation import CoverHasher
 from app.modules.catalog.cover_fingerprint import is_current_fingerprint
 from app.providers.registry import ProviderRegistry
+
+_LOCK_RETRY_ATTEMPTS = 10
+
+
+def _is_sqlite_lock_error(exc: OperationalError) -> bool:
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
 
 
 class CoverFingerprintRefreshService:
@@ -31,60 +40,103 @@ class CoverFingerprintRefreshService:
         )
         all_pending = [item for item in rows if force or self._needs_refresh(item)]
         pending = all_pending if force else all_pending[: max(1, batch_size)]
+        work_items: list[tuple[int, str, str | None, str | None]] = [
+            (item.work_id, *self._fingerprint_input(item)) for item in pending
+        ]
+        # Release the read transaction before downloading remote covers.
+        self.session.rollback()
+
         refreshed = 0
         failed = 0
         stale = 0
         hasher = CoverHasher(providers=self.providers)
         try:
-            for start in range(0, len(pending), self.concurrency):
-                batch = pending[start : start + self.concurrency]
-                inputs = [self._fingerprint_input(item) for item in batch]
+            for start in range(0, len(work_items), self.concurrency):
+                batch = work_items[start : start + self.concurrency]
                 results = await asyncio.gather(
-                    *(hasher.fingerprint_url(*args) for args in inputs),
+                    *(
+                        hasher.fingerprint_url(url, provider, external_id)
+                        for _, url, provider, external_id in batch
+                    ),
                     return_exceptions=True,
                 )
-                for item, args, result in zip(batch, inputs, results, strict=True):
+                updates: list[tuple[int, str, dict[str, Any]]] = []
+                for (work_id, url, _, _), result in zip(batch, results, strict=True):
                     if isinstance(result, BaseException) or result is None:
                         failed += 1
                         continue
-                    url = args[0]
-                    result["source_url"] = url
-                    variants = result.get("variants", [])
+                    payload = dict(result)
+                    payload["source_url"] = url
+                    updates.append((work_id, url, payload))
+                if updates:
+                    batch_refreshed, batch_stale = await self._apply_batch_with_retry(updates)
+                    refreshed += batch_refreshed
+                    stale += batch_stale
+        finally:
+            await hasher.close()
+
+        changed_suggestions = await self._refresh_suggestion_reasons_with_retry()
+        return {
+            "eligible": len(rows),
+            "pending": len(all_pending),
+            "processed": len(work_items),
+            "remaining": max(0, len(all_pending) - len(work_items)) + stale,
+            "refreshed": refreshed,
+            "failed": failed,
+            "suggestions_updated": changed_suggestions,
+        }
+
+    async def _apply_batch_with_retry(
+        self, updates: list[tuple[int, str, dict[str, Any]]]
+    ) -> tuple[int, int]:
+        for attempt in range(_LOCK_RETRY_ATTEMPTS):
+            try:
+                batch_refreshed = 0
+                batch_stale = 0
+                for work_id, url, payload in updates:
+                    variants = payload.get("variants", [])
                     updated = self.session.execute(
                         update(WorkFingerprint)
                         .where(
-                            WorkFingerprint.work_id == item.work_id,
+                            WorkFingerprint.work_id == work_id,
                             exists(
                                 select(Work.id).where(
-                                    Work.id == item.work_id, Work.cover_url == url
+                                    Work.id == work_id, Work.cover_url == url
                                 )
                             ),
                         )
                         .values(
-                            cover_fingerprint=result,
+                            cover_fingerprint=payload,
                             cover_hash=variants[0].get("dhash") if variants else None,
                         )
                         .execution_options(synchronize_session=False)
                     )
                     if updated.rowcount:
-                        refreshed += 1
+                        batch_refreshed += 1
                     else:
-                        stale += 1
+                        batch_stale += 1
                 self.session.commit()
-        finally:
-            await hasher.close()
-        self.session.expire_all()
-        changed_suggestions = self._refresh_suggestion_reasons()
-        self.session.commit()
-        return {
-            "eligible": len(rows),
-            "pending": len(all_pending),
-            "processed": len(pending),
-            "remaining": max(0, len(all_pending) - len(pending)) + stale,
-            "refreshed": refreshed,
-            "failed": failed,
-            "suggestions_updated": changed_suggestions,
-        }
+                return batch_refreshed, batch_stale
+            except OperationalError as exc:
+                if not _is_sqlite_lock_error(exc) or attempt >= _LOCK_RETRY_ATTEMPTS - 1:
+                    raise
+                self.session.rollback()
+                await asyncio.sleep(min(1.0, 0.1 * (attempt + 1)))
+        raise RuntimeError("unreachable")
+
+    async def _refresh_suggestion_reasons_with_retry(self) -> int:
+        for attempt in range(_LOCK_RETRY_ATTEMPTS):
+            try:
+                self.session.expire_all()
+                changed_suggestions = self._refresh_suggestion_reasons()
+                self.session.commit()
+                return changed_suggestions
+            except OperationalError as exc:
+                if not _is_sqlite_lock_error(exc) or attempt >= _LOCK_RETRY_ATTEMPTS - 1:
+                    raise
+                self.session.rollback()
+                await asyncio.sleep(min(1.0, 0.1 * (attempt + 1)))
+        raise RuntimeError("unreachable")
 
     @staticmethod
     def _needs_refresh(fingerprint: WorkFingerprint) -> bool:

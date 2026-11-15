@@ -5,6 +5,10 @@ services:
       context: .
       # Dockge 使用宿主机已构建的 Web 产物，避免在家用服务器重复安装 Node 工具链。
       dockerfile: Dockerfile.dockge
+    depends_on:
+      social-collector:
+        condition: service_healthy
+        required: false
     ports:
       - "${MANGAFINDER_PORT:-8000}:8000"
     environment:
@@ -154,7 +158,7 @@ services:
           python -c "import os,urllib.request;
           r=urllib.request.Request('http://127.0.0.1:8010/health',headers={'Authorization':'Bearer '+os.getenv('SOCIAL_COLLECTOR_TOKEN','')});
           urllib.request.urlopen(r,timeout=3)"
-      interval: 30s
+      interval: 10s
       timeout: 5s
       retries: 3
       start_period: 30s

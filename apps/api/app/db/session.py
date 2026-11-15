@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, inspect, select
+from sqlalchemy import Engine, create_engine, event, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
@@ -13,15 +13,32 @@ if settings.database_url.startswith("sqlite:///"):
     database_path = Path(settings.database_url.removeprefix("sqlite:///"))
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+
+def configure_sqlite_engine(target_engine: Engine) -> None:
+    @event.listens_for(target_engine, "connect")
+    def _configure_sqlite_connection(dbapi_connection: object, _: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            mode_row = cursor.execute("PRAGMA journal_mode").fetchone()
+            mode = str(mode_row[0]).lower() if mode_row else ""
+            if mode not in {"wal", "memory"}:
+                cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
+
+
+connect_args = (
+    {"check_same_thread": False, "timeout": 30.0}
+    if settings.database_url.startswith("sqlite")
+    else {}
+)
 engine = create_engine(settings.database_url, connect_args=connect_args)
 
 if settings.database_url.startswith("sqlite"):
-    @event.listens_for(engine, "connect")
-    def enable_sqlite_foreign_keys(dbapi_connection: object, _: object) -> None:
-        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    configure_sqlite_engine(engine)
 
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 

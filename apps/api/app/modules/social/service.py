@@ -22,8 +22,11 @@ from app.db.models import (
 from app.modules.jobs.repository import JobRepository
 from app.modules.social.activity import ActivityService, activity_cluster_key, assess_activity
 from app.modules.social.agent import SocialReleaseReviewer
-from app.modules.social.collector import CollectorPost, XBrowserCollector
-from app.modules.social.digest import DigestService
+from app.modules.social.collector import (
+    CollectorPost,
+    CollectorUnavailableError,
+    XBrowserCollector,
+)
 from app.modules.social.media_archive import SocialAvatarArchive, SocialMediaArchive
 from app.modules.social.ocr import LocalMediaOcr
 from app.modules.social.planned_releases import PlannedReleaseService
@@ -49,6 +52,8 @@ class SocialSyncService:
             if not account.avatar_url:
                 try:
                     profile = await collector.profile(account.handle)
+                except CollectorUnavailableError:
+                    raise
                 except RuntimeError:
                     # A missing avatar must not prevent post collection. Profile metadata
                     # will be retried on the next sync while the account has no avatar.
@@ -157,7 +162,12 @@ class SocialSyncService:
             if account is None:
                 raise
             account.sync_error = str(exc)[:2000]
-            account.next_sync_at = datetime.now(UTC) + timedelta(hours=6)
+            delay = (
+                timedelta(minutes=2)
+                if isinstance(exc, CollectorUnavailableError)
+                else timedelta(hours=6)
+            )
+            account.next_sync_at = datetime.now(UTC) + delay
             self.session.commit()
             raise
 

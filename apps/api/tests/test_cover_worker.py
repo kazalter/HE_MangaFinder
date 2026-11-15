@@ -1,13 +1,16 @@
 import asyncio
+import sqlite3
 import threading
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import Job, JobStatus, Work, WorkFingerprint
+from app.db.session import configure_sqlite_engine
 from app.modules.catalog import cover_maintenance
 from app.modules.catalog.cover_maintenance import CoverFingerprintRefreshService
 from app.modules.jobs import worker as worker_module
@@ -92,3 +95,49 @@ async def test_slow_cover_index_does_not_block_general_queue(tmp_path, monkeypat
         await index_worker.stop()
     with factory() as session:
         assert session.get(Job, index_id).status == JobStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_cover_refresh_retries_sqlite_lock_without_redownloading(tmp_path, monkeypatch):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'cover_retry.db'}", connect_args={"check_same_thread": False}
+    )
+    configure_sqlite_engine(engine)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as session:
+        work = Work(title="cover-retry", cover_url="https://img.example/cover.jpg")
+        work.fingerprint = WorkFingerprint(normalized_title="cover-retry")
+        session.add(work)
+        session.commit()
+        work_id = work.id
+
+    download_calls = 0
+
+    async def fake_fingerprint(hasher, url, provider, external_id):
+        nonlocal download_calls
+        download_calls += 1
+        return {"version": 2, "variants": [{"dhash": "abcd1234"}]}
+
+    monkeypatch.setattr(cover_maintenance.CoverHasher, "fingerprint_url", fake_fingerprint)
+    with factory() as session:
+        original_commit = session.commit
+        commit_attempts = 0
+
+        def flaky_commit():
+            nonlocal commit_attempts
+            commit_attempts += 1
+            if commit_attempts == 1:
+                raise OperationalError(
+                    "COMMIT", {}, sqlite3.OperationalError("database is locked")
+                )
+            return original_commit()
+
+        monkeypatch.setattr(session, "commit", flaky_commit)
+        result = await CoverFingerprintRefreshService(session, ProviderRegistry([])).run()
+
+    assert download_calls == 1
+    assert commit_attempts >= 2
+    assert result["refreshed"] == 1
+    with factory() as session:
+        assert session.get(WorkFingerprint, work_id).cover_hash == "abcd1234"

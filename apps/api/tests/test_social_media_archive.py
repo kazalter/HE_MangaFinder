@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime
 from io import BytesIO
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import Author, SocialAccount, SocialMediaAsset, SocialPost
+from app.db.session import configure_sqlite_engine
 from app.modules.social import media_archive
 from app.modules.social.media_archive import SocialAvatarArchive, SocialMediaArchive
 
@@ -111,3 +113,76 @@ async def test_archive_compresses_and_quota_evicts_only_local_copy(tmp_path) -> 
         assert asset.byte_size == 0
         assert not paths[0].exists()
         assert session.get(SocialPost, post.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_archive_does_not_hold_sqlite_write_lock_during_download(tmp_path) -> None:
+    db_path = tmp_path / "media.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    configure_sqlite_engine(engine)
+    Base.metadata.create_all(engine)
+
+    source = BytesIO()
+    Image.new("RGB", (600, 600), "#224466").save(source, format="PNG")
+
+    with Session(engine) as session:
+        author = Author(name="作家")
+        session.add(author)
+        session.flush()
+        account = SocialAccount(author_id=author.id, handle="creator", status="confirmed")
+        session.add(account)
+        session.flush()
+        post = SocialPost(
+            account_id=account.id,
+            platform_post_id="2",
+            text="多图动态",
+            url="https://x.com/creator/status/2",
+            media=[
+                {"type": "image", "url": "https://pbs.twimg.com/media/cached.jpg"},
+                {"type": "image", "url": "https://pbs.twimg.com/media/new.jpg"},
+            ],
+            links=[],
+            raw_metadata={},
+            content_hash="2",
+            posted_at=datetime.now(UTC),
+        )
+        session.add(post)
+        session.flush()
+        cached_rel = "archive/existing.webp"
+        cached_file = tmp_path / cached_rel
+        cached_file.parent.mkdir(parents=True, exist_ok=True)
+        cached_file.write_bytes(b"RIFFtest")
+        session.add(
+            SocialMediaAsset(
+                post_id=post.id,
+                media_index=0,
+                source_url="https://pbs.twimg.com/media/cached.jpg",
+                local_path=cached_rel,
+                status="archived",
+            )
+        )
+        session.commit()
+
+        concurrent_write_ok = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal concurrent_write_ok
+            # Another connection must be able to acquire a write lock while HTTP download runs.
+            with sqlite3.connect(db_path, timeout=0.05) as other:
+                other.execute("BEGIN IMMEDIATE")
+                other.execute("COMMIT")
+            concurrent_write_ok = True
+            return httpx.Response(200, content=source.getvalue(), request=request)
+
+        settings = Settings(
+            social_media_dir=tmp_path,
+            social_media_cache_max_bytes=1024**3,
+            _env_file=None,
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            archive = SocialMediaArchive(session, settings, client)
+            paths = await archive.archive_post(post)
+            session.commit()
+
+        assert concurrent_write_ok is True
+        assert 0 in paths and 1 in paths

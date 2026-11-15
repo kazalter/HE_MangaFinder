@@ -2,8 +2,10 @@ import asyncio
 import logging
 import threading
 from dataclasses import asdict
+from typing import Any
 
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.db.models import Job, JobStatus, SocialPostProcessing
@@ -31,6 +33,23 @@ from app.modules.social.service import SocialSyncService
 from app.providers.registry import ProviderRegistry, build_registry
 
 logger = logging.getLogger(__name__)
+_SQLITE_LOCK_RETRY_ATTEMPTS = 10
+
+
+def _is_sqlite_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, OperationalError):
+        return False
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
+def _should_retry_sqlite_lock(exc: OperationalError, attempt: int) -> bool:
+    return _is_sqlite_lock_error(exc) and attempt < _SQLITE_LOCK_RETRY_ATTEMPTS - 1
+
+
+def _sqlite_retry_delay(poll_interval_seconds: float, attempt: int) -> float:
+    base = min(0.5, max(0.05, poll_interval_seconds * 0.25))
+    return min(1.0, base * (attempt + 1))
 
 
 class JobWorker:
@@ -69,32 +88,128 @@ class JobWorker:
                 logger.exception("Background worker loop failed")
                 await asyncio.sleep(self.settings.poll_interval_seconds)
 
+    def _claim_args(self) -> dict[str, Any]:
+        return {
+            "kinds": (
+                {REFRESH_COVER_FINGERPRINTS}
+                if self.covers_only
+                else {DELIVER_NOTIFICATIONS}
+                if self.notifications_only
+                else {SOCIAL_PROCESS_POST, REFRESH_SOCIAL_DIGEST}
+                if self.social_processing_only
+                else None
+            ),
+            "exclude_kinds": ({DOWNLOAD_CHAPTER} if self.exclude_downloads else set())
+            | ({REFRESH_COVER_FINGERPRINTS} if self.exclude_covers else set())
+            | ({DELIVER_NOTIFICATIONS} if self.exclude_notifications else set())
+            | (
+                {SOCIAL_PROCESS_POST, REFRESH_SOCIAL_DIGEST}
+                if self.exclude_social_processing
+                else set()
+            ),
+            "prioritize_notifications": self.exclude_downloads,
+        }
+
+    async def _sleep_before_retry(self, attempt: int) -> None:
+        delay = _sqlite_retry_delay(self.settings.poll_interval_seconds, attempt)
+        await asyncio.sleep(delay)
+
+    async def _claim_next_with_retry(self, session: Session, jobs: JobRepository) -> Job | None:
+        claim_args = self._claim_args()
+        for attempt in range(_SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                return jobs.claim_next(**claim_args)
+            except OperationalError as lock_error:
+                if not _should_retry_sqlite_lock(lock_error, attempt):
+                    raise
+                session.rollback()
+                await self._sleep_before_retry(attempt)
+        return None
+
+    async def _succeed_with_retry(
+        self,
+        session: Session,
+        jobs: JobRepository,
+        job_id: int,
+        job_kind: str,
+        final_payload: dict[str, Any],
+        *,
+        enqueue_agent_after_discovery: bool = False,
+        enqueue_notifications: bool = False,
+    ) -> None:
+        for attempt in range(_SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                job = session.get(Job, job_id)
+                if job is None or job.status != JobStatus.RUNNING:
+                    return
+                job.payload = final_payload
+                if enqueue_agent_after_discovery:
+                    jobs.enqueue_agent_reviews()
+                if enqueue_notifications:
+                    jobs.enqueue_notification_delivery_if_needed()
+                jobs.succeed(job)
+                break
+            except OperationalError as lock_error:
+                if not _should_retry_sqlite_lock(lock_error, attempt):
+                    raise
+                session.rollback()
+                await self._sleep_before_retry(attempt)
+
+        if job_kind != REFRESH_COVER_FINGERPRINTS:
+            return
+        remaining = int(final_payload.get("remaining", 0))
+        if remaining <= 0 and not self.settings.agent_configured:
+            return
+        for attempt in range(_SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                if remaining > 0:
+                    jobs.enqueue_cover_fingerprint_refresh()
+                elif self.settings.agent_configured:
+                    jobs.enqueue_agent_reviews()
+                session.commit()
+                return
+            except OperationalError as lock_error:
+                if not _should_retry_sqlite_lock(lock_error, attempt):
+                    raise
+                session.rollback()
+                await self._sleep_before_retry(attempt)
+
+    async def _fail_with_retry(
+        self, session: Session, jobs: JobRepository, job_id: int, error: str
+    ) -> None:
+        for attempt in range(_SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                job = session.get(Job, job_id)
+                if job is None:
+                    raise RuntimeError(f"任务 {job_id} 在失败处理期间被删除")
+                if job.status != JobStatus.RUNNING:
+                    return
+                if (
+                    job.kind == SOCIAL_PROCESS_POST
+                    and job.attempts >= self.settings.max_job_attempts
+                ):
+                    state = session.get(SocialPostProcessing, int(job.payload["post_id"]))
+                    if state:
+                        state.status = "retry"
+                        state.last_error = error[:1000]
+                jobs.fail(job, error, self.settings.max_job_attempts)
+                return
+            except OperationalError as lock_error:
+                if not _should_retry_sqlite_lock(lock_error, attempt):
+                    raise
+                session.rollback()
+                await self._sleep_before_retry(attempt)
+
     async def run_once(self) -> bool:
         with SessionLocal() as session:
             jobs = JobRepository(session)
-            job = jobs.claim_next(
-                kinds=(
-                    {REFRESH_COVER_FINGERPRINTS}
-                    if self.covers_only
-                    else {DELIVER_NOTIFICATIONS}
-                    if self.notifications_only
-                    else {SOCIAL_PROCESS_POST, REFRESH_SOCIAL_DIGEST}
-                    if self.social_processing_only
-                    else None
-                ),
-                exclude_kinds=({DOWNLOAD_CHAPTER} if self.exclude_downloads else set())
-                | ({REFRESH_COVER_FINGERPRINTS} if self.exclude_covers else set())
-                | ({DELIVER_NOTIFICATIONS} if self.exclude_notifications else set())
-                | (
-                    {SOCIAL_PROCESS_POST, REFRESH_SOCIAL_DIGEST}
-                    if self.exclude_social_processing
-                    else set()
-                ),
-                prioritize_notifications=self.exclude_downloads,
-            )
+            job = await self._claim_next_with_retry(session, jobs)
             if job is None:
                 return False
             job_id = job.id
+            job_kind = job.kind
+            enqueue_agent_after_discovery = False
+            enqueue_notifications = False
             try:
                 if job.kind == DISCOVER_AUTHOR:
                     discovery = DiscoveryService(session, self.providers)
@@ -112,12 +227,11 @@ class JobWorker:
                                 provider_names if trigger == "provider_retry" else None
                             ),
                         )
-                    job.payload = {**job.payload, **result}
-                    if (
+                    final_payload = {**job.payload, **result}
+                    enqueue_agent_after_discovery = (
                         self.settings.agent_review_after_discovery
                         and self.settings.agent_configured
-                    ):
-                        jobs.enqueue_agent_reviews()
+                    )
                 elif job.kind == DOWNLOAD_CHAPTER:
                     path, verification = await DownloadService(
                         session, self.providers, self.settings
@@ -126,7 +240,7 @@ class JobWorker:
                         str(job.payload["provider"]),
                         str(job.payload["chapter_id"]),
                     )
-                    job.payload = {
+                    final_payload = {
                         **job.payload,
                         "output_path": path,
                         "verification": asdict(verification),
@@ -135,82 +249,57 @@ class JobWorker:
                     result = await CoverFingerprintRefreshService(session, self.providers).run(
                         bool(job.payload.get("force", False))
                     )
-                    job.payload = {**job.payload, **result}
+                    final_payload = {**job.payload, **result}
                 elif job.kind == AGENT_REVIEW_SUGGESTIONS:
                     result = await AgentReviewService(session, self.settings).run_pending(
                         job.payload.get("max_reviews")
                     )
-                    job.payload = {**job.payload, **result}
+                    final_payload = {**job.payload, **result}
                 elif job.kind == SOCIAL_SYNC_ACCOUNT:
                     result = await SocialSyncService(session, self.settings).sync_account(
                         int(job.payload["account_id"])
                     )
-                    job.payload = {**job.payload, **result}
-                    jobs.enqueue_notification_delivery_if_needed()
+                    final_payload = {**job.payload, **result}
+                    enqueue_notifications = True
                 elif job.kind == SOCIAL_PROCESS_POST:
                     result = await SocialSyncService(session, self.settings).process_post(
                         int(job.payload["post_id"])
                     )
-                    job.payload = {**job.payload, **result}
-                    jobs.enqueue_notification_delivery_if_needed()
+                    final_payload = {**job.payload, **result}
+                    enqueue_notifications = True
                 elif job.kind == REFRESH_SOCIAL_DIGEST:
                     digest = await DigestService(session, self.settings).refresh(
                         int(job.payload["author_id"])
                     )
-                    job.payload = {**job.payload, "digest_id": digest.id if digest else None}
+                    session.commit()
+                    final_payload = {**job.payload, "digest_id": digest.id if digest else None}
                 elif job.kind == BUILD_DAILY_DIGEST:
                     result = await DailyDigestService(session, self.settings).build(
                         force=bool(job.payload.get("force", False))
                     )
-                    job.payload = {**job.payload, **result}
-                    jobs.enqueue_notification_delivery_if_needed()
+                    session.commit()
+                    final_payload = {**job.payload, **result}
+                    enqueue_notifications = True
                 elif job.kind == DELIVER_NOTIFICATIONS:
                     result = await NotificationService(session, self.settings).deliver_pending()
-                    job.payload = {**job.payload, **result}
+                    final_payload = {**job.payload, **result}
                 else:
                     raise ValueError(f"未知任务类型: {job.kind}")
-                jobs.succeed(job)
-                if job.kind == REFRESH_COVER_FINGERPRINTS:
-                    if int(job.payload.get("remaining", 0)) > 0:
-                        jobs.enqueue_cover_fingerprint_refresh()
-                        session.commit()
-                    elif self.settings.agent_configured:
-                        jobs.enqueue_agent_reviews()
-                        session.commit()
             except Exception as exc:
                 logger.warning("Job %s failed: %s", job_id, exc)
                 session.rollback()
-                job = session.get(Job, job_id)
-                if job is None:
-                    raise RuntimeError(f"任务 {job_id} 在失败处理期间被删除") from exc
-                if self.covers_only or self.notifications_only or self.social_processing_only:
-                    while True:
-                        try:
-                            if job.status == JobStatus.RUNNING:
-                                if (
-                                    job.kind == SOCIAL_PROCESS_POST
-                                    and job.attempts >= self.settings.max_job_attempts
-                                ):
-                                    state = session.get(
-                                        SocialPostProcessing, int(job.payload["post_id"])
-                                    )
-                                    if state:
-                                        state.status = "retry"
-                                        state.last_error = str(exc)[:1000]
-                                jobs.fail(job, str(exc), self.settings.max_job_attempts)
-                            break
-                        except OperationalError as lock_error:
-                            if not any(
-                                word in str(lock_error).lower() for word in ("locked", "busy")
-                            ):
-                                raise
-                            session.rollback()
-                            await asyncio.sleep(max(0.1, self.settings.poll_interval_seconds))
-                            job = session.get(Job, job_id)
-                            if job is None:
-                                break
-                else:
-                    jobs.fail(job, str(exc), self.settings.max_job_attempts)
+                await self._fail_with_retry(session, jobs, job_id, str(exc))
+                return True
+
+            await self._succeed_with_retry(
+                session,
+                jobs,
+                job_id,
+                job_kind,
+                final_payload,
+                enqueue_agent_after_discovery=enqueue_agent_after_discovery,
+                enqueue_notifications=enqueue_notifications,
+            )
             return True
 
 
@@ -292,6 +381,20 @@ class DownloadWorker:
             job = JobRepository(session).claim_next(kinds={DOWNLOAD_CHAPTER})
             return (job.id, dict(job.payload)) if job else None
 
+    async def _sleep_before_retry(self, attempt: int) -> None:
+        delay = _sqlite_retry_delay(self.settings.poll_interval_seconds, attempt)
+        await asyncio.sleep(delay)
+
+    async def _claim_with_retry(self) -> tuple[int, dict] | None:
+        for attempt in range(_SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                return await asyncio.to_thread(self._claim)
+            except OperationalError as exc:
+                if not _should_retry_sqlite_lock(exc, attempt):
+                    raise
+                await self._sleep_before_retry(attempt)
+        return None
+
     def _finish(self, job_id: int, payload: dict, error: str | None) -> None:
         with SessionLocal() as session:
             job = session.get(Job, job_id)
@@ -305,17 +408,17 @@ class DownloadWorker:
                 jobs.fail(job, error, self.settings.max_job_attempts)
 
     async def _finish_with_retry(self, job_id: int, payload: dict, error: str | None) -> None:
-        while True:
+        for attempt in range(_SQLITE_LOCK_RETRY_ATTEMPTS):
             try:
                 await asyncio.to_thread(self._finish, job_id, payload, error)
                 return
             except OperationalError as exc:
-                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                if not _should_retry_sqlite_lock(exc, attempt):
                     raise
-                await asyncio.sleep(max(0.1, self.settings.poll_interval_seconds))
+                await self._sleep_before_retry(attempt)
 
     async def run_once(self) -> bool:
-        claimed = await asyncio.to_thread(self._claim)
+        claimed = await self._claim_with_retry()
         if claimed is None:
             return False
         job_id, payload = claimed

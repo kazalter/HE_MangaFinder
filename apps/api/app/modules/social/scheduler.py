@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.db.models import AuthorDigest, SocialPost, SocialPostProcessing
 from app.db.session import SessionLocal
 from app.modules.jobs.repository import JobRepository
+from app.modules.social.collector import CollectorUnavailableError, XBrowserCollector
 from app.modules.social.daily_digest import DailyDigestService
 from app.modules.social.repository import SocialRepository
 
@@ -18,22 +19,36 @@ class SocialScheduler:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
+    async def _collector_ready(self) -> bool:
+        try:
+            await XBrowserCollector(self.settings).health()
+            return True
+        except CollectorUnavailableError as exc:
+            logger.info("Deferring social account sync until collector is ready: %s", exc)
+            return False
+        except RuntimeError:
+            # Collector is reachable (for example returning an auth/HTTP error); let
+            # account sync surface the error cleanly rather than stalling silently.
+            return True
+
     async def run(self) -> None:
         while True:
             try:
-                self.enqueue_due()
-                await asyncio.sleep(60)
+                collector_ready = await self._collector_ready()
+                self.enqueue_due(include_account_syncs=collector_ready)
+                await asyncio.sleep(60 if collector_ready else 10)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Social scheduler failed")
                 await asyncio.sleep(60)
 
-    def enqueue_due(self) -> None:
+    def enqueue_due(self, *, include_account_syncs: bool = True) -> None:
         with SessionLocal() as session:
             jobs = JobRepository(session)
-            for account in SocialRepository(session).due_accounts(datetime.now(UTC)):
-                jobs.enqueue_social_sync(account.id)
+            if include_account_syncs:
+                for account in SocialRepository(session).due_accounts(datetime.now(UTC)):
+                    jobs.enqueue_social_sync(account.id)
             if self.settings.social_ocr_enabled:
                 now = datetime.now(UTC)
                 candidates = session.execute(
