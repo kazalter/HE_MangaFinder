@@ -12,10 +12,11 @@ RUN sed -i \
     && apt-get install -y --no-install-recommends chromium fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
+COPY apps/social_collector/pyproject.toml ./apps/social_collector/pyproject.toml
+RUN python -c 'import pathlib, subprocess, sys, tomllib; deps = tomllib.loads(pathlib.Path("apps/social_collector/pyproject.toml").read_text())["project"]["dependencies"]; subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple", "hatchling", *deps])'
+
 COPY apps/social_collector ./apps/social_collector
-RUN pip install --no-cache-dir \
-      --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-      ./apps/social_collector
+RUN pip install --no-cache-dir --no-deps --no-build-isolation ./apps/social_collector
 
 RUN useradd --create-home --uid 1000 pwuser \
     && mkdir -p /session \
