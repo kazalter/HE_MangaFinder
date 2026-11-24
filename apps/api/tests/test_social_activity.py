@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -322,3 +323,105 @@ def test_digest_evidence_returns_only_the_tracked_authors_posts(session):
     response = _digest_read(session, digest)
     assert [post.id for post in response.evidence_posts] == [allowed.id]
     assert response.evidence_posts[0].url.endswith("/21")
+
+
+def test_needs_chinese_rewrite_detects_japanese_prose_but_allows_titles_and_glosses() -> None:
+    from app.modules.social.digest import needs_chinese_rewrite
+
+    assert needs_chinese_rewrite("夏コミの新刊サンプルを公開しました！") is True
+    assert needs_chinese_rewrite("原稿作業中です、よろしくお願いします。") is True
+    assert (
+        needs_chinese_rewrite(
+            "みかん公布了夏季 Comic Market（夏コミ）新作『恋する季節』的样品预览。",
+            ignore_terms=("みかん",),
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_activity_digest_reviewer_rewrites_japanese_output_for_deepseek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.social.digest import ActivityDigestReviewer
+
+    responses = [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '```json\n{"summary": "夏コミの新刊サンプルを公開しました。", '
+                            '"highlights": [{"text": "夏コミの新刊サンプルを公開しました", '
+                            '"category": "release", "importance": "high", '
+                            '"factuality": "fact", "post_ids": [1]}], '
+                            '"uncertainties": []}\n```'
+                        )
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "summary": (
+                                    "作者公开了夏季 Comic Market（夏コミ）新作同人志的样品。"
+                                ),
+                                "highlights": [
+                                    {
+                                        "text": (
+                                            "公开了夏季 Comic Market（夏コミ）新作同人志的样品"
+                                        ),
+                                        "category": "release",
+                                        "importance": "high",
+                                        "factuality": "fact",
+                                        "post_ids": [1],
+                                    }
+                                ],
+                                "uncertainties": [],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        },
+    ]
+    payloads: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __init__(self, body: dict[str, object]) -> None:
+            self._body = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self._body
+
+    class FakeClient:
+        async def post(self, url: str, *, headers: dict[str, str], json: dict[str, object]):
+            payloads.append(json)
+            return FakeResponse(responses[len(payloads) - 1])
+
+    settings = Settings(
+        agent_enabled=True,
+        agent_provider="deepseek",
+        agent_base_url="https://api.deepseek.com",
+        agent_model="deepseek-chat",
+        agent_api_key="test",
+    )
+    verdict = await ActivityDigestReviewer(settings, client=FakeClient()).review(
+        {
+            "author": "作者甲",
+            "posts": [{"post_id": 1, "text": "夏コミの新刊サンプルを公開しました"}],
+        }
+    )
+
+    assert len(payloads) == 2
+    assert payloads[0]["thinking"] == {"type": "disabled"}
+    assert payloads[0]["response_format"] == {"type": "json_object"}
+    assert "公开了夏季 Comic Market（夏コミ）新作同人志的样品" == verdict.highlights[0].text

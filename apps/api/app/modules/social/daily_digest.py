@@ -17,7 +17,12 @@ from app.db.models import (
     SocialPost,
     SocialPostProcessing,
 )
-from app.modules.social.digest import DigestService, localize_known_terms
+from app.modules.social.digest import (
+    DigestService,
+    format_fallback_highlight,
+    localize_known_terms,
+    needs_chinese_rewrite,
+)
 
 IMPORTANCE_RANK = {"low": 0, "normal": 1, "high": 2, "critical": 3}
 
@@ -103,38 +108,64 @@ class DailyDigestService:
 
         author_activities = self._recent_activities(period_start, period_end)
         sections: list[tuple[int, str, list[str]]] = []
+        digest_service = DigestService(self.session, self.settings)
         for author_id, activities in author_activities.items():
-            digest = await DigestService(self.session, self.settings).refresh(
-                author_id, now=period_end
-            )
+            digest = await digest_service.refresh(author_id, now=period_end)
             # A digest is derived, retryable state. Release its write transaction
             # before the next author causes an external model request.
             self.session.commit()
             if not digest:
                 continue
+            author = self.session.get(Author, author_id)
+            author_name = author.name if author else "已删除作者"
             recent_post_ids = self._recent_post_ids(author_id, period_start, period_end)
             notified_post_ids = self._notified_post_ids(author_id, period_start, period_end)
-            highlights: list[str] = []
             minimum = IMPORTANCE_RANK.get(self.settings.social_daily_digest_min_importance, 1)
-            for item in digest.highlights:
-                post_ids = {int(value) for value in item.get("post_ids", [])}
-                if not post_ids.intersection(recent_post_ids):
-                    continue
-                if IMPORTANCE_RANK.get(str(item.get("importance")), 1) < minimum:
-                    continue
-                text = localize_known_terms(str(item.get("text", "")).strip())
-                if not text:
-                    continue
-                if post_ids.intersection(notified_post_ids):
-                    text = f"{text.rstrip('。')}（已即时通知）"
-                highlights.append(text)
-                if len(highlights) >= self.settings.social_daily_digest_max_items_per_author:
-                    break
+            highlights = self._select_highlights(
+                digest.highlights,
+                recent_post_ids=recent_post_ids,
+                notified_post_ids=notified_post_ids,
+                minimum=minimum,
+            )
+            ignore_terms = (author_name,) if author else ()
+            needs_period_summary = self.settings.social_agent_configured and (
+                not highlights
+                or digest.generated_by != "agent"
+                or any(
+                    needs_chinese_rewrite(text, ignore_terms=ignore_terms) for text in highlights
+                )
+            )
+            if needs_period_summary:
+                period_verdict = await digest_service.summarize_period(
+                    author_id,
+                    period_start,
+                    period_end,
+                    max_items=self.settings.social_daily_digest_max_items_per_author,
+                    min_importance=self.settings.social_daily_digest_min_importance,
+                )
+                if period_verdict is not None:
+                    raw_items = [item.model_dump(mode="json") for item in period_verdict.highlights]
+                    period_highlights = self._select_highlights(
+                        raw_items,
+                        recent_post_ids=recent_post_ids,
+                        notified_post_ids=notified_post_ids,
+                        minimum=minimum,
+                    )
+                    if not period_highlights:
+                        # Activities already met minimum importance by rule; prefer an LLM
+                        # summary of those posts over raw Japanese rule fallback.
+                        period_highlights = self._select_highlights(
+                            raw_items,
+                            recent_post_ids=recent_post_ids,
+                            notified_post_ids=notified_post_ids,
+                            minimum=0,
+                        )
+                    if period_highlights:
+                        highlights = period_highlights
             if not highlights:
                 highlights = self._activity_fallback(activities)
             if highlights:
-                author = self.session.get(Author, author_id)
-                sections.append((author_id, author.name if author else "已删除作者", highlights))
+                sections.append((author_id, author_name, highlights))
             if len(sections) >= self.settings.social_daily_digest_max_authors:
                 break
 
@@ -255,10 +286,36 @@ class DailyDigestService:
             )
         )
 
+    def _select_highlights(
+        self,
+        raw_highlights: list[dict[str, object]],
+        *,
+        recent_post_ids: set[int],
+        notified_post_ids: set[int],
+        minimum: int,
+    ) -> list[str]:
+        highlights: list[str] = []
+        for item in raw_highlights:
+            post_ids = {int(value) for value in item.get("post_ids", [])}
+            if not post_ids.intersection(recent_post_ids):
+                continue
+            if IMPORTANCE_RANK.get(str(item.get("importance")), 1) < minimum:
+                continue
+            text = localize_known_terms(str(item.get("text", "")).strip())
+            if not text:
+                continue
+            if post_ids.intersection(notified_post_ids):
+                text = f"{text.rstrip('。')}（已即时通知）"
+            highlights.append(text)
+            if len(highlights) >= self.settings.social_daily_digest_max_items_per_author:
+                break
+        return highlights
+
     def _activity_fallback(self, activities: list[ActivityItem]) -> list[str]:
         result: list[str] = []
         for item in activities:
-            text = localize_known_terms((item.summary or item.headline).strip())
+            raw = (item.summary or item.headline).strip()
+            text = format_fallback_highlight(item.category, raw)
             if text and text not in result:
                 result.append(text)
             if len(result) >= self.settings.social_daily_digest_max_items_per_author:
@@ -268,18 +325,37 @@ class DailyDigestService:
     def _message(self, local_date: str, sections: list[tuple[int, str, list[str]]]) -> str:
         lines = ["【MangaFinder · 作者近况日报】", f"日期：{local_date}"]
         item_count = 0
+        included_authors = 0
+        truncated = False
         for _, author_name, highlights in sections:
-            lines.extend(["", author_name])
+            author_lines = ["", author_name]
+            author_items = 0
             for item in highlights:
                 candidate = f"- {item.rstrip('。')}"
-                if len("\n".join([*lines, candidate])) > 1700:
+                if len("\n".join([*lines, *author_lines, candidate])) > 1680:
+                    truncated = True
                     break
-                lines.append(candidate)
-                item_count += 1
+                author_lines.append(candidate)
+                author_items += 1
+            if author_items == 0:
+                truncated = True
+                break
+            lines.extend(author_lines)
+            included_authors += 1
+            item_count += author_items
+            if truncated:
+                break
+        footer = f"共汇总 {included_authors} 位作者、{item_count} 项近况；纯转推已排除。"
+        if truncated:
+            omitted = len(sections) - included_authors
+            if omitted > 0:
+                footer += f"（另有 {omitted} 位作者及部分动态未展开）"
+            else:
+                footer += "（部分动态因篇幅限制未展开）"
         lines.extend(
             [
                 "",
-                f"共汇总 {len(sections)} 位作者、{item_count} 项近况；纯转推已排除。",
+                footer,
                 f"详情：{self.settings.public_base_url.rstrip('/')}/?view=social",
             ]
         )

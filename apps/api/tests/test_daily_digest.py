@@ -417,3 +417,127 @@ def test_daily_digest_waits_for_new_posts_but_not_historical_ocr(session):
     state.backfill_only = True
     session.flush()
     assert DailyDigestService(session, settings).is_due(now)
+
+
+@pytest.mark.asyncio
+async def test_daily_digest_uses_period_llm_when_rolling_digest_misses_or_rates_low(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.modules.social.digest import ActivityDigestReviewer
+    from app.modules.social.schemas import ActivityDigestVerdict
+
+    now = datetime(2026, 7, 16, 12, 30, tzinfo=UTC)
+    add_activity(
+        session,
+        "作者丙",
+        "creator_c",
+        "301",
+        "C108の新刊サンプルを公開しました！",
+        now - timedelta(hours=2),
+    )
+    post = session.scalar(select(SocialPost).where(SocialPost.platform_post_id == "301"))
+    assert post is not None
+    calls: list[str] = []
+
+    async def fake_review(self, evidence):
+        calls.append(str(evidence.get("digest_scope") or "rolling_7d"))
+        if evidence.get("digest_scope") == "daily_brief":
+            return ActivityDigestVerdict.model_validate(
+                {
+                    "summary": "作者公开了 C108 新刊样品。",
+                    "highlights": [
+                        {
+                            "text": "公开了 C108 新作同人志样品",
+                            "category": "release",
+                            "importance": "low",
+                            "factuality": "fact",
+                            "post_ids": [post.id],
+                        }
+                    ],
+                    "uncertainties": [],
+                }
+            )
+        return ActivityDigestVerdict.model_validate(
+            {
+                "summary": "近7天有旧动态。",
+                "highlights": [
+                    {
+                        "text": "此前发布的日常动态",
+                        "category": "other",
+                        "importance": "low",
+                        "factuality": "fact",
+                        "post_ids": [post.id],
+                    }
+                ],
+                "uncertainties": [],
+            }
+        )
+
+    monkeypatch.setattr(ActivityDigestReviewer, "review", fake_review)
+    settings = Settings(
+        agent_enabled=True,
+        agent_provider="deepseek",
+        agent_model="deepseek-chat",
+        agent_api_key="test",
+        social_agent_enabled=True,
+        social_daily_digest_enabled=True,
+        social_daily_digest_min_importance="normal",
+    )
+
+    result = await DailyDigestService(session, settings).build(force=True, now=now)
+    delivery = session.scalar(select(DailyDigestDelivery))
+
+    assert result["created"] is True
+    assert calls == ["rolling_7d", "daily_brief"]
+    assert delivery is not None
+    assert "公开了 C108 新作同人志样品" in delivery.payload["text"]
+    assert "公開しました" not in delivery.payload["text"]
+
+
+def test_daily_digest_message_truncation_avoids_orphan_author_headers(session: Session) -> None:
+    service = DailyDigestService(
+        session,
+        Settings(public_base_url="http://mangafinder.local"),
+    )
+    long_item = "发布了新作同人志进度更新与样品预览图" * 28
+    sections = [
+        (1, "作者一", [long_item, long_item, long_item]),
+        (2, "作者二", ["更新了夏コミ摊位信息与新作同人志详细发售情报" * 8]),
+    ]
+
+    message = service._message("2026-07-16", sections)
+
+    assert len(message) <= 1900
+    assert "作者一" in message
+    assert "作者二" not in message
+    assert "共汇总 1 位作者、3 项近况" in message
+    assert "未展开" in message
+
+
+def test_daily_digest_fallback_formats_chinese_category_and_keeps_short_excerpt(
+    session: Session,
+) -> None:
+    from app.db.models import ActivityItem
+
+    service = DailyDigestService(session, Settings())
+    item = ActivityItem(
+        author_id=1,
+        primary_post_id=1,
+        cluster_key="k1",
+        category="creation_progress",
+        headline="原稿進捗です https://t.co/abc123 " + "とても長い日本語の文章" * 10,
+        summary="原稿進捗です https://t.co/abc123 " + "とても長い日本語の文章" * 10,
+        importance="normal",
+        confidence=0.8,
+        started_at=datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+    )
+
+    lines = service._activity_fallback([item])
+
+    assert len(lines) == 1
+    assert lines[0].startswith("【创作进度】")
+    assert "创作稿件" in lines[0]
+    assert "https://t.co/abc123" not in lines[0]
+    assert lines[0].endswith("…")
+    assert len(lines[0]) <= 85
