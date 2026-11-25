@@ -436,3 +436,35 @@ def test_legacy_cover_hash_never_proves_covers_are_different() -> None:
     assert comparison is not None and comparison.distance == 64
     assert comparison.mode == "legacy"
     assert comparison.reliable_negative is False
+
+
+def test_prepared_cover_and_title_matching_preserve_exact_scores() -> None:
+    from app.modules.catalog.cover_fingerprint import (
+        compare_prepared_fingerprints,
+        prepare_cover_fingerprint,
+    )
+    from app.modules.catalog.title_identity import (
+        best_identity_similarity,
+        best_prepared_similarity,
+        prepare_identity_text,
+    )
+
+    first = Image.new("RGB", (500, 270), "white")
+    second = Image.new("RGB", (300, 400), "#18294f")
+    fp1 = fingerprint_image(first)
+    fp2 = fingerprint_image(second)
+    assert compare_prepared_fingerprints(
+        prepare_cover_fingerprint(fp1, legacy="0000000000000000"),
+        prepare_cover_fingerprint(fp2, legacy="000000000000000f"),
+    ) == compare_fingerprints(
+        fp1, fp2, left_legacy="0000000000000000", right_legacy="000000000000000f"
+    )
+
+    left_names = {"summer holiday 2", "サマーホリデー 2"}
+    right_names = {"summer holiday 02", "unrelated long title"}
+    expected = best_identity_similarity(left_names, right_names)
+    actual = best_prepared_similarity(
+        tuple(prepare_identity_text(v) for v in left_names),
+        tuple(prepare_identity_text(v) for v in right_names),
+    )
+    assert actual == expected

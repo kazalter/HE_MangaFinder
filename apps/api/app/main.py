@@ -28,8 +28,8 @@ from app.modules.jobs.repository import JobRepository
 from app.modules.jobs.router import router as jobs_router
 from app.modules.jobs.worker import (
     CoverWorkerThread,
-    DownloadWorker,
-    JobWorker,
+    DownloadWorkerThread,
+    GeneralWorkerThread,
     NotificationWorkerThread,
     SocialProcessingWorkerThread,
 )
@@ -56,25 +56,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     providers = build_registry(settings)
     app.state.providers = providers
     app.state.cover_cache = CoverCacheService(settings.cover_cache_dir, providers)
-    worker_task = None
-    download_worker_task = None
+    general_worker = None
+    download_worker = None
     cover_worker = None
     notification_worker = None
     social_processing_worker = None
     catalog_scheduler_task = None
     social_scheduler_task = None
     if settings.worker_enabled:
-        worker_task = asyncio.create_task(
-            JobWorker(
-                settings,
-                providers,
-                exclude_downloads=True,
-                exclude_covers=True,
-                exclude_notifications=True,
-                exclude_social_processing=True,
-            ).run()
-        )
-        download_worker_task = asyncio.create_task(DownloadWorker(settings, providers).run())
+        general_worker = GeneralWorkerThread(settings)
+        general_worker.start()
+        download_worker = DownloadWorkerThread(settings)
+        download_worker.start()
         cover_worker = CoverWorkerThread(settings)
         cover_worker.start()
         notification_worker = NotificationWorkerThread(settings)
@@ -88,8 +81,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     tasks = [
         task
         for task in (
-            worker_task,
-            download_worker_task,
             catalog_scheduler_task,
             social_scheduler_task,
         )
@@ -99,6 +90,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    if general_worker:
+        await general_worker.stop()
+    if download_worker:
+        await download_worker.stop()
     if cover_worker:
         await cover_worker.stop()
     if notification_worker:

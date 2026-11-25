@@ -389,6 +389,35 @@ class SocialProcessingWorkerThread(CoverWorkerThread):
         return JobWorker(self.settings, providers, social_processing_only=True)
 
 
+class GeneralWorkerThread(CoverWorkerThread):
+    """Run discovery, social sync, digest, and review jobs off the API event loop."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.thread.name = "general-jobs"
+
+    def _make_worker(self, providers: ProviderRegistry) -> JobWorker:
+        return JobWorker(
+            self.settings,
+            providers,
+            exclude_downloads=True,
+            exclude_covers=True,
+            exclude_notifications=True,
+            exclude_social_processing=True,
+        )
+
+
+class DownloadWorkerThread(CoverWorkerThread):
+    """Run chapter downloads and CBZ archiving off the API event loop."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.thread.name = "chapter-downloads"
+
+    def _make_worker(self, providers: ProviderRegistry) -> "DownloadWorker":
+        return DownloadWorker(self.settings, providers)
+
+
 class DownloadWorker:
     """One download lane; network and archive work do not hold up other jobs."""
 

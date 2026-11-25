@@ -141,3 +141,58 @@ async def test_cover_refresh_retries_sqlite_lock_without_redownloading(tmp_path,
     assert result["refreshed"] == 1
     with factory() as session:
         assert session.get(WorkFingerprint, work_id).cover_hash == "abcd1234"
+
+
+@pytest.mark.asyncio
+async def test_general_worker_thread_does_not_block_api_event_loop(tmp_path, monkeypatch):
+    from app.modules.jobs.repository import DISCOVER_AUTHOR
+    from app.modules.jobs.worker import GeneralWorkerThread
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'general.db'}", connect_args={"check_same_thread": False}
+    )
+    configure_sqlite_engine(engine)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(worker_module, "SessionLocal", factory)
+    monkeypatch.setattr(worker_module, "build_registry", lambda settings: ProviderRegistry([]))
+
+    with factory() as session:
+        job = Job(kind=DISCOVER_AUTHOR, payload={"author_id": 1})
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    started, release = threading.Event(), threading.Event()
+
+    async def cpu_blocking_discover(service, author_id, **kwargs):
+        started.set()
+        # Simulate synchronous CPU work inside GeneralWorkerThread.
+        release.wait(timeout=5)
+        return {
+            "run_id": 1,
+            "found": 0,
+            "new": 0,
+            "updated": 0,
+            "excluded": 0,
+            "status": "succeeded",
+        }
+
+    monkeypatch.setattr(
+        worker_module.DiscoveryService, "discover_author", cpu_blocking_discover
+    )
+    settings = Settings(poll_interval_seconds=0.02)
+    worker_thread = GeneralWorkerThread(settings)
+    worker_thread.start()
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        # Main event loop must remain immediately responsive while discovery blocks its thread.
+        await asyncio.wait_for(asyncio.sleep(0.01), timeout=0.5)
+        with factory() as session:
+            assert session.get(Job, job_id).status == JobStatus.RUNNING
+    finally:
+        release.set()
+        await worker_thread.stop()
+
+    with factory() as session:
+        assert session.get(Job, job_id).status == JobStatus.SUCCEEDED

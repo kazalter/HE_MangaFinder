@@ -301,3 +301,13 @@ async def test_downloads_pages_concurrently_in_reading_order(tmp_path: Path) -> 
         assert [archive.read(name) for name in names] == [
             f"/data/{index}.jpg".encode() for index in range(1, 8)
         ]
+
+
+def test_parse_search_ignores_mirror_host_differences() -> None:
+    html = (FIXTURES / "wnacg_search.html").read_text()
+    first, _ = WnacgProvider.parse_search(html, "https://www.wnacg.com")
+    second, _ = WnacgProvider.parse_search(html, "https://www.wn08.cfd")
+
+    assert first[0].source_url == second[0].source_url
+    assert first[0].raw_metadata == second[0].raw_metadata
+    assert "mirror_url" not in first[0].raw_metadata

@@ -26,6 +26,129 @@ class CoverComparison:
     reliable_negative: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedVariant:
+    is_full: bool
+    log_ratio: float
+    dhash: int
+    phash: int
+    histogram: tuple[int, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedCoverFingerprint:
+    variants: tuple[PreparedVariant, ...]
+    legacy_hash: int | None
+
+
+def _parse_hex_hash(value: object) -> int | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return int(value, 16)
+    except ValueError:
+        return None
+
+
+def _parse_histogram(value: object) -> tuple[int, ...] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    try:
+        return tuple(int(item) for item in value)
+    except (TypeError, ValueError):
+        return None
+
+
+def prepare_cover_fingerprint(
+    value: dict[str, Any] | None,
+    *,
+    legacy: str | None = None,
+) -> PreparedCoverFingerprint:
+    legacy_hash = _parse_hex_hash(legacy)
+    if not is_current_fingerprint(value):
+        return PreparedCoverFingerprint(variants=(), legacy_hash=legacy_hash)
+    assert value is not None
+    variants: list[PreparedVariant] = []
+    for variant in value.get("variants", []):
+        if not isinstance(variant, dict):
+            continue
+        dhash = _parse_hex_hash(variant.get("dhash"))
+        phash = _parse_hex_hash(variant.get("phash"))
+        if dhash is None or phash is None:
+            continue
+        try:
+            ratio = float(variant["ratio"])
+            if ratio <= 0:
+                continue
+            log_ratio = math.log(ratio)
+        except (KeyError, TypeError, ValueError):
+            continue
+        variants.append(
+            PreparedVariant(
+                is_full=variant.get("kind") == "full",
+                log_ratio=log_ratio,
+                dhash=dhash,
+                phash=phash,
+                histogram=_parse_histogram(variant.get("histogram")),
+            )
+        )
+    return PreparedCoverFingerprint(variants=tuple(variants), legacy_hash=legacy_hash)
+
+
+def compare_prepared_fingerprints(
+    left: PreparedCoverFingerprint,
+    right: PreparedCoverFingerprint,
+) -> CoverComparison | None:
+    legacy = (
+        (left.legacy_hash ^ right.legacy_hash).bit_count()
+        if left.legacy_hash is not None and right.legacy_hash is not None
+        else None
+    )
+    if not left.variants or not right.variants:
+        if legacy is None:
+            return None
+        return CoverComparison(legacy, "legacy", legacy, False)
+
+    best_key: tuple[int, int, int] | None = None
+    best_data: tuple[int, str, int, int] | None = None
+    for lv in left.variants:
+        for rv in right.variants:
+            if abs(lv.log_ratio - rv.log_ratio) > _RATIO_TOLERANCE:
+                continue
+            dhash = (lv.dhash ^ rv.dhash).bit_count()
+            phash = (lv.phash ^ rv.phash).bit_count()
+            if (
+                lv.histogram is not None
+                and rv.histogram is not None
+                and len(lv.histogram) == len(rv.histogram)
+            ):
+                diff = sum(abs(a - b) for a, b in zip(lv.histogram, rv.histogram, strict=True))
+                histogram = max(0, min(64, round(diff * 64 / 1530)))
+            else:
+                histogram = 32
+            distance = round(0.34 * dhash + 0.46 * phash + 0.20 * histogram)
+            key = (distance, dhash if dhash >= phash else phash, histogram)
+            if best_key is None or key < best_key:
+                best_key = key
+                mode = "full" if lv.is_full and rv.is_full else "crop"
+                best_data = (distance, mode, dhash, phash)
+
+    if best_data is None:
+        if legacy is None:
+            return None
+        return CoverComparison(legacy, "legacy", legacy, False)
+
+    distance, mode, dhash, phash = best_data
+    if max(dhash, phash) > 18:
+        distance = max(distance, 14)
+    return CoverComparison(
+        distance=max(0, min(64, distance)),
+        mode=mode,
+        legacy_distance=legacy,
+        reliable_negative=True,
+    )
+
+
 def hash_distance(left: str | None, right: str | None) -> int | None:
     if not left or not right:
         return None

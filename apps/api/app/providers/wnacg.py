@@ -418,7 +418,6 @@ class WnacgProvider:
                     raw_metadata={
                         "page_count": int(page_match.group(1)) if page_match else None,
                         "category": category,
-                        "mirror_url": urljoin(f"{base_url}/", href),
                         "uploaded_at": published.isoformat() if published else None,
                     },
                 )

@@ -1,3 +1,4 @@
+import asyncio
 import html
 import io
 import re
@@ -24,10 +25,13 @@ from app.db.models import (
     WorkGroupMember,
 )
 from app.modules.catalog.cover_fingerprint import (
+    PreparedCoverFingerprint,
     compare_fingerprints,
+    compare_prepared_fingerprints,
     fingerprint_image,
     hash_distance,
     is_current_fingerprint,
+    prepare_cover_fingerprint,
 )
 from app.modules.catalog.invalidation import (
     authors_for_groups,
@@ -41,8 +45,11 @@ from app.modules.catalog.invalidation import (
 )
 from app.modules.catalog.pair_identity import candidate_key
 from app.modules.catalog.title_identity import (
+    PreparedIdentityText,
     best_identity_similarity,
+    best_prepared_similarity,
     identity_names,
+    prepare_identity_text,
 )
 from app.providers.errors import ProviderError
 
@@ -176,6 +183,11 @@ def cover_fingerprint_distance(
     return comparison.distance, comparison.mode, comparison.reliable_negative
 
 
+def _fingerprint_image_bytes(data: bytes) -> dict[str, Any]:
+    with Image.open(io.BytesIO(data)) as image:
+        return fingerprint_image(image)
+
+
 class CoverHasher:
     def __init__(
         self,
@@ -229,8 +241,7 @@ class CoverHasher:
                         if len(streamed) > 6 * 1024 * 1024:
                             return None
                 content = streamed
-            with Image.open(io.BytesIO(content)) as image:
-                return fingerprint_image(image)
+            return await asyncio.to_thread(_fingerprint_image_bytes, bytes(content))
         except (
             httpx.HTTPError,
             Image.DecompressionBombError,
@@ -255,12 +266,15 @@ class AggregationService:
         self._fp_names_cache: dict[int, set[str]] = {}
         self._fp_primary_names_cache: dict[int, set[str]] = {}
         self._fp_num_sig_cache: dict[int, tuple[str, ...]] = {}
+        self._fp_prepared_primary_cache: dict[int, tuple[PreparedIdentityText, ...]] = {}
+        self._fp_prepared_cover_cache: dict[int, PreparedCoverFingerprint] = {}
 
     def begin_author_batch(self, author_id: int) -> list[WorkGroup]:
         """Preload candidate groups once for an author's aggregation round."""
         if author_id in self._batch_groups:
             return list(self._batch_groups[author_id].values())
         record_metric("candidate_loads")
+        work_load = selectinload(WorkGroup.members).selectinload(WorkGroupMember.work)
         groups = list(
             self.session.scalars(
                 select(WorkGroup)
@@ -268,9 +282,8 @@ class AggregationService:
                 .join(AuthorWork, AuthorWork.work_id == WorkGroupMember.work_id)
                 .where(AuthorWork.author_id == author_id)
                 .options(
-                    selectinload(WorkGroup.members)
-                    .selectinload(WorkGroupMember.work)
-                    .selectinload(Work.fingerprint)
+                    work_load.selectinload(Work.fingerprint),
+                    work_load.selectinload(Work.sources),
                 )
                 .distinct()
             )
@@ -284,6 +297,8 @@ class AggregationService:
             self._fp_names_cache.clear()
             self._fp_primary_names_cache.clear()
             self._fp_num_sig_cache.clear()
+            self._fp_prepared_primary_cache.clear()
+            self._fp_prepared_cover_cache.clear()
 
     def _invalidate_fp_cache(self, work_id: int | None) -> None:
         if work_id is None:
@@ -291,6 +306,8 @@ class AggregationService:
         self._fp_names_cache.pop(work_id, None)
         self._fp_primary_names_cache.pop(work_id, None)
         self._fp_num_sig_cache.pop(work_id, None)
+        self._fp_prepared_primary_cache.pop(work_id, None)
+        self._fp_prepared_cover_cache.pop(work_id, None)
 
     def _cache_add_group(self, group: WorkGroup) -> None:
         if group.id is None or not self._batch_groups:
@@ -358,6 +375,8 @@ class AggregationService:
             for item in target_works:
                 await self.assign(item, author)
                 processed += 1
+                if processed % 10 == 0:
+                    await asyncio.sleep(0)
         finally:
             self._active_author_id = prev_active
             self.end_author_batch(author.id)
@@ -397,7 +416,9 @@ class AggregationService:
             return group
 
         candidates = self._candidate_groups(author.id)
-        best_group, title_score, exact = self._best_title_candidate(fingerprint, candidates)
+        best_group, title_score, exact = self._best_title_candidate(
+            fingerprint, candidates, min_score=0.58
+        )
         cover_distance: int | None = None
 
         if best_group and not exact and title_score >= 0.58 and self.cover_hasher:
@@ -713,13 +734,17 @@ class AggregationService:
         )
 
     def _best_title_candidate(
-        self, fingerprint: WorkFingerprint, groups: list[WorkGroup]
+        self,
+        fingerprint: WorkFingerprint,
+        groups: list[WorkGroup],
+        *,
+        min_score: float = 0.0,
     ) -> tuple[WorkGroup | None, float, bool]:
         best_group: WorkGroup | None = None
         best_score = 0.0
         exact = False
         names = self._cached_fingerprint_names(fingerprint)
-        primary_names = self._cached_primary_fingerprint_names(fingerprint)
+        prepared_primary = self._cached_prepared_primary_names(fingerprint)
         for group in groups:
             if not self._group_numbering_matches(fingerprint, group):
                 continue
@@ -729,12 +754,14 @@ class AggregationService:
                     continue
                 record_metric("candidate_comparisons")
                 other_names = self._cached_fingerprint_names(other)
-                other_primary_names = self._cached_primary_fingerprint_names(other)
                 overlap = names & other_names
-                valid_exact = any(len(_compact(value)) >= 3 for value in overlap)
-                score = best_identity_similarity(primary_names, other_primary_names)
-                if valid_exact:
+                if any(len(_compact(value)) >= 3 for value in overlap):
                     return group, 1.0, True
+                score = best_prepared_similarity(
+                    prepared_primary,
+                    self._cached_prepared_primary_names(other),
+                    min_score=best_score if best_score > min_score else min_score,
+                )
                 if score > best_score:
                     best_group, best_score = group, score
         return best_group, best_score, exact
@@ -760,6 +787,7 @@ class AggregationService:
         best_fingerprint: WorkFingerprint | None = None
         best_distance: int | None = None
         best_mode: str | None = None
+        prepared_left = self._cached_prepared_cover(fingerprint)
         for group in groups:
             if not self._group_numbering_matches(fingerprint, group):
                 continue
@@ -768,12 +796,15 @@ class AggregationService:
                 if not candidate:
                     continue
                 record_metric("candidate_comparisons")
-                distance, mode, _ = cover_fingerprint_distance(fingerprint, candidate)
+                comparison = compare_prepared_fingerprints(
+                    prepared_left, self._cached_prepared_cover(candidate)
+                )
+                distance = comparison.distance if comparison is not None else None
                 if distance is not None and (best_distance is None or distance < best_distance):
                     best_group = group
                     best_fingerprint = candidate
                     best_distance = distance
-                    best_mode = mode
+                    best_mode = comparison.mode if comparison is not None else None
         return best_group, best_fingerprint, best_distance, best_mode
 
     def _cached_numbering_signature(self, fingerprint: WorkFingerprint) -> tuple[str, ...]:
@@ -832,7 +863,9 @@ class AggregationService:
         candidates = [
             group for group in self._candidate_groups(author.id) if group.id != current_group.id
         ]
-        target, title_score, exact = self._best_title_candidate(fingerprint, candidates)
+        target, title_score, exact = self._best_title_candidate(
+            fingerprint, candidates, min_score=0.94
+        )
         if target and not any(member.is_manual for member in target.members):
             if exact:
                 return self.merge_groups(
@@ -1113,6 +1146,34 @@ class AggregationService:
         if work_id is not None and self._batch_groups:
             self._fp_names_cache[work_id] = names
         return names
+
+    def _cached_prepared_primary_names(
+        self, fingerprint: WorkFingerprint
+    ) -> tuple[PreparedIdentityText, ...]:
+        work_id = fingerprint.work_id
+        if work_id is not None and work_id in self._fp_prepared_primary_cache:
+            return self._fp_prepared_primary_cache[work_id]
+        prepared = tuple(
+            prepare_identity_text(value)
+            for value in self._cached_primary_fingerprint_names(fingerprint)
+        )
+        if work_id is not None and self._batch_groups:
+            self._fp_prepared_primary_cache[work_id] = prepared
+        return prepared
+
+    def _cached_prepared_cover(
+        self, fingerprint: WorkFingerprint
+    ) -> PreparedCoverFingerprint:
+        work_id = fingerprint.work_id
+        if work_id is not None and work_id in self._fp_prepared_cover_cache:
+            return self._fp_prepared_cover_cache[work_id]
+        prepared = prepare_cover_fingerprint(
+            fingerprint.cover_fingerprint,
+            legacy=fingerprint.cover_hash,
+        )
+        if work_id is not None and self._batch_groups:
+            self._fp_prepared_cover_cache[work_id] = prepared
+        return prepared
 
     def _cached_primary_fingerprint_names(self, fingerprint: WorkFingerprint) -> set[str]:
         work_id = fingerprint.work_id

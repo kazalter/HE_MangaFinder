@@ -26,6 +26,24 @@ class TitleIdentity:
     context_terms: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedIdentityText:
+    normalized: str
+    length: int
+    ngrams: frozenset[str]
+    tokens: frozenset[str]
+
+
+def prepare_identity_text(value: str) -> PreparedIdentityText:
+    normalized = normalize_identity_text(value)
+    return PreparedIdentityText(
+        normalized=normalized,
+        length=len(normalized),
+        ngrams=frozenset(_ngrams(normalized)),
+        tokens=frozenset(normalized.split()),
+    )
+
+
 def normalize_identity_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", html.unescape(value)).casefold()
     normalized = re.sub(r"[^\w\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+", " ", normalized)
@@ -95,6 +113,38 @@ def best_identity_similarity(left_names: set[str], right_names: set[str]) -> flo
     )
 
 
+def best_prepared_similarity(
+    left_items: tuple[PreparedIdentityText, ...],
+    right_items: tuple[PreparedIdentityText, ...],
+    *,
+    min_score: float = 0.0,
+) -> float:
+    best = 0.0
+    cutoff = min_score
+    for left in left_items:
+        if not left.length:
+            continue
+        for right in right_items:
+            if not right.length:
+                continue
+            if left.normalized == right.normalized:
+                return 1.0
+            ngram_score = _dice(left.ngrams, right.ngrams)
+            token_score = _dice(left.tokens, right.tokens)
+            structural_score = ngram_score if ngram_score >= token_score else token_score
+            shorter = left.length if left.length <= right.length else right.length
+            len_bound = (2.0 * shorter) / (left.length + right.length)
+            if len_bound * 0.62 + structural_score * 0.38 + 1e-6 <= cutoff:
+                continue
+            sequence_score = SequenceMatcher(None, left.normalized, right.normalized).ratio()
+            score = round(sequence_score * 0.62 + structural_score * 0.38, 5)
+            if score > best:
+                best = score
+                if best > cutoff:
+                    cutoff = best
+    return best
+
+
 def shared_context(left: TitleIdentity, right: TitleIdentity) -> list[str]:
     return sorted(set(left.context_terms) & set(right.context_terms))
 
@@ -106,7 +156,7 @@ def _ngrams(value: str, size: int = 2) -> set[str]:
     return {compact[index : index + size] for index in range(len(compact) - size + 1)}
 
 
-def _dice(left: set[str], right: set[str]) -> float:
+def _dice(left: set[str] | frozenset[str], right: set[str] | frozenset[str]) -> float:
     if not left or not right:
         return 0.0
     return 2 * len(left & right) / (len(left) + len(right))

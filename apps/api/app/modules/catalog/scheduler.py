@@ -22,7 +22,7 @@ class CatalogScheduler:
         while True:
             try:
                 if self.settings.catalog_auto_discovery_enabled:
-                    self.enqueue_due(datetime.now(UTC))
+                    await asyncio.to_thread(self.enqueue_due, datetime.now(UTC))
                 await asyncio.sleep(60)
             except asyncio.CancelledError:
                 raise

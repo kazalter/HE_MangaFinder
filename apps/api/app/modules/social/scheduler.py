@@ -35,7 +35,9 @@ class SocialScheduler:
         while True:
             try:
                 collector_ready = await self._collector_ready()
-                self.enqueue_due(include_account_syncs=collector_ready)
+                await asyncio.to_thread(
+                    self.enqueue_due, include_account_syncs=collector_ready
+                )
                 await asyncio.sleep(60 if collector_ready else 10)
             except asyncio.CancelledError:
                 raise
