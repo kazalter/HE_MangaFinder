@@ -11,7 +11,11 @@ from app.modules.agent_review.schemas import (
     SourceEvidence,
 )
 from app.modules.catalog.aggregation import identity_number_signature
-from app.modules.catalog.cover_fingerprint import CoverComparison, compare_fingerprints
+from app.modules.catalog.cover_fingerprint import (
+    CoverComparison,
+    compare_prepared_fingerprints,
+    prepare_cover_fingerprint,
+)
 from app.modules.catalog.pair_identity import candidate_key
 from app.modules.catalog.title_identity import (
     best_identity_similarity,
@@ -203,22 +207,29 @@ def _title_similarity(left: GroupEvidence, right: GroupEvidence) -> float:
 
 
 def _cover_comparisons(left: WorkGroup, right: WorkGroup) -> list[CoverComparison]:
+    left_prepared = [
+        prepare_cover_fingerprint(
+            member.work.fingerprint.cover_fingerprint,
+            legacy=member.work.fingerprint.cover_hash,
+        )
+        for member in left.members
+        if member.work.fingerprint
+    ]
+    right_prepared = [
+        prepare_cover_fingerprint(
+            member.work.fingerprint.cover_fingerprint,
+            legacy=member.work.fingerprint.cover_hash,
+        )
+        for member in right.members
+        if member.work.fingerprint
+    ]
+    if not left_prepared or not right_prepared:
+        return []
     comparisons: list[CoverComparison] = []
     seen: set[tuple[int, str, int | None, bool]] = set()
-    for left_member in left.members:
-        left_fingerprint = left_member.work.fingerprint
-        if not left_fingerprint:
-            continue
-        for right_member in right.members:
-            right_fingerprint = right_member.work.fingerprint
-            if not right_fingerprint:
-                continue
-            comparison = compare_fingerprints(
-                left_fingerprint.cover_fingerprint,
-                right_fingerprint.cover_fingerprint,
-                left_legacy=left_fingerprint.cover_hash,
-                right_legacy=right_fingerprint.cover_hash,
-            )
+    for lp in left_prepared:
+        for rp in right_prepared:
+            comparison = compare_prepared_fingerprints(lp, rp)
             if comparison is None:
                 continue
             key = (

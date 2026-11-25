@@ -43,14 +43,14 @@ class CoverCacheService:
             f"{provider_name}\0{external_id}\0{cover_url}".encode()
         ).hexdigest()
         folder = self.cache_dir / provider_name / safe_id
-        cached = self._existing(folder, digest)
+        cached = await asyncio.to_thread(self._existing, folder, digest)
         if cached:
             return cached
 
         work_key = f"{provider_name}:{external_id}"
         lock = self._locks.setdefault(work_key, asyncio.Lock())
         async with lock:
-            cached = self._existing(folder, digest)
+            cached = await asyncio.to_thread(self._existing, folder, digest)
             if cached:
                 return cached
             async with self._fetch_limit:
@@ -69,19 +69,27 @@ class CoverCacheService:
             extension = _EXTENSIONS.get(content_type)
             if extension is None:
                 raise ProviderError(f"不支持的封面格式: {content_type or 'unknown'}")
-            folder.mkdir(parents=True, exist_ok=True)
-            destination = folder / f"{digest}{extension}"
-            temporary = folder / f".{digest}.part"
-            try:
-                temporary.write_bytes(image.content)
-                temporary.replace(destination)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                raise
-            for old_path in folder.iterdir():
-                if old_path != destination and old_path.is_file():
-                    old_path.unlink(missing_ok=True)
-            return CachedCover(destination, content_type)
+            return await asyncio.to_thread(
+                self._write_cached, folder, digest, extension, content_type, image.content
+            )
+
+    @staticmethod
+    def _write_cached(
+        folder: Path, digest: str, extension: str, content_type: str, content: bytes
+    ) -> CachedCover:
+        folder.mkdir(parents=True, exist_ok=True)
+        destination = folder / f"{digest}{extension}"
+        temporary = folder / f".{digest}.part"
+        try:
+            temporary.write_bytes(content)
+            temporary.replace(destination)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        for old_path in folder.iterdir():
+            if old_path != destination and old_path.is_file():
+                old_path.unlink(missing_ok=True)
+        return CachedCover(destination, content_type)
 
     @staticmethod
     def _existing(folder: Path, digest: str) -> CachedCover | None:

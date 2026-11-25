@@ -69,6 +69,7 @@ class SocialScheduler:
                         ),
                     )
                     .order_by(SocialPost.posted_at.desc())
+                    .limit(200)
                 )
                 queued = 0
                 for post, state in candidates:

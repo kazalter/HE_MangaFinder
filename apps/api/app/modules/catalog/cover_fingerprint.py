@@ -1,6 +1,7 @@
 import math
 import statistics
 from dataclasses import dataclass
+from operator import sub
 from typing import Any
 
 from PIL import Image, ImageOps
@@ -32,7 +33,7 @@ class PreparedVariant:
     log_ratio: float
     dhash: int
     phash: int
-    histogram: tuple[int, ...] | None
+    histogram: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,15 +48,6 @@ def _parse_hex_hash(value: object) -> int | None:
     try:
         return int(value, 16)
     except ValueError:
-        return None
-
-
-def _parse_histogram(value: object) -> tuple[int, ...] | None:
-    if not isinstance(value, list) or not value:
-        return None
-    try:
-        return tuple(int(item) for item in value)
-    except (TypeError, ValueError):
         return None
 
 
@@ -89,15 +81,18 @@ def prepare_cover_fingerprint(
                 log_ratio=log_ratio,
                 dhash=dhash,
                 phash=phash,
-                histogram=_parse_histogram(variant.get("histogram")),
+                histogram=variant.get("histogram"),
             )
         )
+    variants.sort(key=lambda item: item.log_ratio)
     return PreparedCoverFingerprint(variants=tuple(variants), legacy_hash=legacy_hash)
 
 
 def compare_prepared_fingerprints(
     left: PreparedCoverFingerprint,
     right: PreparedCoverFingerprint,
+    *,
+    max_distance: int | None = None,
 ) -> CoverComparison | None:
     legacy = (
         (left.legacy_hash ^ right.legacy_hash).bit_count()
@@ -107,42 +102,69 @@ def compare_prepared_fingerprints(
     if not left.variants or not right.variants:
         if legacy is None:
             return None
+        if max_distance is not None and legacy > max_distance:
+            return None
         return CoverComparison(legacy, "legacy", legacy, False)
 
-    best_key: tuple[int, int, int] | None = None
+    best_key: tuple[int, int, int, int] | None = None
     best_data: tuple[int, str, int, int] | None = None
+    had_matching_ratio = False
+    tol = _RATIO_TOLERANCE
+    right_variants = right.variants
     for lv in left.variants:
-        for rv in right.variants:
-            if abs(lv.log_ratio - rv.log_ratio) > _RATIO_TOLERANCE:
+        lv_ratio = lv.log_ratio
+        lv_min = lv_ratio - tol
+        lv_max = lv_ratio + tol
+        lv_dhash = lv.dhash
+        lv_phash = lv.phash
+        lv_full = lv.is_full
+        for rv in right_variants:
+            rv_ratio = rv.log_ratio
+            if rv_ratio < lv_min:
                 continue
-            dhash = (lv.dhash ^ rv.dhash).bit_count()
-            phash = (lv.phash ^ rv.phash).bit_count()
-            if (
-                lv.histogram is not None
-                and rv.histogram is not None
-                and len(lv.histogram) == len(rv.histogram)
-            ):
-                diff = sum(abs(a - b) for a, b in zip(lv.histogram, rv.histogram, strict=True))
-                histogram = max(0, min(64, round(diff * 64 / 1530)))
-            else:
-                histogram = 32
-            distance = round(0.34 * dhash + 0.46 * phash + 0.20 * histogram)
-            key = (distance, dhash if dhash >= phash else phash, histogram)
+            if rv_ratio > lv_max:
+                break
+            had_matching_ratio = True
+            dhash = (lv_dhash ^ rv.dhash).bit_count()
+            phash = (lv_phash ^ rv.phash).bit_count()
+            dh_ph_max = dhash if dhash >= phash else phash
+            base = 0.34 * dhash + 0.46 * phash
+            if max_distance is not None:
+                if dh_ph_max > 18 and max_distance < 14:
+                    continue
+                if round(base) > max_distance:
+                    continue
+            if best_key is not None:
+                if best_key[0] < 14 and dh_ph_max > 18:
+                    continue
+                if round(base) > best_key[0]:
+                    continue
+            histogram = _histogram_distance(lv.histogram, rv.histogram)
+            distance = round(base + 0.20 * histogram)
+            if max_distance is not None and distance > max_distance:
+                continue
+            both_full = lv_full and rv.is_full
+            key = (distance, dh_ph_max, histogram, 0 if both_full else 1)
             if best_key is None or key < best_key:
                 best_key = key
-                mode = "full" if lv.is_full and rv.is_full else "crop"
+                mode = "full" if both_full else "crop"
                 best_data = (distance, mode, dhash, phash)
 
     if best_data is None:
-        if legacy is None:
+        if had_matching_ratio and max_distance is not None:
+            return None
+        if legacy is None or (max_distance is not None and legacy > max_distance):
             return None
         return CoverComparison(legacy, "legacy", legacy, False)
 
     distance, mode, dhash, phash = best_data
     if max(dhash, phash) > 18:
         distance = max(distance, 14)
+    distance = max(0, min(64, distance))
+    if max_distance is not None and distance > max_distance:
+        return None
     return CoverComparison(
-        distance=max(0, min(64, distance)),
+        distance=distance,
         mode=mode,
         legacy_distance=legacy,
         reliable_negative=True,
@@ -327,9 +349,14 @@ def _histogram_distance(left: object, right: object) -> int:
     if not isinstance(left, list) or not isinstance(right, list) or len(left) != len(right):
         return 32
     try:
-        difference = sum(abs(int(a) - int(b)) for a, b in zip(left, right, strict=True))
-    except (TypeError, ValueError):
-        return 32
+        difference = sum(map(abs, map(sub, left, right)))
+    except TypeError:
+        difference = None
+    if difference is None:
+        try:
+            difference = sum(abs(int(a) - int(b)) for a, b in zip(left, right, strict=True))
+        except (TypeError, ValueError):
+            return 32
     # Three normalized channels, each with a maximum L1 distance of 510.
     return max(0, min(64, round(difference * 64 / 1530)))
 

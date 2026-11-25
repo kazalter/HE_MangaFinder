@@ -216,15 +216,26 @@ def _detail(group: WorkGroup) -> WorkGroupDetail:
     )
 
 
-def _suggestion(item: MergeSuggestion, repository: WorkGroupRepository) -> MergeSuggestionRead:
-    source = repository.get(item.source_group_id)
-    target = repository.get(item.target_group_id)
+def _suggestion(
+    item: MergeSuggestion,
+    repository: WorkGroupRepository,
+    *,
+    source: WorkGroup | None = None,
+    target: WorkGroup | None = None,
+    latest_review: object | None = None,
+    review_loaded: bool = False,
+) -> MergeSuggestionRead:
+    if source is None:
+        source = repository.get(item.source_group_id)
+    if target is None:
+        target = repository.get(item.target_group_id)
     evidence = (
         build_candidate_evidence(item, source, target)
         if source is not None and target is not None
         else None
     )
-    latest_review = AgentReviewRepository(repository.session).latest_for_suggestion(item.id)
+    if not review_loaded:
+        latest_review = AgentReviewRepository(repository.session).latest_for_suggestion(item.id)
     review_is_stale = bool(
         latest_review and evidence and latest_review.evidence_hash != evidence_hash(evidence)
     )
@@ -299,7 +310,7 @@ def _conflict_details(evidence: CandidateEvidence) -> list[str]:
 
 @router.get("", response_model=list[WorkGroupRead])
 def list_work_groups(session: SessionDep, author_id: int | None = None) -> list[WorkGroupRead]:
-    return [_summary(group) for group in WorkGroupRepository(session).list_groups(author_id)]
+    return WorkGroupRepository(session).list_group_reads(author_id)
 
 
 @router.get("/suggestions", response_model=list[MergeSuggestionRead])
@@ -308,7 +319,27 @@ def list_suggestions(
     status: str = Query(default="pending", pattern="^(pending|accepted|rejected)$"),
 ) -> list[MergeSuggestionRead]:
     repository = WorkGroupRepository(session)
-    return [_suggestion(item, repository) for item in repository.suggestions(status)]
+    items = repository.suggestions(status)
+    if not items:
+        return []
+    group_ids = {
+        gid for item in items for gid in (item.source_group_id, item.target_group_id)
+    }
+    groups_by_id = repository.get_many(group_ids)
+    latest_reviews = AgentReviewRepository(session).latest_by_suggestion_ids(
+        [item.id for item in items]
+    )
+    return [
+        _suggestion(
+            item,
+            repository,
+            source=groups_by_id.get(item.source_group_id),
+            target=groups_by_id.get(item.target_group_id),
+            latest_review=latest_reviews.get(item.id),
+            review_loaded=True,
+        )
+        for item in items
+    ]
 
 
 @router.post("/suggestions/{suggestion_id}/accept", response_model=WorkGroupDetail)

@@ -459,7 +459,9 @@ class AggregationService:
             cover_fingerprint,
             cover_distance,
             cover_mode,
-        ) = self._best_cover_candidate(fingerprint, candidates)
+        ) = self._best_cover_candidate(
+            fingerprint, candidates, max_distance=_SUGGEST_COVER_DISTANCE
+        )
         if (
             cover_group
             and cover_fingerprint
@@ -781,23 +783,39 @@ class AggregationService:
         )
 
     def _best_cover_candidate(
-        self, fingerprint: WorkFingerprint, groups: list[WorkGroup]
+        self,
+        fingerprint: WorkFingerprint,
+        groups: list[WorkGroup],
+        *,
+        max_distance: int | None = None,
     ) -> tuple[WorkGroup | None, WorkFingerprint | None, int | None, str | None]:
         best_group: WorkGroup | None = None
         best_fingerprint: WorkFingerprint | None = None
         best_distance: int | None = None
         best_mode: str | None = None
         prepared_left = self._cached_prepared_cover(fingerprint)
+        if not prepared_left.variants and prepared_left.legacy_hash is None:
+            return None, None, None, None
         for group in groups:
             if not self._group_numbering_matches(fingerprint, group):
                 continue
             for member in group.members:
                 candidate = member.work.fingerprint
-                if not candidate:
+                if not candidate or (
+                    candidate.cover_fingerprint is None and candidate.cover_hash is None
+                ):
                     continue
                 record_metric("candidate_comparisons")
+                if best_distance is not None and max_distance is not None:
+                    cutoff = best_distance if best_distance < max_distance else max_distance
+                elif best_distance is not None:
+                    cutoff = best_distance
+                else:
+                    cutoff = max_distance
                 comparison = compare_prepared_fingerprints(
-                    prepared_left, self._cached_prepared_cover(candidate)
+                    prepared_left,
+                    self._cached_prepared_cover(candidate),
+                    max_distance=cutoff,
                 )
                 distance = comparison.distance if comparison is not None else None
                 if distance is not None and (best_distance is None or distance < best_distance):
@@ -893,7 +911,9 @@ class AggregationService:
         candidates = [
             group for group in self._candidate_groups(author.id) if group.id != current_group.id
         ]
-        target, candidate, distance, mode = self._best_cover_candidate(fingerprint, candidates)
+        target, candidate, distance, mode = self._best_cover_candidate(
+            fingerprint, candidates, max_distance=_SUGGEST_COVER_DISTANCE
+        )
         if not target or not candidate or distance is None:
             return current_group
         has_manual_members = any(

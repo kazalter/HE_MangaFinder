@@ -1,8 +1,8 @@
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, event, inspect, or_, select
+from sqlalchemy import Engine, create_engine, delete, event, inspect, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
@@ -88,6 +88,36 @@ def init_db() -> None:
         ) is not None:
             JobRepository(session).enqueue_cover_fingerprint_refresh()
             session.commit()
+        _prune_stale_rows(session, now)
+        session.commit()
+        if settings.database_url.startswith("sqlite"):
+            session.execute(text("PRAGMA optimize"))
+
+
+def _prune_stale_rows(session: Session, now: datetime) -> None:
+    """Trim derivable historical bloat while keeping recent history and active references."""
+    from app.db.models import AgentReview, Job, JobStatus, PairConstraint
+
+    referenced_reviews = select(PairConstraint.review_id).where(
+        PairConstraint.review_id.is_not(None)
+    )
+    session.execute(
+        delete(AgentReview).where(
+            AgentReview.suggestion_id.is_(None),
+            AgentReview.status.in_(["blocked", "failed", "invalidated"]),
+            AgentReview.id.not_in(referenced_reviews),
+        )
+    )
+    cutoff = now - timedelta(days=14)
+    recent_job_ids = select(Job.id).order_by(Job.id.desc()).limit(200)
+    session.execute(
+        delete(Job).where(
+            Job.status.in_([JobStatus.SUCCEEDED, JobStatus.FAILED]),
+            Job.kind != "download_chapter",
+            Job.created_at < cutoff,
+            Job.id.not_in(recent_job_ids),
+        )
+    )
 
 
 def _apply_additive_migrations() -> None:
@@ -226,6 +256,14 @@ def _apply_additive_migrations() -> None:
                 connection.exec_driver_sql(
                     f"ALTER TABLE provider_scan_runs ADD COLUMN {column} {declaration}"
                 )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_jobs_status_kind_created "
+            "ON jobs (status, kind, created_at)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_agent_reviews_suggestion_created "
+            "ON agent_reviews (suggestion_id, created_at DESC, id DESC)"
+        )
 
 
 def get_session() -> Generator[Session, None, None]:

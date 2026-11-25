@@ -64,6 +64,13 @@ class AgentReviewService:
         if self.reviews.is_constrained(evidence.candidate_key):
             return None, "blocked"
         if evidence.hard_conflicts:
+            existing_blocked = self.reviews.latest_blocked(
+                suggestion_id=suggestion.id,
+                candidate_key=evidence.candidate_key,
+                evidence_hash=digest,
+            )
+            if existing_blocked is not None:
+                return existing_blocked, "blocked"
             review = self.reviews.record(
                 evidence=evidence,
                 evidence_hash=digest,

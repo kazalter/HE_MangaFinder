@@ -348,6 +348,14 @@ async def test_hard_number_conflict_never_reaches_model() -> None:
         assert review is not None and review.status == "blocked"
         assert reviewer.calls == 0
 
+        # Repeated blocked checks reuse the existing blocked row instead of duplicating JSON.
+        second_review, second_outcome = await AgentReviewService(
+            session, settings, reviewer
+        ).review_suggestion(suggestion.id)
+        assert second_outcome == "blocked"
+        assert second_review is not None and second_review.id == review.id
+        assert len(list(session.scalars(select(AgentReview)))) == 1
+
 
 def test_year_and_page_conflicts_are_soft_warnings() -> None:
     engine = create_engine("sqlite:///:memory:")

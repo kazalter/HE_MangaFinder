@@ -468,3 +468,86 @@ def test_prepared_cover_and_title_matching_preserve_exact_scores() -> None:
         tuple(prepare_identity_text(v) for v in right_names),
     )
     assert actual == expected
+
+
+def test_list_group_reads_matches_orm_summary_and_suggestions_batch() -> None:
+    from app.modules.catalog.groups_router import _summary, list_suggestions
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="mignon")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+        first = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="w1",
+                title="[mignon] Work One",
+                source_url="https://example.test/w1",
+                cover_url="https://t4.qy0.ru/1.jpg",
+                tags=["tag-a"],
+            ),
+        )
+        second = catalog.upsert(
+            author.id,
+            "local",
+            DiscoveredWork(
+                external_id="w2",
+                title="[mignon] Work Two",
+                source_url="https://example.test/w2",
+                cover_url="https://cdn.example/2.jpg",
+            ),
+        )
+        g1 = aggregation.assign_without_cover(first, author)
+        g2 = aggregation.assign_without_cover(second, author)
+        session.add(
+            MergeSuggestion(
+                source_group_id=g1.id,
+                target_group_id=g2.id,
+                confidence=0.72,
+                reasons=["test"],
+            )
+        )
+        session.commit()
+
+        repo = WorkGroupRepository(session)
+        assert repo.list_group_reads() == [_summary(group) for group in repo.list_groups()]
+        assert repo.list_group_reads(author.id) == [
+            _summary(group) for group in repo.list_groups(author.id)
+        ]
+        suggestions = list_suggestions(session, status="pending")
+        assert len(suggestions) == 1
+        assert suggestions[0].source_group == _summary(g1)
+        assert suggestions[0].target_group == _summary(g2)
+
+
+def test_compare_prepared_fingerprints_respects_max_distance_with_legacy() -> None:
+    from app.modules.catalog.cover_fingerprint import (
+        compare_prepared_fingerprints,
+        prepare_cover_fingerprint,
+    )
+
+    first = Image.new("RGB", (400, 560), "white")
+    second = Image.new("RGB", (400, 560), "#18294f")
+    ImageDraw.Draw(first).line((0, 0, 400, 560), fill="#bb3f32", width=18)
+    ImageDraw.Draw(second).ellipse((40, 80, 360, 480), fill="#e6c851")
+    fp1 = fingerprint_image(first)
+    fp2 = fingerprint_image(second)
+    full = compare_fingerprints(
+        fp1, fp2, left_legacy="0000000000000000", right_legacy="0000000000000000"
+    )
+    assert full is not None and full.distance > 13
+    # Even when legacy dHash matches (distance 0), max_distance=13 must not fall back to legacy
+    # when v2 variants existed and proved distance > 13.
+    assert (
+        compare_prepared_fingerprints(
+            prepare_cover_fingerprint(fp1, legacy="0000000000000000"),
+            prepare_cover_fingerprint(fp2, legacy="0000000000000000"),
+            max_distance=13,
+        )
+        is None
+    )

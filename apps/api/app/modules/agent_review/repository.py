@@ -1,5 +1,7 @@
+from collections.abc import Sequence
+
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.db.models import AgentReview, PairConstraint
 from app.modules.agent_review.schemas import (
@@ -16,14 +18,59 @@ class AgentReviewRepository:
     def list_recent(self, limit: int = 50) -> list[AgentReview]:
         return list(
             self.session.scalars(
-                select(AgentReview).order_by(AgentReview.created_at.desc()).limit(limit)
+                select(AgentReview)
+                .options(defer(AgentReview.input_snapshot), defer(AgentReview.raw_output))
+                .order_by(AgentReview.created_at.desc())
+                .limit(limit)
             )
         )
 
     def latest_for_suggestion(self, suggestion_id: int) -> AgentReview | None:
         return self.session.scalar(
             select(AgentReview)
+            .options(defer(AgentReview.input_snapshot), defer(AgentReview.raw_output))
             .where(AgentReview.suggestion_id == suggestion_id)
+            .order_by(AgentReview.created_at.desc(), AgentReview.id.desc())
+            .limit(1)
+        )
+
+    def latest_by_suggestion_ids(
+        self, suggestion_ids: Sequence[int]
+    ) -> dict[int, AgentReview]:
+        unique_ids = sorted({int(sid) for sid in suggestion_ids})
+        if not unique_ids:
+            return {}
+        latest: dict[int, AgentReview] = {}
+        for start in range(0, len(unique_ids), 500):
+            batch = unique_ids[start : start + 500]
+            rows = self.session.scalars(
+                select(AgentReview)
+                .options(defer(AgentReview.input_snapshot), defer(AgentReview.raw_output))
+                .where(AgentReview.suggestion_id.in_(batch))
+                .order_by(AgentReview.created_at.desc(), AgentReview.id.desc())
+            )
+            for row in rows:
+                if row.suggestion_id is not None and row.suggestion_id not in latest:
+                    latest[row.suggestion_id] = row
+        return latest
+
+    def latest_blocked(
+        self,
+        *,
+        suggestion_id: int,
+        candidate_key: str,
+        evidence_hash: str,
+    ) -> AgentReview | None:
+        return self.session.scalar(
+            select(AgentReview)
+            .options(defer(AgentReview.input_snapshot), defer(AgentReview.raw_output))
+            .where(
+                AgentReview.suggestion_id == suggestion_id,
+                AgentReview.candidate_key == candidate_key,
+                AgentReview.evidence_hash == evidence_hash,
+                AgentReview.schema_version == SCHEMA_VERSION,
+                AgentReview.status == "blocked",
+            )
             .order_by(AgentReview.created_at.desc(), AgentReview.id.desc())
             .limit(1)
         )
