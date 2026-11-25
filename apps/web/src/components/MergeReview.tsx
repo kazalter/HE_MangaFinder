@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { AgentStatus, MergeSuggestion, WorkGroup } from '../types'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { CoverImage } from './CoverImage'
@@ -14,7 +15,7 @@ const confidenceLabel = {
   uncertain: '不确定度',
 }
 
-function CandidateWork({ groupId, title, group, busy, onOpen }: {
+const CandidateWork = memo(function CandidateWork({ groupId, title, group, busy, onOpen }: {
   groupId: number
   title: string
   group: WorkGroup | null
@@ -42,9 +43,9 @@ function CandidateWork({ groupId, title, group, busy, onOpen }: {
       </span>
     </button>
   )
-}
+})
 
-export function MergeReview({ suggestions, agentStatus, busy, onRunAgent, onOpenGroup, onAccept, onReject, onClose }: {
+export const MergeReview = memo(function MergeReview({ suggestions, agentStatus, busy, onRunAgent, onOpenGroup, onAccept, onReject, onClose }: {
   suggestions: MergeSuggestion[]
   agentStatus: AgentStatus | null
   busy: boolean
@@ -103,4 +104,4 @@ export function MergeReview({ suggestions, agentStatus, busy, onRunAgent, onOpen
       </section>
     </div>
   )
-}
+})

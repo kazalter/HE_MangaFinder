@@ -87,4 +87,17 @@ describe('WorkListRow', () => {
     expect(row).not.toHaveClass('preview-active')
     expect(onOpen).toHaveBeenCalledWith(work)
   })
+
+  it('detaches global scroll listeners once all list rows unmount', () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener')
+    const { unmount } = render(<WorkListRow work={work} onOpen={vi.fn()} />)
+    fireEvent.pointerEnter(screen.getByRole('button'), { pointerType: 'mouse' })
+
+    unmount()
+
+    expect(removeSpy).toHaveBeenCalledWith('scroll', expect.any(Function), { capture: true })
+    expect(removeSpy).toHaveBeenCalledWith('wheel', expect.any(Function))
+    expect(removeSpy).toHaveBeenCalledWith('resize', expect.any(Function))
+    removeSpy.mockRestore()
+  })
 })

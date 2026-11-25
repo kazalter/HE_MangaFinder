@@ -6,11 +6,18 @@ import {
   MagnifyingGlass,
   WarningCircle,
 } from '@phosphor-icons/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { Author, WorkGroup } from '../types'
 import { ThemedSelect } from './ThemedSelect'
 
 type AuthorSort = 'recent' | 'name' | 'works'
+const directoryCollator = new Intl.Collator('zh-CN')
+
+function toTimestamp(value: string | null | undefined): number {
+  if (!value) return 0
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
 
 const authorSortOptions: readonly { value: AuthorSort, label: string }[] = [
   { value: 'recent', label: '最近动态' },
@@ -44,17 +51,17 @@ function relativeTime(value: string | null): string {
   return days < 30 ? `${days} 天前` : new Date(value).toLocaleDateString('zh-CN')
 }
 
-function AuthorAvatar({ author, large = false }: { author: Author, large?: boolean }) {
+const AuthorAvatar = memo(function AuthorAvatar({ author, large = false }: { author: Author, large?: boolean }) {
   return (
     <span className={`directory-avatar ${large ? 'large' : ''}`} aria-hidden="true">
       {author.avatar_url
-        ? <img src={author.avatar_url} alt="" referrerPolicy="no-referrer" />
+        ? <img src={author.avatar_url} alt="" referrerPolicy="no-referrer" loading={large ? 'eager' : 'lazy'} decoding="async" />
         : author.name.slice(0, 1).toLocaleUpperCase()}
     </span>
   )
-}
+})
 
-function SyncState({ author }: { author: Author }) {
+const SyncState = memo(function SyncState({ author }: { author: Author }) {
   if (author.x_sync_error) {
     return <span className="author-sync-state error"><WarningCircle size={15} />同步异常</span>
   }
@@ -65,9 +72,9 @@ function SyncState({ author }: { author: Author }) {
     return <span className="author-sync-state waiting"><Clock size={15} />等待同步</span>
   }
   return <span className="author-sync-state muted">未绑定 X</span>
-}
+})
 
-export function AuthorDirectory({
+export const AuthorDirectory = memo(function AuthorDirectory({
   authors,
   works,
   previewAuthorId,
@@ -93,23 +100,29 @@ export function AuthorDirectory({
     catch { return }
     setEditingAliases(false)
   }
+  const indexedAuthors = useMemo(() => authors.map((author) => ({
+    author,
+    syncTime: toTimestamp(author.x_last_synced_at ?? author.last_checked_at),
+    searchText: [
+      author.name,
+      ...(author.aliases ?? []),
+      ...(author.circle_names ?? []),
+      author.x_handle ?? '',
+      author.x_display_name ?? '',
+    ].join('\0').toLocaleLowerCase(),
+  })), [authors])
   const filteredAuthors = useMemo(() => {
     const term = query.trim().toLocaleLowerCase()
-    const filtered = authors.filter((author) => (
-      !term
-      || author.name.toLocaleLowerCase().includes(term)
-      || author.aliases?.some((name) => name.toLocaleLowerCase().includes(term))
-      || author.circle_names?.some((name) => name.toLocaleLowerCase().includes(term))
-      || author.x_handle?.toLocaleLowerCase().includes(term)
-      || author.x_display_name?.toLocaleLowerCase().includes(term)
-    ))
-    return [...filtered].sort((left, right) => {
-      if (sort === 'name') return left.name.localeCompare(right.name, 'zh-CN')
-      if (sort === 'works') return right.work_count - left.work_count || left.name.localeCompare(right.name, 'zh-CN')
-      return new Date(right.x_last_synced_at ?? right.last_checked_at ?? 0).getTime()
-        - new Date(left.x_last_synced_at ?? left.last_checked_at ?? 0).getTime()
+    const filtered = term
+      ? indexedAuthors.filter((entry) => entry.searchText.includes(term))
+      : [...indexedAuthors]
+    filtered.sort((left, right) => {
+      if (sort === 'name') return directoryCollator.compare(left.author.name, right.author.name)
+      if (sort === 'works') return right.author.work_count - left.author.work_count || directoryCollator.compare(left.author.name, right.author.name)
+      return right.syncTime - left.syncTime
     })
-  }, [authors, query, sort])
+    return filtered.map((entry) => entry.author)
+  }, [indexedAuthors, query, sort])
   const previewAuthor = authors.find((author) => author.id === previewAuthorId)
     ?? filteredAuthors[0]
     ?? authors[0]
@@ -137,11 +150,10 @@ export function AuthorDirectory({
     if (!previewAuthor) return []
     return works
       .filter((work) => work.authors.some((author) => author.id === previewAuthor.id))
-      .sort((left, right) => (
-        new Date(right.latest_source_at ?? right.first_source_at ?? 0).getTime()
-        - new Date(left.latest_source_at ?? left.first_source_at ?? 0).getTime()
-      ))
+      .map((work) => ({ work, time: toTimestamp(work.latest_source_at ?? work.first_source_at) }))
+      .sort((left, right) => right.time - left.time)
       .slice(0, 3)
+      .map((entry) => entry.work)
   }, [previewAuthor, works])
 
   return (
@@ -260,7 +272,7 @@ export function AuthorDirectory({
               <header><h3>代表作品</h3><button onClick={() => onOpenAuthor(previewAuthor.id)}>全部作品 <ArrowRight size={13} /></button></header>
               <div className="author-preview-covers">
                 {previewWorks.map((work) => <article key={work.id}>
-                  <div>{work.cover_url ? <img src={work.cover_url} alt="" loading="lazy" /> : <BookOpenText size={24} />}</div>
+                  <div>{work.cover_url ? <img src={work.cover_url} alt="" loading="lazy" decoding="async" /> : <BookOpenText size={24} />}</div>
                   <b>{work.title}</b>
                 </article>)}
                 {!previewWorks.length && <p>还没有可展示的作品封面。</p>}
@@ -278,4 +290,4 @@ export function AuthorDirectory({
       </aside>
     </section>
   )
-}
+})

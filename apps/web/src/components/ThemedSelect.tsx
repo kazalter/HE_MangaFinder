@@ -1,9 +1,9 @@
 import { CaretDown, Check } from '@phosphor-icons/react'
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { memo, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 
 type SelectValue = string | number
 
-export function ThemedSelect<T extends SelectValue>({ label, value, options, onChange }: {
+function ThemedSelectInner<T extends SelectValue>({ label, value, options, onChange }: {
   label: string
   value: T
   options: readonly { value: T, label: string }[]
@@ -98,3 +98,5 @@ export function ThemedSelect<T extends SelectValue>({ label, value, options, onC
     </div>
   )
 }
+
+export const ThemedSelect = memo(ThemedSelectInner) as typeof ThemedSelectInner

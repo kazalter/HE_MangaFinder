@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react'
 import {
   ArrowRight,
   Books,
@@ -10,6 +11,8 @@ import {
   WarningCircle,
 } from '@phosphor-icons/react'
 import type { CatalogEvent, DashboardData } from '../types'
+
+const monthFormatter = new Intl.DateTimeFormat('zh-CN', { month: 'short' })
 
 const sourceLabels: Record<string, string> = {
   wnacg: 'WNACG',
@@ -43,10 +46,13 @@ interface Props {
   onOpenReviews: () => void
 }
 
-export function Dashboard({ data, events, busy, onReload, onOpenWork, onOpenRadar, onSetEventState, onReadAll, onOpenReviews }: Props) {
+export const Dashboard = memo(function Dashboard({ data, events, busy, onReload, onOpenWork, onOpenRadar, onSetEventState, onReadAll, onOpenReviews }: Props) {
   const { summary } = data
-  const trendMaximum = Math.max(1, ...data.trend.map((item) => item.works + item.editions))
-  const visibleTrend = data.trend.slice(-14)
+  const trendMaximum = useMemo(
+    () => Math.max(1, ...data.trend.map((item) => item.works + item.editions)),
+    [data.trend],
+  )
+  const visibleTrend = useMemo(() => data.trend.slice(-14), [data.trend])
 
   return <section className="dashboard-page">
     <header className="dashboard-header">
@@ -67,7 +73,7 @@ export function Dashboard({ data, events, busy, onReload, onOpenWork, onOpenRada
         <div className="discovery-inbox-list">
           {events.slice(0, 12).map((event) => <article key={event.id}>
             <button className="inbox-cover" disabled={!event.group_id} onClick={() => event.group_id && onOpenWork(event.group_id)} aria-label={`打开《${event.title}》`}>
-              {event.cover_url ? <img src={event.cover_url} alt="" loading="lazy" /> : <Books size={24} />}
+              {event.cover_url ? <img src={event.cover_url} alt="" loading="lazy" decoding="async" width={48} height={62} /> : <Books size={24} />}
             </button>
             <div className="inbox-copy"><span>{event.event_type === 'work_discovered' ? '新作品' : '新版本'} · {sourceLabels[event.provider] ?? event.provider}</span><h3>{event.title}</h3><small>{event.author_name} · {new Date(event.created_at).toLocaleString('zh-CN')}</small></div>
             <div className="inbox-actions">
@@ -102,8 +108,8 @@ export function Dashboard({ data, events, busy, onReload, onOpenWork, onOpenRada
 
       <section className="dashboard-panel upcoming-panel">
         <header><div><span>UPCOMING</span><h2>即将发布</h2></div><button onClick={onOpenRadar}>动态中心 <ArrowRight size={14} /></button></header>
-        <div>{data.upcoming.slice(0, 6).map((item) => <article key={item.id}><time><strong>{new Date(item.release_date).getDate()}</strong><span>{new Date(item.release_date).toLocaleDateString('zh-CN', { month: 'short' })}</span></time><div><b>{item.title ?? '标题尚未确认'}</b><small>{item.author_name}{item.event_code ? ` · ${item.event_code}` : ''}{item.booth ? ` · ${item.booth}` : ''}</small></div>{item.linked_group_id && <button onClick={() => onOpenWork(item.linked_group_id!)}>打开</button>}</article>)}{!data.upcoming.length && <div className="dashboard-empty compact"><CalendarDots size={25} /><p>暂时没有带明确日期的待发布作品。</p></div>}</div>
+        <div>{data.upcoming.slice(0, 6).map((item) => <article key={item.id}><time><strong>{new Date(item.release_date).getDate()}</strong><span>{monthFormatter.format(new Date(item.release_date))}</span></time><div><b>{item.title ?? '标题尚未确认'}</b><small>{item.author_name}{item.event_code ? ` · ${item.event_code}` : ''}{item.booth ? ` · ${item.booth}` : ''}</small></div>{item.linked_group_id && <button onClick={() => onOpenWork(item.linked_group_id!)}>打开</button>}</article>)}{!data.upcoming.length && <div className="dashboard-empty compact"><CalendarDots size={25} /><p>暂时没有带明确日期的待发布作品。</p></div>}</div>
       </section>
     </div>
   </section>
-}
+})

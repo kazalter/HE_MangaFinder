@@ -82,4 +82,30 @@ describe('WorkDetail correction actions', () => {
     expect(onExcludeEdition).toHaveBeenCalledWith(2, 20)
     expect(onExcludeGroup).toHaveBeenCalledWith(2)
   })
+
+  it('defers building large manual merge selectors until requested', () => {
+    const manyGroups = Array.from({ length: 30 }, (_, index) => ({
+      ...group,
+      id: index + 100,
+      title: `合并目标 ${index + 1}`,
+    }))
+    render(<WorkDetail
+      group={group}
+      allGroups={manyGroups}
+      busy={false}
+      enabledProviders={['wnacg']}
+      activeAuthorId={2}
+      onClose={vi.fn()}
+      onDownload={vi.fn()}
+      onUpdateMetadata={vi.fn().mockResolvedValue(true)}
+      onSplit={vi.fn()}
+      onMerge={vi.fn()}
+      onExcludeEdition={vi.fn()}
+      onExcludeGroup={vi.fn()}
+    />)
+
+    expect(screen.queryByRole('option', { name: '合并目标 30' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '选择目标作品…' }))
+    expect(screen.getByRole('option', { name: '合并目标 30' })).toBeInTheDocument()
+  })
 })

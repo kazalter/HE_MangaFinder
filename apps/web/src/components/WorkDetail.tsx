@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { memo, useMemo, useState, type FormEvent } from 'react'
 import type { Edition, WorkGroup, WorkGroupDetail, WorkMetadataPatch, WorkSource } from '../types'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { CoverImage } from './CoverImage'
@@ -18,14 +18,17 @@ interface Props {
   onExcludeGroup: (authorId: number) => void
 }
 
+const detailDateFormatter = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' })
+
 function displayDate(value: string | null) {
-  return value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(new Date(value)) : '日期未知'
+  return value ? detailDateFormatter.format(new Date(value)) : '日期未知'
 }
 
-export function WorkDetail({ group, allGroups, busy, enabledProviders, activeAuthorId, onClose, onDownload, onUpdateMetadata, onSplit, onMerge, onExcludeEdition, onExcludeGroup }: Props) {
+export const WorkDetail = memo(function WorkDetail({ group, allGroups, busy, enabledProviders, activeAuthorId, onClose, onDownload, onUpdateMetadata, onSplit, onMerge, onExcludeEdition, onExcludeGroup }: Props) {
   const { closing, requestClose } = useAnimatedClose(onClose)
   const [provider, setProvider] = useState('all')
   const [mergeTarget, setMergeTarget] = useState('')
+  const [mergePickerOpen, setMergePickerOpen] = useState(false)
   const [editingMetadata, setEditingMetadata] = useState(false)
   const [metadataError, setMetadataError] = useState('')
   const overrides = group.metadata_overrides ?? {}
@@ -43,6 +46,11 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, activeAut
   const editions = useMemo(() => group.editions.filter((edition) => (
     provider === 'all' || edition.sources.some((source) => source.provider === provider)
   )), [group.editions, provider])
+  const showMergeSelect = allGroups.length <= 25 || mergePickerOpen
+  const mergeTargets = useMemo(
+    () => (showMergeSelect ? allGroups.filter((item) => item.id !== group.id) : []),
+    [allGroups, group.id, showMergeSelect],
+  )
 
   return (
     <div className={`modal-backdrop work-detail-backdrop${closing ? ' is-closing' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
@@ -141,16 +149,22 @@ export function WorkDetail({ group, allGroups, busy, enabledProviders, activeAut
 
         <footer className="manual-merge">
           <div><strong>人工合并</strong><small>自动算法漏掉时，可把当前作品并入另一部作品；此操作会被保护。</small></div>
-          <select value={mergeTarget} onChange={(event) => setMergeTarget(event.target.value)}>
-            <option value="">选择目标作品…</option>
-            {allGroups.filter((item) => item.id !== group.id).map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}
-          </select>
-          <button disabled={!mergeTarget || busy} onClick={() => onMerge(Number(mergeTarget))}>确认合并</button>
+          {showMergeSelect ? (
+            <>
+              <select value={mergeTarget} onChange={(event) => setMergeTarget(event.target.value)}>
+                <option value="">选择目标作品…</option>
+                {mergeTargets.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}
+              </select>
+              <button disabled={!mergeTarget || busy} onClick={() => onMerge(Number(mergeTarget))}>确认合并</button>
+            </>
+          ) : (
+            <button type="button" disabled={busy} onClick={() => setMergePickerOpen(true)}>选择目标作品…</button>
+          )}
         </footer>
       </section>
     </div>
   )
-}
+})
 
 
 function MetadataEditor({ group, busy, onSave }: { group: WorkGroupDetail, busy: boolean, onSave: (patch: WorkMetadataPatch) => Promise<void> }) {

@@ -1,22 +1,24 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { AuthorDirectory } from './components/AuthorDirectory'
-import { AssistantChat } from './components/AssistantChat'
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AuthorSidebar } from './components/AuthorSidebar'
 import { Dashboard } from './components/Dashboard'
-import { ImageSearch } from './components/ImageSearch'
-import { MergeReview } from './components/MergeReview'
-import { OperationHistory } from './components/OperationHistory'
 import { PageSelector } from './components/PageSelector'
-import { SocialRadar } from './components/SocialRadar'
-import { SystemSettings } from './components/SystemSettings'
 import { ThemedSelect } from './components/ThemedSelect'
-import { TodoWorkbench } from './components/TodoWorkbench'
 import { WorkCard } from './components/WorkCard'
 import { WorkCoverTile } from './components/WorkCoverTile'
-import { WorkDetail } from './components/WorkDetail'
 import { WorkListRow } from './components/WorkListRow'
 import { api } from './lib/api'
 import type { AgentStatus, Author, CatalogEvent, DashboardData, Edition, Job, MergeSuggestion, ReleaseSignal, SeriesCandidate, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkMetadataPatch, WorkSource } from './types'
+
+const loadWorkDetail = () => import('./components/WorkDetail').then((m) => ({ default: m.WorkDetail }))
+const WorkDetail = lazy(loadWorkDetail)
+const AuthorDirectory = lazy(() => import('./components/AuthorDirectory').then((m) => ({ default: m.AuthorDirectory })))
+const TodoWorkbench = lazy(() => import('./components/TodoWorkbench').then((m) => ({ default: m.TodoWorkbench })))
+const MergeReview = lazy(() => import('./components/MergeReview').then((m) => ({ default: m.MergeReview })))
+const OperationHistory = lazy(() => import('./components/OperationHistory').then((m) => ({ default: m.OperationHistory })))
+const ImageSearch = lazy(() => import('./components/ImageSearch').then((m) => ({ default: m.ImageSearch })))
+const AssistantChat = lazy(() => import('./components/AssistantChat').then((m) => ({ default: m.AssistantChat })))
+const SocialRadar = lazy(() => import('./components/SocialRadar').then((m) => ({ default: m.SocialRadar })))
+const SystemSettings = lazy(() => import('./components/SystemSettings').then((m) => ({ default: m.SystemSettings })))
 
 type ViewMode = 'cards' | 'covers' | 'list'
 type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
@@ -93,14 +95,43 @@ function saveAuthorId(id: number | null) {
   }
 }
 
+const jobTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  dateStyle: 'medium',
+  timeStyle: 'medium',
+})
+const workTitleCollator = new Intl.Collator('zh-CN')
+
+function toTimestamp(value: string | null | undefined): number {
+  if (!value) return 0
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function jobsEqual(left: Job[], right: Job[]): boolean {
+  if (left.length !== right.length) return false
+  for (let i = 0; i < left.length; i += 1) {
+    const a = left[i]
+    const b = right[i]
+    if (
+      a.id !== b.id
+      || a.status !== b.status
+      || a.attempts !== b.attempts
+      || a.error !== b.error
+      || a.started_at !== b.started_at
+      || a.finished_at !== b.finished_at
+      || a.payload.output_path !== b.payload.output_path
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
 function formatJobTime(value: string | null): string {
   if (!value) return '时间未知'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '时间未知'
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'medium',
-  }).format(date)
+  return jobTimeFormatter.format(date)
 }
 
 function friendlyJobError(message: string | null): string {
@@ -161,6 +192,10 @@ export default function App() {
   const [groupMode, setGroupMode] = useState<GroupMode>(() => savedChoice('mangafinder:group', ['none', 'author'], 'none'))
   const [page, setPage] = useState(1)
   const [coverColumns, setCoverColumns] = useState(6)
+  const [sidebarExpanded, setSidebarExpanded] = useState(() => {
+    try { return window.localStorage.getItem('mangafinder:library-sidebar-expanded') !== 'false' }
+    catch { return true }
+  })
   const catalogTopRef = useRef<HTMLElement>(null)
   const [dismissedJobThrough, setDismissedJobThrough] = useState(() => {
     try { return Number(window.sessionStorage.getItem('mangafinder:dismissed-job-through') ?? 0) || 0 }
@@ -233,23 +268,27 @@ export default function App() {
   useEffect(() => { saveChoice('mangafinder:library-mode', libraryMode) }, [libraryMode])
   useEffect(() => { saveAuthorId(selectedId) }, [selectedId])
   useLayoutEffect(() => {
+    if (viewMode !== 'covers' || libraryMode !== 'works' || settingsOpen || !works.length) return
     const element = catalogTopRef.current
     if (!element) return
-    const measure = () => {
-      const width = element.getBoundingClientRect().width
+    const updateWidth = (width: number) => {
       if (width <= 0) return
       const columns = calculateCoverColumns(width)
       setCoverColumns((current) => current === columns ? current : columns)
     }
-    measure()
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
-    observer?.observe(element)
-    window.addEventListener('resize', measure)
-    return () => {
-      observer?.disconnect()
-      window.removeEventListener('resize', measure)
+    updateWidth(element.getBoundingClientRect().width)
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver((entries) => {
+        const width = entries[0]?.contentRect.width ?? element.getBoundingClientRect().width
+        updateWidth(width)
+      })
+      observer.observe(element)
+      return () => observer.disconnect()
     }
-  }, [libraryMode, settingsOpen, works.length])
+    const measure = () => updateWidth(element.getBoundingClientRect().width)
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [libraryMode, settingsOpen, viewMode, works.length])
   useEffect(() => {
     const url = new URL(window.location.href)
     if (libraryMode === 'authors') url.searchParams.set('view', 'authors')
@@ -259,9 +298,18 @@ export default function App() {
     else url.searchParams.delete('author')
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
   }, [libraryMode, selectedId])
+
+  const activeJobs = useMemo(
+    () => jobs.filter((job) => job.status === 'pending' || job.status === 'running'),
+    [jobs],
+  )
+  const activeJobIds = useMemo(() => activeJobs.map((job) => job.id), [activeJobs])
+  const activeJobIdsKey = activeJobIds.join(',')
+  const activeJobIdsRef = useRef(activeJobIds)
+  activeJobIdsRef.current = activeJobIds
+
   useEffect(() => {
-    const activeIds = jobs.filter((job) => job.status === 'pending' || job.status === 'running').map((job) => job.id)
-    if (!activeIds.length) return
+    if (!activeJobIdsKey) return
     let cancelled = false
     let polling = false
     const timer = window.setInterval(() => {
@@ -269,44 +317,55 @@ export default function App() {
       polling = true
       void api.jobs().then((nextJobs) => {
         if (cancelled) return
-        setJobs(nextJobs)
+        setJobs((current) => jobsEqual(current, nextJobs) ? current : nextJobs)
         const nextActive = new Set(nextJobs.filter((job) => job.status === 'pending' || job.status === 'running').map((job) => job.id))
-        if (activeIds.some((id) => !nextActive.has(id))) void load()
+        if (activeJobIdsRef.current.some((id) => !nextActive.has(id))) void load()
       }).catch(() => {
         if (!cancelled) setError('任务状态加载失败，请重试')
       }).finally(() => { polling = false })
     }, 2000)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [jobs, load])
+  }, [activeJobIdsKey, load])
 
-  const selectedAuthor = libraryMode === 'works'
-    ? authors.find((author) => author.id === selectedId)
-    : undefined
+  const selectedAuthor = useMemo(
+    () => (libraryMode === 'works' ? authors.find((author) => author.id === selectedId) : undefined),
+    [authors, libraryMode, selectedId],
+  )
+  const indexedWorks = useMemo(() => works.map((work) => ({
+    work,
+    firstTime: toTimestamp(work.first_source_at),
+    latestTime: toTimestamp(work.latest_source_at),
+    searchText: [
+      work.title,
+      ...work.authors.map((author) => author.name),
+      ...work.tags,
+      ...work.providers,
+    ].join('\0').toLocaleLowerCase(),
+  })), [works])
+  const deferredSearch = useDeferredValue(search)
   const visibleWorks = useMemo(() => {
-    const term = search.trim().toLocaleLowerCase()
-    const reviewIds = new Set(suggestions.flatMap((item) => [item.source_group_id, item.target_group_id]))
-    const filtered = works.filter((work) => {
-      const matchesSearch = !term || [
-        work.title,
-        ...work.authors.map((author) => author.name),
-        ...work.tags,
-        ...work.providers,
-      ].some((value) => value.toLocaleLowerCase().includes(term))
-      if (!matchesSearch) return false
+    const term = deferredSearch.trim().toLocaleLowerCase()
+    const reviewIds = workFilter === 'review'
+      ? new Set(suggestions.flatMap((item) => [item.source_group_id, item.target_group_id]))
+      : null
+    const filtered = indexedWorks.filter((entry) => {
+      if (term && !entry.searchText.includes(term)) return false
+      const { work } = entry
       if (workFilter === 'ongoing') return work.status === 'ongoing'
       if (workFilter === 'completed') return work.status === 'completed'
       if (workFilter === 'multi') return work.edition_count > 1
-      if (workFilter === 'review') return reviewIds.has(work.id)
+      if (workFilter === 'review') return reviewIds?.has(work.id) ?? false
       return true
     })
-    return [...filtered].sort((left, right) => {
-      if (workSort === 'title') return left.title.localeCompare(right.title, 'zh-CN')
-      if (workSort === 'year') return (right.year ?? 0) - (left.year ?? 0) || left.title.localeCompare(right.title, 'zh-CN')
-      if (workSort === 'editions') return right.edition_count - left.edition_count || left.title.localeCompare(right.title, 'zh-CN')
-      if (workSort === 'first') return new Date(right.first_source_at ?? 0).getTime() - new Date(left.first_source_at ?? 0).getTime()
-      return new Date(right.latest_source_at ?? 0).getTime() - new Date(left.latest_source_at ?? 0).getTime()
+    filtered.sort((left, right) => {
+      if (workSort === 'title') return workTitleCollator.compare(left.work.title, right.work.title)
+      if (workSort === 'year') return (right.work.year ?? 0) - (left.work.year ?? 0) || workTitleCollator.compare(left.work.title, right.work.title)
+      if (workSort === 'editions') return right.work.edition_count - left.work.edition_count || workTitleCollator.compare(left.work.title, right.work.title)
+      if (workSort === 'first') return right.firstTime - left.firstTime
+      return right.latestTime - left.latestTime
     })
-  }, [search, suggestions, workFilter, workSort, works])
+    return filtered.map((entry) => entry.work)
+  }, [deferredSearch, indexedWorks, suggestions, workFilter, workSort])
   const pageSize = viewMode === 'covers' ? coverColumns * 4 : standardPageSize
   const pageCount = Math.max(1, Math.ceil(visibleWorks.length / pageSize))
   const paginatedWorks = useMemo(
@@ -330,26 +389,43 @@ export default function App() {
       const workAuthors = work.authors.length ? work.authors : [{ id: 0, name: '未关联作者' }]
       for (const author of workAuthors) {
         const key = `${author.id}:${author.name}`
-        const section = grouped.get(key) ?? { ...author, works: [] }
+        let section = grouped.get(key)
+        if (!section) {
+          section = { ...author, works: [] }
+          grouped.set(key, section)
+        }
         section.works.push(work)
-        grouped.set(key, section)
       }
     }
-    return [...grouped.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+    return [...grouped.values()].sort((left, right) => workTitleCollator.compare(left.name, right.name))
   }, [groupMode, paginatedWorks, selectedId])
-  const activeJobs = jobs.filter((job) => job.status === 'pending' || job.status === 'running')
-  const failedJob = jobs.find((job) => (
+  const failedJob = useMemo(() => jobs.find((job) => (
     job.status === 'failed'
     && job.id > dismissedJobThrough
     && !jobs.some((newer) => newer.id > job.id && newer.status === 'succeeded' && jobSubject(newer) === jobSubject(job))
-  ))
+  )), [dismissedJobThrough, jobs])
+  const enabledProviders = useMemo(() => sources.map((source) => source.name), [sources])
+  const readyDownloadJob = useMemo(
+    () => jobs.find((job) => job.kind === 'download_chapter' && job.status === 'succeeded' && job.payload.output_path),
+    [jobs],
+  )
 
   useEffect(() => {
     if (!(socialStatus?.processing_pending)) return
     let cancelled = false
     const timer = window.setInterval(() => {
       void api.socialStatus().then((next) => {
-        if (!cancelled) setSocialStatus(next)
+        if (!cancelled) {
+          setSocialStatus((current) => (
+            current
+            && current.processing_pending === next.processing_pending
+            && current.processing_retry === next.processing_retry
+            && current.unread_count === next.unread_count
+            && current.pending_count === next.pending_count
+              ? current
+              : next
+          ))
+        }
       }).catch(() => { /* The next poll will retry. */ })
     }, 10000)
     return () => { cancelled = true; window.clearInterval(timer) }
@@ -361,15 +437,15 @@ export default function App() {
     catch { /* The banner can still be dismissed until the next page load. */ }
   }
 
-  async function act(action: () => Promise<unknown>) {
+  const act = useCallback(async (action: () => Promise<unknown>) => {
     setBusy(true)
     setError(null)
     try { await action(); await load() }
     catch (reason) { setError(reason instanceof Error ? reason.message : '操作失败') }
     finally { setBusy(false) }
-  }
+  }, [load])
 
-  async function actForAuthorEdit(action: () => Promise<unknown>) {
+  const actForAuthorEdit = useCallback(async (action: () => Promise<unknown>) => {
     setBusy(true)
     setError(null)
     try { await action(); await load() }
@@ -378,14 +454,19 @@ export default function App() {
       throw reason
     }
     finally { setBusy(false) }
-  }
+  }, [load])
 
-  async function openWork(work: WorkGroup | number) {
+  const openWork = useCallback(async (work: WorkGroup | number) => {
+    void loadWorkDetail()
     setBusy(true)
     try { setOpenedWork(await api.workGroup(typeof work === 'number' ? work : work.id)) }
     catch (reason) { setError(reason instanceof Error ? reason.message : '加载版本失败') }
     finally { setBusy(false) }
-  }
+  }, [])
+
+  const handleOpenWork = useCallback((work: WorkGroup) => {
+    void openWork(work)
+  }, [openWork])
 
   async function downloadEdition(edition: Edition, source: WorkSource) {
     setBusy(true)
@@ -452,7 +533,7 @@ export default function App() {
     await act(() => accept ? api.acceptSuggestion(id) : api.rejectSuggestion(id))
   }
 
-  function changePage(nextPage: number) {
+  const changePage = useCallback((nextPage: number) => {
     const target = Math.max(1, Math.min(nextPage, pageCount))
     if (target === page) return
     setPage(target)
@@ -460,75 +541,128 @@ export default function App() {
       block: 'start',
       behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
     }))
-  }
+  }, [page, pageCount])
 
-  function showDashboard() {
+  const showDashboard = useCallback(() => {
     setSettingsOpen(false)
     setLibraryMode('overview')
     setSelectedId(null)
-  }
+  }, [])
 
-  function showTodo() {
+  const showTodo = useCallback(() => {
     setSettingsOpen(false)
     setLibraryMode('todo')
     setSelectedId(null)
-  }
+  }, [])
 
-  function showAllWorks() {
+  const showAllWorks = useCallback(() => {
     setSettingsOpen(false)
     setPage(1)
     setLibraryMode('works')
     setSelectedId(null)
-  }
+  }, [])
 
-  function showAuthorDirectory() {
+  const showAuthorDirectory = useCallback(() => {
     setSettingsOpen(false)
     setPage(1)
     setLibraryMode('authors')
     setSelectedId(null)
-  }
+  }, [])
 
-  function openAuthorWorks(authorId: number) {
+  const openAuthorWorks = useCallback((authorId: number) => {
     setSettingsOpen(false)
     setPage(1)
     setPreviewAuthorId(authorId)
     setLibraryMode('works')
     setSelectedId(authorId)
     window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
+  }, [])
+
+  const handleSidebarSelect = useCallback((id: number | null) => {
+    if (id === null) showAllWorks()
+    else openAuthorWorks(id)
+  }, [openAuthorWorks, showAllWorks])
+
+  const handleModeChange = useCallback((mode: LibraryMode) => {
+    if (mode === 'overview') showDashboard()
+    else if (mode === 'todo') showTodo()
+    else if (mode === 'authors') showAuthorDirectory()
+    else showAllWorks()
+  }, [showAllWorks, showAuthorDirectory, showDashboard, showTodo])
+
+  const handleAddAuthor = useCallback(
+    (name: string, aliases?: string[]) => actForAuthorEdit(() => api.createAuthor(name, aliases)),
+    [actForAuthorEdit],
+  )
+  const handleRefreshAuthor = useCallback(
+    (id: number) => act(() => api.refreshAuthor(id)),
+    [act],
+  )
+  const handleDeleteAuthor = useCallback(async (id: number) => {
+    if (!window.confirm('删除这个作者订阅？已发现的作品资料会保留。')) return
+    setSelectedId((current) => current === id ? null : current)
+    await act(() => api.deleteAuthor(id))
+  }, [act])
+  const handleOpenSettings = useCallback(() => {
+    setAssistantOpen(false)
+    setSettingsOpen(true)
+  }, [])
+  const handleOpenRadar = useCallback(() => setRadarOpen(true), [])
+  const handleOpenAssistant = useCallback(() => setAssistantOpen(true), [])
+  const handleOpenHistory = useCallback(() => {
+    setSettingsOpen(false)
+    setHistoryOpen(true)
+  }, [])
+  const handleOpenReviews = useCallback(() => setReviewOpen(true), [])
+  const handleReload = useCallback(() => { void load() }, [load])
+  const handleDashboardOpenWork = useCallback((id: number) => { void openWork(id) }, [openWork])
+  const handleSetEventState = useCallback(
+    (id: number, state: CatalogEvent['state']) => { void act(() => api.updateDiscoveryEvent(id, state)) },
+    [act],
+  )
+  const handleReadAllEvents = useCallback(
+    () => { void act(() => api.updateAllDiscoveryEvents()) },
+    [act],
+  )
+  const handleUpdateAuthorIdentity = useCallback(
+    (id: number, identity: Pick<Author, 'name'> & Partial<Pick<Author, 'aliases' | 'circle_names'>>) =>
+      actForAuthorEdit(() => api.updateAuthorIdentity(id, identity)),
+    [actForAuthorEdit],
+  )
+  const handleFilterChange = useCallback((value: WorkFilter) => { setWorkFilter(value); setPage(1) }, [])
+  const handleSortChange = useCallback((value: WorkSort) => { setWorkSort(value); setPage(1) }, [])
+  const handleGroupChange = useCallback((value: GroupMode) => { setGroupMode(value); setPage(1) }, [])
+  const coverWallStyle = useMemo(() => ({ gridTemplateColumns: `repeat(${coverColumns}, minmax(0, 1fr))` }), [coverColumns])
 
   function renderWorks(items: WorkGroup[]) {
     if (viewMode === 'covers') {
-      return <section className="cover-wall" style={{ gridTemplateColumns: `repeat(${coverColumns}, minmax(0, 1fr))` }}>{items.map((work) => <WorkCoverTile work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
+      return <section className="cover-wall" style={coverWallStyle}>{items.map((work) => <WorkCoverTile work={work} onOpen={handleOpenWork} key={work.id} />)}</section>
     }
     if (viewMode === 'list') {
-      return <section className="work-list">{items.map((work) => <WorkListRow work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
+      return <section className="work-list">{items.map((work) => <WorkListRow work={work} onOpen={handleOpenWork} key={work.id} />)}</section>
     }
-    return <section className="work-grid">{items.map((work) => <WorkCard work={work} onOpen={(item) => void openWork(item)} key={work.id} />)}</section>
+    return <section className="work-grid">{items.map((work) => <WorkCard work={work} onOpen={handleOpenWork} key={work.id} />)}</section>
   }
 
   return (
-    <div className={`shell${hasModal ? ' modal-active' : ''}`}>
+    <div className={`shell${sidebarExpanded ? '' : ' sidebar-collapsed'}${hasModal ? ' modal-active' : ''}`}>
       <AuthorSidebar
         authors={authors}
         sources={sources}
         selectedId={settingsOpen ? -1 : selectedId}
         libraryMode={libraryMode}
         busy={busy}
-        onSelect={(id) => id === null ? showAllWorks() : openAuthorWorks(id)}
-        onModeChange={(mode) => mode === 'overview' ? showDashboard() : mode === 'todo' ? showTodo() : mode === 'authors' ? showAuthorDirectory() : showAllWorks()}
-        onAdd={(name, aliases) => actForAuthorEdit(() => api.createAuthor(name, aliases))}
-        onRefresh={(id) => act(() => api.refreshAuthor(id))}
-        onDelete={async (id) => {
-          if (!window.confirm('删除这个作者订阅？已发现的作品资料会保留。')) return
-          if (selectedId === id) setSelectedId(null)
-          await act(() => api.deleteAuthor(id))
-        }}
+        onExpandedChange={setSidebarExpanded}
+        onSelect={handleSidebarSelect}
+        onModeChange={handleModeChange}
+        onAdd={handleAddAuthor}
+        onRefresh={handleRefreshAuthor}
+        onDelete={handleDeleteAuthor}
         settingsActive={settingsOpen}
-        onOpenSettings={() => { setAssistantOpen(false); setSettingsOpen(true) }}
-        onOpenRadar={() => setRadarOpen(true)}
-        onOpenAssistant={() => setAssistantOpen(true)}
-        onOpenHistory={() => { setSettingsOpen(false); setHistoryOpen(true) }}
+        onOpenSettings={handleOpenSettings}
+        onOpenRadar={handleOpenRadar}
+        onOpenAssistant={handleOpenAssistant}
+        onOpenHistory={handleOpenHistory}
       />
 
       <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : libraryMode === 'overview' || libraryMode === 'todo' ? 'dashboard-main' : ''}>
@@ -537,33 +671,33 @@ export default function App() {
           <button className="alert-close" onClick={() => setError(null)} aria-label="关闭错误提示">×</button>
         </div>}
         {settingsOpen
-          ? <SystemSettings onClose={() => setSettingsOpen(false)} />
+          ? <Suspense fallback={<section className="settings-loading"><span className="spinner" /> 正在读取系统设置…</section>}><SystemSettings onClose={() => setSettingsOpen(false)} /></Suspense>
           : libraryMode === 'todo'
-            ? <TodoWorkbench works={works} onOpenWork={(id) => void openWork(id)} onOpenReviews={() => setReviewOpen(true)} onChanged={() => void load()} />
+            ? <Suspense fallback={<section className="settings-loading"><span className="spinner" /> 正在加载待办工作台…</section>}><TodoWorkbench works={works} onOpenWork={handleDashboardOpenWork} onOpenReviews={handleOpenReviews} onChanged={handleReload} /></Suspense>
           : libraryMode === 'overview'
             ? dashboard
               ? <Dashboard
                   data={dashboard}
                   events={discoveryEvents}
                   busy={busy}
-                  onReload={() => void load()}
-                  onOpenWork={(id) => void openWork(id)}
-                  onOpenRadar={() => setRadarOpen(true)}
-                  onSetEventState={(id, state) => void act(() => api.updateDiscoveryEvent(id, state))}
-                  onReadAll={() => void act(() => api.updateAllDiscoveryEvents())}
-                  onOpenReviews={() => setReviewOpen(true)}
+                  onReload={handleReload}
+                  onOpenWork={handleDashboardOpenWork}
+                  onOpenRadar={handleOpenRadar}
+                  onSetEventState={handleSetEventState}
+                  onReadAll={handleReadAllEvents}
+                  onOpenReviews={handleOpenReviews}
                 />
               : <section className="settings-loading"><span className="spinner" /> 正在读取资料库总览…</section>
             : libraryMode === 'authors'
-              ? <AuthorDirectory
+              ? <Suspense fallback={<section className="settings-loading"><span className="spinner" /> 正在加载作者目录…</section>}><AuthorDirectory
                   authors={authors}
                   works={works}
                   previewAuthorId={previewAuthorId}
                   onPreviewAuthor={setPreviewAuthorId}
                   onOpenAuthor={openAuthorWorks}
                   onGetQueryName={api.authorQueryName}
-                  onUpdateAuthor={(id, identity) => actForAuthorEdit(() => api.updateAuthorIdentity(id, identity))}
-                />
+                  onUpdateAuthor={handleUpdateAuthorIdentity}
+                /></Suspense>
               : <>
         <header className="topbar">
           <div>
@@ -595,9 +729,9 @@ export default function App() {
           const gap = candidate.missing_volumes.length ? `，可能缺少第 ${candidate.missing_volumes.join('、')} 卷` : ''
           if (window.confirm(`将 ${candidate.groups.length} 部作品建立为“${candidate.title}”系列${gap}？`)) void act(() => api.createSeriesFromCandidate(candidate))
         }}>发现系列候选「{candidate.title}」 · {candidate.groups.length} 卷{candidate.missing_volumes.length ? ` · 缺 ${candidate.missing_volumes.join('、')}` : ''}<span>确认系列 →</span></button>)}
-        {jobs.filter((job) => job.kind === 'download_chapter' && job.status === 'succeeded' && job.payload.output_path).slice(0, 1).map((job) => (
-          <div className="download-ready" key={job.id}>CBZ 已准备好 <a href={`/api/jobs/${job.id}/file`}>保存到本机 ↓</a></div>
-        ))}
+        {readyDownloadJob && (
+          <div className="download-ready" key={readyDownloadJob.id}>CBZ 已准备好 <a href={`/api/jobs/${readyDownloadJob.id}/file`}>保存到本机 ↓</a></div>
+        )}
 
         <section className="section-head">
           <div><h2>发现的作品</h2><span>{visibleWorks.length}</span></div>
@@ -610,9 +744,9 @@ export default function App() {
               <button className={viewMode === value ? 'active' : ''} onClick={() => setViewMode(value)} aria-pressed={viewMode === value} key={value}>{label}</button>
             ))}
           </div>
-          <ThemedSelect label="筛选" value={workFilter} options={workFilterOptions} onChange={(value) => { setWorkFilter(value); setPage(1) }} />
-          <ThemedSelect label="排序" value={workSort} options={workSortOptions} onChange={(value) => { setWorkSort(value); setPage(1) }} />
-          {!selectedAuthor && <ThemedSelect label="分组" value={groupMode} options={groupOptions} onChange={(value) => { setGroupMode(value); setPage(1) }} />}
+          <ThemedSelect label="筛选" value={workFilter} options={workFilterOptions} onChange={handleFilterChange} />
+          <ThemedSelect label="排序" value={workSort} options={workSortOptions} onChange={handleSortChange} />
+          {!selectedAuthor && <ThemedSelect label="分组" value={groupMode} options={groupOptions} onChange={handleGroupChange} />}
           {visibleWorks.length > 0 && <span className="catalog-page-summary">第 {page} / {pageCount} 页 · 共 {visibleWorks.length} 部</span>}
         </section>}
 
@@ -644,12 +778,14 @@ export default function App() {
         )}
             </>}
       </main>
-      {!settingsOpen && historyOpen && <OperationHistory onClose={() => setHistoryOpen(false)} onChanged={async () => { setOpenedWork(null); await load() }} />}
-      {!settingsOpen && imageSearchOpen && <ImageSearch onClose={() => setImageSearchOpen(false)} onOpenWork={(id) => { setImageSearchOpen(false); void openWork(id) }} />}
-      {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={sources.map((source) => source.name)} activeAuthorId={selectedId} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onUpdateMetadata={updateMetadata} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)} onExcludeGroup={(authorId) => void excludeGroup(authorId)} />}
-      {!settingsOpen && reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
-      {!settingsOpen && radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
-      <AssistantChat open={assistantOpen} onClose={() => setAssistantOpen(false)} />
+      <Suspense fallback={null}>
+        {!settingsOpen && historyOpen && <OperationHistory onClose={() => setHistoryOpen(false)} onChanged={async () => { setOpenedWork(null); await load() }} />}
+        {!settingsOpen && imageSearchOpen && <ImageSearch onClose={() => setImageSearchOpen(false)} onOpenWork={(id) => { setImageSearchOpen(false); void openWork(id) }} />}
+        {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={enabledProviders} activeAuthorId={selectedId} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onUpdateMetadata={updateMetadata} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)} onExcludeGroup={(authorId) => void excludeGroup(authorId)} />}
+        {!settingsOpen && reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
+        {!settingsOpen && radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
+        {assistantOpen && <AssistantChat open={assistantOpen} onClose={() => setAssistantOpen(false)} />}
+      </Suspense>
     </div>
   )
 }

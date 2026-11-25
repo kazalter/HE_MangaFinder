@@ -20,8 +20,7 @@ import {
   User,
   X,
 } from '@phosphor-icons/react'
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { flushSync } from 'react-dom'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import type { LibraryMode } from '../App'
 import mangaFinderMark from '../assets/mangafinder-mark.png'
 import type { Author, Source } from '../types'
@@ -29,6 +28,7 @@ import { ExpandablePanel } from './ExpandablePanel'
 
 const sidebarExpandedKey = 'mangafinder:library-sidebar-expanded'
 const pinnedAuthorsKey = 'mangafinder:pinned-authors'
+const authorCollator = new Intl.Collator('zh-CN')
 
 function initialSidebarExpanded() {
   try { return localStorage.getItem(sidebarExpandedKey) !== 'false' }
@@ -58,13 +58,61 @@ interface Props {
   onRefresh: (id: number) => Promise<void>
   onDelete: (id: number) => Promise<void>
   settingsActive?: boolean
+  onExpandedChange?: (expanded: boolean) => void
   onOpenSettings: () => void
   onOpenRadar: () => void
   onOpenAssistant?: () => void
   onOpenHistory?: () => void
 }
 
-export function AuthorSidebar({
+interface SidebarAuthorRowProps {
+  author: Author
+  pinned?: boolean
+  active: boolean
+  isPinned: boolean
+  managing: boolean
+  onSelect: (id: number) => void
+  onTogglePinned: (id: number) => void
+  onRefresh: (id: number) => Promise<void>
+  onDelete: (id: number) => Promise<void>
+}
+
+const SidebarAuthorRow = memo(function SidebarAuthorRow({
+  author,
+  pinned = false,
+  active,
+  isPinned,
+  managing,
+  onSelect,
+  onTogglePinned,
+  onRefresh,
+  onDelete,
+}: SidebarAuthorRowProps) {
+  return (
+    <div className={`library-author-row ${pinned ? 'pinned' : ''} ${active ? 'active' : ''}`}>
+      <button className="library-author-main" onClick={() => onSelect(author.id)} aria-current={active ? 'page' : undefined}>
+        <span className="library-avatar">
+          {author.avatar_url
+            ? <img src={author.avatar_url} alt="" referrerPolicy="no-referrer" loading="lazy" decoding="async" />
+            : author.name.slice(0, 1).toLocaleUpperCase()}
+        </span>
+        <span>{author.name}</span>
+        <small>{author.work_count}</small>
+      </button>
+      <div className={`library-author-actions ${managing ? 'visible' : ''}`}>
+        <button onClick={() => onTogglePinned(author.id)} aria-label={`${isPinned ? '取消置顶' : '置顶'} ${author.name}`} title={isPinned ? '取消置顶' : '置顶'}>
+          <PushPin size={14} weight={isPinned ? 'fill' : 'regular'} />
+        </button>
+        {managing && <>
+          <button onClick={() => void onRefresh(author.id)} aria-label={`刷新 ${author.name}`} title="立即刷新"><ArrowsClockwise size={14} /></button>
+          <button onClick={() => void onDelete(author.id)} aria-label={`删除 ${author.name}`} title="删除订阅"><Trash size={14} /></button>
+        </>}
+      </div>
+    </div>
+  )
+})
+
+export const AuthorSidebar = memo(function AuthorSidebar({
   authors,
   sources,
   selectedId,
@@ -76,6 +124,7 @@ export function AuthorSidebar({
   onRefresh,
   onDelete,
   settingsActive = false,
+  onExpandedChange,
   onOpenSettings,
   onOpenRadar,
   onOpenAssistant,
@@ -96,27 +145,39 @@ export function AuthorSidebar({
   const expandButtonRef = useRef<HTMLButtonElement>(null)
   const collapseButtonRef = useRef<HTMLButtonElement>(null)
 
-  const totalWorks = authors.reduce((sum, author) => sum + author.work_count, 0)
+  const totalWorks = useMemo(() => authors.reduce((sum, author) => sum + author.work_count, 0), [authors])
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filteredAuthors = useMemo(() => authors
     .filter((author) => !normalizedQuery || author.name.toLocaleLowerCase().includes(normalizedQuery))
-    .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')), [authors, normalizedQuery])
-  const effectivePinnedIds = pinnedIds ?? authors.slice(0, 3).map((author) => author.id)
-  const pinnedAuthors = effectivePinnedIds
-    .map((id) => authors.find((author) => author.id === id))
-    .filter((author): author is Author => Boolean(author))
-    .slice(0, 3)
+    .sort((left, right) => authorCollator.compare(left.name, right.name)), [authors, normalizedQuery])
+  const effectivePinnedIds = useMemo(
+    () => pinnedIds ?? authors.slice(0, 3).map((author) => author.id),
+    [authors, pinnedIds],
+  )
+  const pinnedSet = useMemo(() => new Set(effectivePinnedIds), [effectivePinnedIds])
+  const pinnedAuthors = useMemo(() => {
+    const byId = new Map(authors.map((author) => [author.id, author]))
+    return effectivePinnedIds
+      .map((id) => byId.get(id))
+      .filter((author): author is Author => Boolean(author))
+      .slice(0, 3)
+  }, [authors, effectivePinnedIds])
   const groupedAuthors = useMemo(() => {
     const groups = new Map<string, Author[]>()
     for (const author of filteredAuthors) {
       const first = author.name.trim().charAt(0).toLocaleUpperCase()
       const key = /^[A-Z]$/.test(first) ? first : '#'
-      groups.set(key, [...(groups.get(key) ?? []), author])
+      let bucket = groups.get(key)
+      if (!bucket) {
+        bucket = []
+        groups.set(key, bucket)
+      }
+      bucket.push(author)
     }
     return [...groups.entries()].sort(([left], [right]) => {
       if (left === '#') return 1
       if (right === '#') return -1
-      return left.localeCompare(right)
+      return left < right ? -1 : left > right ? 1 : 0
     })
   }, [filteredAuthors])
 
@@ -196,36 +257,27 @@ export function AuthorSidebar({
     return window.matchMedia?.('(max-width: 800px)').matches ?? false
   }
 
-  function selectAuthor(id: number | null) {
+  const selectAuthor = useCallback((id: number | null) => {
     onSelect(id)
     if (isMobileViewport()) setMobileOpen(false)
-  }
+  }, [onSelect])
 
   function navigateMode(mode: LibraryMode) {
     onModeChange(mode)
     if (isMobileViewport()) setMobileOpen(false)
   }
 
-  function togglePinned(authorId: number) {
+  const togglePinned = useCallback((authorId: number) => {
     setPinnedIds((current) => {
       const base = current ?? authors.slice(0, 3).map((author) => author.id)
       return base.includes(authorId) ? base.filter((id) => id !== authorId) : [authorId, ...base].slice(0, 8)
     })
-  }
+  }, [authors])
 
   function updateSidebarState(nextExpanded: boolean, focusTarget: () => HTMLElement | null) {
-    const update = () => flushSync(() => setExpanded(nextExpanded))
-    const transitionDocument = document as Document & {
-      startViewTransition?: (callback: () => void) => { finished: Promise<void> }
-    }
-    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-    if (!transitionDocument.startViewTransition || reduceMotion) {
-      update()
-      window.requestAnimationFrame(() => focusTarget()?.focus())
-      return
-    }
-    const transition = transitionDocument.startViewTransition(update)
-    void transition.finished.finally(() => focusTarget()?.focus())
+    setExpanded(nextExpanded)
+    onExpandedChange?.(nextExpanded)
+    window.requestAnimationFrame(() => focusTarget()?.focus())
   }
 
   function collapseSidebar() {
@@ -234,32 +286,6 @@ export function AuthorSidebar({
 
   function expandSidebar() {
     updateSidebarState(true, () => collapseButtonRef.current)
-  }
-
-  function authorRow(author: Author, pinned = false) {
-    const active = selectedId === author.id
-    return (
-      <div className={`library-author-row ${pinned ? 'pinned' : ''} ${active ? 'active' : ''}`} key={`${pinned ? 'pinned' : 'all'}-${author.id}`}>
-        <button className="library-author-main" onClick={() => selectAuthor(author.id)} aria-current={active ? 'page' : undefined}>
-          <span className="library-avatar">
-            {author.avatar_url
-              ? <img src={author.avatar_url} alt="" referrerPolicy="no-referrer" />
-              : author.name.slice(0, 1).toLocaleUpperCase()}
-          </span>
-          <span>{author.name}</span>
-          <small>{author.work_count}</small>
-        </button>
-        <div className={`library-author-actions ${managing ? 'visible' : ''}`}>
-          <button onClick={() => togglePinned(author.id)} aria-label={`${effectivePinnedIds.includes(author.id) ? '取消置顶' : '置顶'} ${author.name}`} title={effectivePinnedIds.includes(author.id) ? '取消置顶' : '置顶'}>
-            <PushPin size={14} weight={effectivePinnedIds.includes(author.id) ? 'fill' : 'regular'} />
-          </button>
-          {managing && <>
-            <button onClick={() => void onRefresh(author.id)} aria-label={`刷新 ${author.name}`} title="立即刷新"><ArrowsClockwise size={14} /></button>
-            <button onClick={() => void onDelete(author.id)} aria-label={`删除 ${author.name}`} title="删除订阅"><Trash size={14} /></button>
-          </>}
-        </div>
-      </div>
-    )
   }
 
   return (
@@ -278,7 +304,7 @@ export function AuthorSidebar({
         <div className="sidebar-expanded-content">
           <header className="library-brand-row">
             <span className="library-brand-mark" aria-hidden="true">
-              <img src={mangaFinderMark} alt="" />
+              <img src={mangaFinderMark} alt="" width={46} height={46} decoding="async" />
             </span>
             <div><strong>MangaFinder</strong><small>作者作品雷达</small></div>
             <button
@@ -325,7 +351,20 @@ export function AuthorSidebar({
           <div className="library-author-scroll">
             {!normalizedQuery && <section className="library-author-section pinned-authors">
               <header><h2>置顶作者</h2><PushPin size={15} weight="fill" /></header>
-              {pinnedAuthors.length ? pinnedAuthors.map((author) => authorRow(author, true)) : <p className="library-empty">从作者列表中选择置顶</p>}
+              {pinnedAuthors.length ? pinnedAuthors.map((author) => (
+                <SidebarAuthorRow
+                  key={`pinned-${author.id}`}
+                  author={author}
+                  pinned
+                  active={selectedId === author.id}
+                  isPinned={pinnedSet.has(author.id)}
+                  managing={managing}
+                  onSelect={selectAuthor}
+                  onTogglePinned={togglePinned}
+                  onRefresh={onRefresh}
+                  onDelete={onDelete}
+                />
+              )) : <p className="library-empty">从作者列表中选择置顶</p>}
             </section>}
 
             <section className="library-author-section all-library-authors">
@@ -340,7 +379,19 @@ export function AuthorSidebar({
               </header>
               {groupedAuthors.length ? groupedAuthors.map(([letter, items]) => <section className="library-letter-group" key={letter}>
                 <h3>{letter}</h3>
-                {items.map((author) => authorRow(author))}
+                {items.map((author) => (
+                  <SidebarAuthorRow
+                    key={`all-${author.id}`}
+                    author={author}
+                    active={selectedId === author.id}
+                    isPinned={pinnedSet.has(author.id)}
+                    managing={managing}
+                    onSelect={selectAuthor}
+                    onTogglePinned={togglePinned}
+                    onRefresh={onRefresh}
+                    onDelete={onDelete}
+                  />
+                ))}
               </section>) : <p className="library-empty">没有匹配的作者</p>}
             </section>
           </div>
@@ -357,7 +408,7 @@ export function AuthorSidebar({
 
         <div className="sidebar-collapsed-content">
           <span className="library-brand-mark" aria-label="MangaFinder">
-            <img src={mangaFinderMark} alt="" />
+            <img src={mangaFinderMark} alt="" width={42} height={42} decoding="async" />
           </span>
           <button ref={expandButtonRef} onClick={expandSidebar} aria-label="展开资料库导航" title="展开资料库导航"><CaretDoubleRight size={21} /></button>
           <nav aria-label="快捷导航">
@@ -377,4 +428,4 @@ export function AuthorSidebar({
       </aside>
     </>
   )
-}
+})

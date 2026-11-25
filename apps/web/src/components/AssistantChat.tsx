@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { memo, useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '../lib/api'
 import type { AssistantCitation, AssistantMessage, AssistantProposal, AssistantReply } from '../types'
 
@@ -24,16 +24,18 @@ const examples = [
   '告诉我某位作者最近的动态和扫描情况',
 ]
 
+const assistantTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+})
+
 function formatTime(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date)
+  return assistantTimeFormatter.format(date)
 }
 
-export function AssistantChat({ open, onClose }: Props) {
+export const AssistantChat = memo(function AssistantChat({ open, onClose }: Props) {
   const [messages, setMessages] = useState<Turn[]>([welcome])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -180,4 +182,4 @@ export function AssistantChat({ open, onClose }: Props) {
       </section>
     </div>
   )
-}
+})

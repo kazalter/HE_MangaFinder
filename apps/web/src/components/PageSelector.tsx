@@ -1,5 +1,5 @@
 import { CaretDown, Check } from '@phosphor-icons/react'
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 
 interface Props {
   page: number
@@ -8,14 +8,19 @@ interface Props {
   onChange: (page: number) => void
 }
 
-export function PageSelector({ page, pageCount, totalItems, onChange }: Props) {
+export const PageSelector = memo(function PageSelector({ page, pageCount, totalItems, onChange }: Props) {
   const [open, setOpen] = useState(false)
+  const [renderGrid, setRenderGrid] = useState(false)
   const [pageInput, setPageInput] = useState(String(page))
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const panelId = useId()
-  const pages = Array.from({ length: pageCount }, (_, index) => index + 1)
+  const showGrid = open || renderGrid
+  const pages = useMemo(
+    () => (showGrid ? Array.from({ length: pageCount }, (_, index) => index + 1) : []),
+    [pageCount, showGrid],
+  )
   const inputPage = Number(pageInput)
   const inputValid = /^\d+$/.test(pageInput)
     && Number.isSafeInteger(inputPage)
@@ -23,6 +28,16 @@ export function PageSelector({ page, pageCount, totalItems, onChange }: Props) {
     && inputPage <= pageCount
 
   useEffect(() => { setPageInput(String(page)) }, [page])
+
+  useEffect(() => {
+    if (open) {
+      setRenderGrid(true)
+      return
+    }
+    if (!renderGrid) return
+    const timer = window.setTimeout(() => setRenderGrid(false), 200)
+    return () => window.clearTimeout(timer)
+  }, [open, renderGrid])
 
   useEffect(() => {
     if (!open) return
@@ -106,7 +121,7 @@ export function PageSelector({ page, pageCount, totalItems, onChange }: Props) {
         <span>页</span><button disabled={!inputValid}>前往</button>
       </form>
       <div className="page-selector-scroll" role="listbox" aria-label="可选页码" onKeyDown={navigatePages}>
-        <div className="page-selector-grid">
+        {showGrid && <div className="page-selector-grid">
           {pages.map((item) => <button
             type="button"
             role="option"
@@ -117,8 +132,8 @@ export function PageSelector({ page, pageCount, totalItems, onChange }: Props) {
             onClick={() => choose(item)}
             key={item}
           ><span>{item}</span>{item === page && <Check size={13} weight="bold" />}</button>)}
-        </div>
+        </div>}
       </div>
     </section>
   </div>
-}
+})

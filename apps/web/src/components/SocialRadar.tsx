@@ -1,10 +1,12 @@
 import { Article, ArrowsClockwise, CaretDown, GearSix, MagnifyingGlass, NewspaperClipping, UserCircle } from '@phosphor-icons/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import type { ActivityItem, Author, AuthorDigest, ReleaseSignal, SocialAccount, SocialAccountSuggestion, SocialPost, SocialStatus, WorkGroup } from '../types'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { ExpandablePanel } from './ExpandablePanel'
 import { ThemedSelect } from './ThemedSelect'
+
+const radarCollator = new Intl.Collator('zh-CN')
 
 const kindLabels: Record<string, string> = {
   new_release: '新作预告', release_preview: '样张公开', cover_reveal: '封面公开',
@@ -68,7 +70,7 @@ interface Props {
   onOpenWork: (id: number) => void
 }
 
-export function SocialRadar({ status, signals, authors, works, selectedAuthorId, busy, focusSignalId, onClose, onChanged, onOpenWork }: Props) {
+export const SocialRadar = memo(function SocialRadar({ status, signals, authors, works, selectedAuthorId, busy, focusSignalId, onClose, onChanged, onOpenWork }: Props) {
   const { closing, requestClose } = useAnimatedClose(onClose)
   const previousPending = useRef(status.processing_pending)
   const [filter, setFilter] = useState('all')
@@ -97,7 +99,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
       || author.name.toLocaleLowerCase().includes(term)
       || author.x_handle?.toLocaleLowerCase().includes(term)
       || author.x_display_name?.toLocaleLowerCase().includes(term)
-    )).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+    )).sort((left, right) => radarCollator.compare(left.name, right.name))
   }, [authorQuery, authors])
 
   async function loadAccounts() {
@@ -142,6 +144,14 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
     if (radarAuthorId && signal.author_id !== radarAuthorId) return false
     return filter === 'all' || signal.status === filter || signal.kind === filter
   }), [filter, radarAuthorId, radarSignals])
+  const evidencePostById = useMemo(() => {
+    const map = new Map<number, SocialPost>()
+    for (const post of rawPosts) map.set(post.id, post)
+    if (digest?.evidence_posts) {
+      for (const post of digest.evidence_posts) map.set(post.id, post)
+    }
+    return map
+  }, [digest?.evidence_posts, rawPosts])
 
   async function act(action: () => Promise<unknown>) {
     setLocalError(null); setLocalNotice(null)
@@ -226,7 +236,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
               <header className="radar-author-context">
                 <span className="radar-context-avatar">
                   {activeAuthor.avatar_url
-                    ? <img src={activeAuthor.avatar_url} alt="" referrerPolicy="no-referrer" />
+                    ? <img src={activeAuthor.avatar_url} alt="" referrerPolicy="no-referrer" decoding="async" />
                     : <UserCircle size={66} weight="thin" />}
                 </span>
                 <div><h3>{activeAuthor.name}</h3><span>{activeAuthor.x_handle ? `@${activeAuthor.x_handle}` : '未绑定 X 账号'}</span><small className={activeAuthor.x_sync_error ? 'error' : 'ok'}>{activeAuthor.work_count} 部作品 · {activeAuthor.x_sync_error ? '同步异常' : activeAuthor.x_last_synced_at ? '同步正常' : '等待首次同步'}</small></div>
@@ -241,7 +251,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
           </div>
             <div className="bound-accounts">
               {accounts.map((account) => <article key={account.id}>
-                {account.avatar_url ? <img src={account.avatar_url} alt="" /> : <UserCircle size={30} weight="thin" />}
+                {account.avatar_url ? <img src={account.avatar_url} alt="" loading="lazy" decoding="async" /> : <UserCircle size={30} weight="thin" />}
                 <div><a href={account.profile_url ?? `https://x.com/${account.handle}`} target="_blank" rel="noreferrer">@{account.handle}</a><small>{account.status === 'confirmed' ? `已确认 · ${account.last_synced_at ? `上次同步 ${new Date(account.last_synced_at).toLocaleString()}` : '等待首次同步'}` : '待确认'}{account.sync_error ? ` · ${account.sync_error}` : ''}</small></div>
                 <button onClick={() => void act(() => api.deleteSocialAccount(activeAuthor.id, account.id))}>移除</button>
               </article>)}
@@ -263,7 +273,7 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
         {view === 'overview' && <>
           <section className="digest-card">
             <div className="digest-heading"><div><span>ROLLING 7 DAYS</span><h3>最近 7 天摘要</h3>{status.daily_digest_enabled && <small>日报每天 {String(status.daily_digest_hour).padStart(2, '0')}:00（{status.daily_digest_timezone}）通过已启用渠道发送</small>}</div><div className="digest-buttons">{(status.qq_configured || status.webhook_configured) && status.daily_digest_enabled && <button onClick={() => void sendDailyDigest()}>立即发送今日日报</button>}<button onClick={() => void act(async () => { setDigest(await api.refreshSocialDigest(activeAuthor.id)) })}>重新总结</button></div></div>
-            {digest ? <><p className="digest-evidence-note">摘要基于采集的动态生成，判断与翻译请结合原帖核对。</p><p className="digest-summary">{digest.summary}</p><div className="digest-highlights">{digest.highlights.map((item, index) => <article className={`importance-${item.importance}`} key={`${item.text}-${index}`}><span>{activityLabels[item.category] ?? item.category} · {item.factuality === 'fact' ? '来源事实（待核对）' : item.factuality === 'plan' ? '作者计划' : '推测'}</span><p>{item.text}</p><small>证据 {item.post_ids.map((id, evidenceIndex) => { const post = digest.evidence_posts?.find((candidate) => candidate.id === id) ?? rawPosts.find((candidate) => candidate.id === id); return post ? <span key={id}>{evidenceIndex > 0 ? '、' : ''}<a href={post.url} target="_blank" rel="noreferrer">帖子 {id} ↗</a></span> : <span key={id}>{evidenceIndex > 0 ? '、' : ''}帖子 {id}</span> })}</small></article>)}</div>{digest.uncertainties.length > 0 && <div className="digest-uncertain"><strong>仍不确定</strong><ul>{digest.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></div>}<small className="digest-source">{digest.generated_by === 'agent' ? `Agent 总结 · ${digest.model ?? ''}` : '规则降级摘要'}{digest.error ? ` · Agent 暂不可用：${digest.error}` : ''}</small></> : <p className="review-empty">扫描到作者动态后，这里会生成最近 7 天摘要。</p>}
+            {digest ? <><p className="digest-evidence-note">摘要基于采集的动态生成，判断与翻译请结合原帖核对。</p><p className="digest-summary">{digest.summary}</p><div className="digest-highlights">{digest.highlights.map((item, index) => <article className={`importance-${item.importance}`} key={`${item.text}-${index}`}><span>{activityLabels[item.category] ?? item.category} · {item.factuality === 'fact' ? '来源事实（待核对）' : item.factuality === 'plan' ? '作者计划' : '推测'}</span><p>{item.text}</p><small>证据 {item.post_ids.map((id, evidenceIndex) => { const post = evidencePostById.get(id); return post ? <span key={id}>{evidenceIndex > 0 ? '、' : ''}<a href={post.url} target="_blank" rel="noreferrer">帖子 {id} ↗</a></span> : <span key={id}>{evidenceIndex > 0 ? '、' : ''}帖子 {id}</span> })}</small></article>)}</div>{digest.uncertainties.length > 0 && <div className="digest-uncertain"><strong>仍不确定</strong><ul>{digest.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul></div>}<small className="digest-source">{digest.generated_by === 'agent' ? `Agent 总结 · ${digest.model ?? ''}` : '规则降级摘要'}{digest.error ? ` · Agent 暂不可用：${digest.error}` : ''}</small></> : <p className="review-empty">扫描到作者动态后，这里会生成最近 7 天摘要。</p>}
           </section>
           <section className="activity-list">
             {activities.map((item) => { const post = item.posts.at(-1); const image = post?.media.find((media) => media.type === 'image')?.url; const availability = post ? availabilityLabel(post) : null; return <article className={`${item.is_read ? '' : 'unread'} importance-${item.importance}`} key={item.id}><div className="activity-thumb">{image ? <img src={image} alt="" loading="lazy" decoding="async" /> : <Article size={30} weight="thin" />}</div><div><div className="activity-meta"><b>{activityLabels[item.category] ?? item.category}</b><span>{item.author_name}</span><time>{new Date(item.ended_at).toLocaleString()}</time></div><h3>{item.headline}</h3><p>{item.summary}</p>{availability && <small className="post-availability">{availability}</small>}<div className="activity-actions"><span>{item.importance === 'critical' ? '紧急' : item.importance === 'high' ? '重要' : item.importance === 'normal' ? '一般' : '低优先级'} · 置信度 {Math.round(item.confidence * 100)}%</span>{post && <a href={post.url} target="_blank" rel="noreferrer" onClick={() => { void api.markActivityRead(item.id); verifyPost(post) }}>查看原帖 ↗</a>}</div></div></article> })}
@@ -307,4 +317,4 @@ export function SocialRadar({ status, signals, authors, works, selectedAuthorId,
       </section>
     </div>
   )
-}
+})

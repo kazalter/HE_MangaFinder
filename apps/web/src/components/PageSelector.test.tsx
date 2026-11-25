@@ -36,4 +36,12 @@ describe('PageSelector', () => {
     fireEvent.click(screen.getByRole('button', { name: '前往' }))
     expect(onChange).toHaveBeenCalledWith(8)
   })
+
+  it('defers rendering page option buttons until opened', () => {
+    render(<PageSelector page={1} pageCount={50} totalItems={1200} onChange={vi.fn()} />)
+    expect(screen.queryAllByRole('option', { hidden: true })).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '第 1 / 50 页' }))
+    expect(screen.getAllByRole('option')).toHaveLength(50)
+  })
 })

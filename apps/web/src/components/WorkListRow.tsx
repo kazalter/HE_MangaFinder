@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react'
 import type { WorkGroup } from '../types'
 import { CoverImage } from './CoverImage'
 import { statusMap, workAuthorLabel } from './WorkCard'
@@ -6,6 +6,7 @@ import { statusMap, workAuthorLabel } from './WorkCard'
 const previewOpenDelayMs = 70
 const previewCloseDelayMs = 140
 const scrollCooldownMs = 180
+const listDateFormatter = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
 
 type PreviewCloser = (restoreAnchor?: boolean) => void
 
@@ -15,6 +16,7 @@ let previewSuppressedUntil = 0
 let internalScrollUntil = 0
 let scrollResumeTimer: number | null = null
 let globalPreviewListenersReady = false
+let mountedRowCount = 0
 
 function closeActivePreview(restoreAnchor = false) {
   const close = activePreviewCloser
@@ -30,34 +32,59 @@ function adjustViewport(delta: number) {
   return window.scrollY - before
 }
 
+const suppressDuringScroll = () => {
+  previewSuppressedUntil = Date.now() + scrollCooldownMs
+  closeActivePreview(false)
+  if (scrollResumeTimer !== null) window.clearTimeout(scrollResumeTimer)
+  scrollResumeTimer = window.setTimeout(() => {
+    scrollResumeTimer = null
+    previewSuppressedUntil = 0
+    hoveredPreviewStarter?.()
+  }, scrollCooldownMs)
+}
+
+const handleGlobalScroll = () => {
+  const now = Date.now()
+  if (now < internalScrollUntil) return
+  if (!activePreviewCloser && !hoveredPreviewStarter) {
+    previewSuppressedUntil = now + scrollCooldownMs
+    return
+  }
+  suppressDuringScroll()
+}
+
+const handleGlobalWheel = () => {
+  internalScrollUntil = 0
+  if (!activePreviewCloser && !hoveredPreviewStarter) {
+    previewSuppressedUntil = Date.now() + scrollCooldownMs
+    return
+  }
+  suppressDuringScroll()
+}
+
+const closeForViewportChange = () => {
+  previewSuppressedUntil = Date.now() + scrollCooldownMs
+  closeActivePreview(false)
+}
+
 function ensureGlobalPreviewListeners() {
   if (globalPreviewListenersReady || typeof window === 'undefined') return
-  const suppressDuringScroll = () => {
-    previewSuppressedUntil = Date.now() + scrollCooldownMs
-    closeActivePreview(false)
-    if (scrollResumeTimer !== null) window.clearTimeout(scrollResumeTimer)
-    scrollResumeTimer = window.setTimeout(() => {
-      scrollResumeTimer = null
-      previewSuppressedUntil = 0
-      hoveredPreviewStarter?.()
-    }, scrollCooldownMs)
-  }
-  const handleScroll = () => {
-    if (Date.now() < internalScrollUntil) return
-    suppressDuringScroll()
-  }
-  const handleWheel = () => {
-    internalScrollUntil = 0
-    suppressDuringScroll()
-  }
-  const closeForViewportChange = () => {
-    previewSuppressedUntil = Date.now() + scrollCooldownMs
-    closeActivePreview(false)
-  }
-  window.addEventListener('wheel', handleWheel, { passive: true })
-  window.addEventListener('scroll', handleScroll, { capture: true, passive: true })
+  window.addEventListener('wheel', handleGlobalWheel, { passive: true })
+  window.addEventListener('scroll', handleGlobalScroll, { capture: true, passive: true })
   window.addEventListener('resize', closeForViewportChange, { passive: true })
   globalPreviewListenersReady = true
+}
+
+function releaseGlobalPreviewListeners() {
+  if (!globalPreviewListenersReady || typeof window === 'undefined') return
+  window.removeEventListener('wheel', handleGlobalWheel)
+  window.removeEventListener('scroll', handleGlobalScroll, { capture: true })
+  window.removeEventListener('resize', closeForViewportChange)
+  if (scrollResumeTimer !== null) {
+    window.clearTimeout(scrollResumeTimer)
+    scrollResumeTimer = null
+  }
+  globalPreviewListenersReady = false
 }
 
 function supportsHoverPreview() {
@@ -65,12 +92,10 @@ function supportsHoverPreview() {
 }
 
 function displayDate(value: string | null) {
-  return value
-    ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(value))
-    : '来源时间未知'
+  return value ? listDateFormatter.format(new Date(value)) : '来源时间未知'
 }
 
-export function WorkListRow({
+export const WorkListRow = memo(function WorkListRow({
   work,
   onOpen,
 }: {
@@ -82,6 +107,14 @@ export function WorkListRow({
   const pointerYRef = useRef<number | null>(null)
   const anchorScrollRef = useRef(0)
   const [preview, setPreview] = useState(false)
+
+  useEffect(() => {
+    mountedRowCount += 1
+    return () => {
+      mountedRowCount = Math.max(0, mountedRowCount - 1)
+      if (mountedRowCount === 0) releaseGlobalPreviewListeners()
+    }
+  }, [])
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current)
@@ -151,17 +184,14 @@ export function WorkListRow({
 
     const alignRowCenter = () => {
       const rect = row.getBoundingClientRect()
-      if (rect.height <= 0) return
+      if (rect.height <= 0) return false
       anchorScrollRef.current += adjustViewport(rect.top + rect.height / 2 - targetY)
+      return true
     }
-    alignRowCenter()
-    if (typeof ResizeObserver === 'undefined') {
-      const frame = window.requestAnimationFrame(alignRowCenter)
+    if (!alignRowCenter()) {
+      const frame = window.requestAnimationFrame(() => { alignRowCenter() })
       return () => window.cancelAnimationFrame(frame)
     }
-    const observer = new ResizeObserver(alignRowCenter)
-    observer.observe(row)
-    return () => observer.disconnect()
   }, [preview])
 
   useEffect(() => () => {
@@ -210,4 +240,4 @@ export function WorkListRow({
       </span>
     </button>
   )
-}
+})

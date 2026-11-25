@@ -1,8 +1,9 @@
+import { memo } from 'react'
 import type { WorkGroup } from '../types'
 import { CoverImage } from './CoverImage'
 import { statusMap, workAuthorLabel } from './WorkCard'
 
-export function WorkCoverTile({
+export const WorkCoverTile = memo(function WorkCoverTile({
   work,
   onOpen,
 }: {
@@ -31,4 +32,4 @@ export function WorkCoverTile({
       </span>
     </button>
   )
-}
+})

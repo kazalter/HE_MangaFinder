@@ -1,5 +1,5 @@
 import { ImageSquare, MagnifyingGlass, ShieldCheck } from '@phosphor-icons/react'
-import { useState, type ChangeEvent } from 'react'
+import { memo, useState, type ChangeEvent } from 'react'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { api } from '../lib/api'
 import type { ImageSearchMatch } from '../types'
@@ -16,7 +16,7 @@ const confidenceLabels: Record<ImageSearchMatch['confidence'], string> = {
   possible: '可能相似',
 }
 
-export function ImageSearch({ onClose, onOpenWork }: Props) {
+export const ImageSearch = memo(function ImageSearch({ onClose, onOpenWork }: Props) {
   const { closing, requestClose } = useAnimatedClose(onClose)
   const [results, setResults] = useState<ImageSearchMatch[]>([])
   const [searching, setSearching] = useState(false)
@@ -56,7 +56,7 @@ export function ImageSearch({ onClose, onOpenWork }: Props) {
         {error && <div className="alert" role="alert"><span>{error}</span></div>}
         <div className="image-search-results">
           {results.map((item) => <button key={item.group_id} onClick={() => onOpenWork(item.group_id)}>
-            <CoverImage src={item.cover_url} alt="" fallback={<span>冊</span>} />
+            <CoverImage src={item.cover_url} alt="" loading="lazy" fallback={<span>冊</span>} />
             <span><strong>{item.group_title}</strong><small>{item.edition_title}</small><em>{confidenceLabels[item.confidence]} · 距离 {item.distance} · {item.mode === 'crop' ? '裁切匹配' : '全图匹配'}</em><small>{item.evidence.join(' · ')}</small></span>
           </button>)}
           {searched && !results.length && <div className="dashboard-empty compact"><ImageSquare size={28} /><p>本地资料库中没有达到保守阈值的相似封面。</p></div>}
@@ -64,4 +64,4 @@ export function ImageSearch({ onClose, onOpenWork }: Props) {
       </section>
     </div>
   )
-}
+})

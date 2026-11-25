@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { WorkGroup } from '../types'
 import { CoverImage } from './CoverImage'
 
@@ -9,7 +10,7 @@ export function workAuthorLabel(work: WorkGroup) {
   return work.authors.map((author) => author.name).join('、') || '未关联作者'
 }
 
-export function WorkCard({ work, onOpen }: { work: WorkGroup, onOpen: (work: WorkGroup) => void }) {
+export const WorkCard = memo(function WorkCard({ work, onOpen }: { work: WorkGroup, onOpen: (work: WorkGroup) => void }) {
   return (
     <article
       className="work-card"
@@ -50,4 +51,4 @@ export function WorkCard({ work, onOpen }: { work: WorkGroup, onOpen: (work: Wor
       </div>
     </article>
   )
-}
+})

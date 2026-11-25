@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowClockwise, Books, CheckCircle, GitMerge, WarningCircle } from '@phosphor-icons/react'
 import { api } from '../lib/api'
 import type { CatalogEvent, FailedDownload, MergeSuggestion, PlannedRelease, WorkGroup } from '../types'
@@ -6,9 +6,14 @@ import type { CatalogEvent, FailedDownload, MergeSuggestion, PlannedRelease, Wor
 type Tab = 'all' | 'discovery' | 'merges' | 'planned' | 'failures'
 type LoadKey = 'discovery' | 'merges' | 'planned' | 'failures'
 const labels: Record<LoadKey, string> = { discovery: '新发现', merges: '聚合候选', planned: '待发布命中', failures: '下载失败' }
-const date = (value: string | null) => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString('zh-CN') : '时间未知'
+const todoDateFormatter = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' })
+const date = (value: string | null) => {
+  if (!value) return '时间未知'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? '时间未知' : todoDateFormatter.format(parsed)
+}
 
-export function TodoWorkbench({ works, onOpenWork, onOpenReviews, onChanged }: {
+export const TodoWorkbench = memo(function TodoWorkbench({ works, onOpenWork, onOpenReviews, onChanged }: {
   works: WorkGroup[]
   onOpenWork: (id: number) => void
   onOpenReviews: () => void
@@ -85,8 +90,10 @@ export function TodoWorkbench({ works, onOpenWork, onOpenReviews, onChanged }: {
   const counts: Record<LoadKey, number> = { discovery: events.length, merges: merges.length, planned: planned.length, failures: failures.length }
   const tabs: Array<{ id: Tab, title: string }> = [{ id: 'all', title: '全部' }, ...Object.entries(labels).map(([id, title]) => ({ id: id as LoadKey, title }))]
   const show = (key: LoadKey) => tab === 'all' || tab === key
-  const displayedEvents = tab === 'all' ? events.slice(0, 5) : events
-  const allDisplayedSelected = displayedEvents.length > 0 && displayedEvents.every((event) => selected.includes(event.id))
+  const displayedEvents = useMemo(() => (tab === 'all' ? events.slice(0, 5) : events), [events, tab])
+  const selectedSet = useMemo(() => new Set(selected), [selected])
+  const workById = useMemo(() => new Map(works.map((work) => [work.id, work])), [works])
+  const allDisplayedSelected = displayedEvents.length > 0 && displayedEvents.every((event) => selectedSet.has(event.id))
 
   return <section className="todo-workbench">
     <header className="todo-header"><div><h1>待办工作台</h1><p>把发现、审核和异常放在一起，逐项处理。</p></div><button onClick={() => { setMessage(''); void load() }} disabled={loading || busy}><ArrowClockwise size={18} /> 刷新</button></header>
@@ -98,8 +105,8 @@ export function TodoWorkbench({ works, onOpenWork, onOpenReviews, onChanged }: {
       {failed.includes('discovery') ? <p className="todo-problem">新发现加载失败，请刷新重试。</p> : <>
         {events.length > 0 && <div className="todo-bulk"><label><input type="checkbox" checked={allDisplayedSelected} onChange={(e) => setSelected(e.target.checked ? displayedEvents.map((event) => event.id) : [])} /> 全选当前展示</label><span>已选 {selected.length} 条</span><button disabled={!selected.length || busy} onClick={() => void bulk('read')}>标为已读</button><button disabled={!selected.length || busy} onClick={() => void bulk('ignored')}>忽略所选</button></div>}
         <div className="todo-list">{displayedEvents.map((event) => <article className="todo-row" key={event.id}>
-          <input type="checkbox" aria-label={`选择 ${event.title}`} checked={selected.includes(event.id)} onChange={(e) => setSelected((old) => e.target.checked ? [...old, event.id] : old.filter((id) => id !== event.id))} />
-          <div className="todo-cover">{event.cover_url ? <img src={event.cover_url} alt="" loading="lazy" /> : <Books size={22} />}</div>
+          <input type="checkbox" aria-label={`选择 ${event.title}`} checked={selectedSet.has(event.id)} onChange={(e) => setSelected((old) => e.target.checked ? [...old, event.id] : old.filter((id) => id !== event.id))} />
+          <div className="todo-cover">{event.cover_url ? <img src={event.cover_url} alt="" loading="lazy" decoding="async" width={48} height={62} /> : <Books size={22} />}</div>
           <div className="todo-copy"><small>{event.event_type === 'work_discovered' ? '新作品' : '新版本'} / {event.provider}</small><strong>{event.title}</strong><span>{event.author_name} · {date(event.created_at)}</span></div>
           <div className="todo-actions"><button disabled={!event.group_id || busy} onClick={() => event.group_id && onOpenWork(event.group_id)}>查看作品</button><button disabled={busy} onClick={() => void act(() => api.updateDiscoveryEvent(event.id, 'interested'), '已标记感兴趣')}>感兴趣</button><button disabled={busy} onClick={() => void act(() => api.updateDiscoveryEvent(event.id, 'read'), '已标记已读')}>已读</button><button disabled={busy} onClick={() => void act(() => api.updateDiscoveryEvent(event.id, 'ignored'), '已忽略')}>忽略</button></div>
         </article>)}</div>
@@ -112,10 +119,10 @@ export function TodoWorkbench({ works, onOpenWork, onOpenReviews, onChanged }: {
       {failed.includes('merges') ? <p className="todo-problem">聚合候选加载失败，请刷新重试。</p> : <div className="todo-list">{merges.map((item) => <article className="todo-row" key={item.id}><GitMerge className="todo-icon" size={21} /><div className="todo-copy"><small>相似度 {Math.round(item.confidence * 100)}%</small><strong>{item.source_title} ↔ {item.target_title}</strong><span>{item.reasons.join(' / ')}{item.hard_conflicts.length ? ' / 存在硬冲突，请查看完整证据' : ''}</span></div><div className="todo-actions"><button disabled={busy} onClick={() => onOpenWork(item.source_group_id)}>查看作品</button><button disabled={busy} onClick={() => void act(() => api.rejectSuggestion(item.id), '已保持分开')}>保持分开</button><button disabled={busy} onClick={() => { if (window.confirm(`确认将《${item.source_title}》和《${item.target_title}》合并？`)) void act(() => api.acceptSuggestion(item.id), '已合并作品') }}>确认合并</button></div></article>)}{!merges.length && !loading && <p className="todo-empty"><CheckCircle size={19} /> 暂无聚合候选。</p>}</div>}
     </section>}
     {show('planned') && <section className="todo-section" aria-label="待发布命中"><header><div><h2>待发布命中</h2><p>来源发现了可能对应的作品，确认后建立关联。</p></div></header>
-      {failed.includes('planned') ? <p className="todo-problem">待发布命中加载失败，请刷新重试。</p> : <div className="todo-list">{planned.map((item) => { const target = works.find((work) => work.id === item.suggested_group_id); return <article className="todo-row" key={item.id}><Books className="todo-icon" size={21} /><div className="todo-copy"><small>{item.author_name} · {date(item.updated_at)}</small><strong>{item.title}</strong><span>可能对应：{target?.title ?? `作品 #${item.suggested_group_id}`}</span></div><div className="todo-actions"><button disabled={busy || !item.suggested_group_id} onClick={() => item.suggested_group_id && onOpenWork(item.suggested_group_id)}>查看候选</button><button disabled={busy || !item.suggested_group_id} onClick={() => { if (item.suggested_group_id && window.confirm(`确认将《${item.title}》关联到《${target?.title ?? `作品 #${item.suggested_group_id}`}》？`)) void act(() => api.linkPlannedMatch(item.id, item.suggested_group_id!), '已关联作品') }}>确认关联</button></div></article> })}{!planned.length && !loading && <p className="todo-empty"><CheckCircle size={19} /> 暂无待确认命中。</p>}{planned.length === 300 && <p className="todo-hint">当前显示最近 300 条命中。</p>}</div>}
+      {failed.includes('planned') ? <p className="todo-problem">待发布命中加载失败，请刷新重试。</p> : <div className="todo-list">{planned.map((item) => { const target = item.suggested_group_id !== null ? workById.get(item.suggested_group_id) : undefined; return <article className="todo-row" key={item.id}><Books className="todo-icon" size={21} /><div className="todo-copy"><small>{item.author_name} · {date(item.updated_at)}</small><strong>{item.title}</strong><span>可能对应：{target?.title ?? `作品 #${item.suggested_group_id}`}</span></div><div className="todo-actions"><button disabled={busy || !item.suggested_group_id} onClick={() => item.suggested_group_id && onOpenWork(item.suggested_group_id)}>查看候选</button><button disabled={busy || !item.suggested_group_id} onClick={() => { if (item.suggested_group_id && window.confirm(`确认将《${item.title}》关联到《${target?.title ?? `作品 #${item.suggested_group_id}`}》？`)) void act(() => api.linkPlannedMatch(item.id, item.suggested_group_id!), '已关联作品') }}>确认关联</button></div></article> })}{!planned.length && !loading && <p className="todo-empty"><CheckCircle size={19} /> 暂无待确认命中。</p>}{planned.length === 300 && <p className="todo-hint">当前显示最近 300 条命中。</p>}</div>}
     </section>}
     {show('failures') && <section className="todo-section" aria-label="下载失败"><header><div><h2>下载失败</h2><p>仅显示同一版本最近一次仍失败的任务；重新下载前会检查 HE Manager 馆藏。</p></div></header>
       {failed.includes('failures') ? <p className="todo-problem">下载失败记录加载失败，请刷新重试。</p> : <div className="todo-list">{failures.map(({ job, work_title, group_id }) => <article className="todo-row" key={job.id}><WarningCircle className="todo-icon danger" size={21} /><div className="todo-copy"><small>{String(job.payload.provider ?? '来源未知')} · {date(job.finished_at ?? job.created_at)}</small><strong>{work_title ?? `作品 #${String(job.payload.work_id ?? '未知')}`}</strong><span>{job.error || '未返回具体原因'} · 已尝试 {job.attempts} 次</span></div><div className="todo-actions"><button disabled={busy || !group_id} onClick={() => group_id && onOpenWork(group_id)}>打开作品重新下载</button></div></article>)}{!failures.length && !loading && <p className="todo-empty"><CheckCircle size={19} /> 暂无未恢复的下载失败。</p>}{moreFailures && <p className="todo-hint">当前显示最近 100 条未恢复的下载失败。</p>}</div>}
     </section>}
   </section>
-}
+})
