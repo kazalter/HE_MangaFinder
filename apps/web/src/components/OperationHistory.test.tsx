@@ -14,7 +14,7 @@ describe('OperationHistory', () => {
     undo.mockResolvedValue({ ...row, undone_at: '2026-11-02T10:00:00Z' })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const changed = vi.fn().mockResolvedValue(undefined)
-    render(<OperationHistory onClose={vi.fn()} onChanged={changed} />)
+    render(<OperationHistory onChanged={changed} />)
     expect(await screen.findByText('合并作品')).toBeInTheDocument()
     expect(screen.getByText(/整理前 2 部 → 整理后 1 部/)).toBeInTheDocument()
     expect(screen.getByText('版本 20：作品组 2 → 1')).toBeInTheDocument()

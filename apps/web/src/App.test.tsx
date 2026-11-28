@@ -65,6 +65,8 @@ vi.mock('./lib/api', () => ({
       daily_digest_timezone: 'Asia/Shanghai',
     }),
     socialRadar: vi.fn().mockResolvedValue([]),
+    plannedMatches: vi.fn().mockResolvedValue([]),
+    failedDownloads: vi.fn().mockResolvedValue({ items: [], has_more: false }),
     dashboard: vi.fn().mockResolvedValue({
       period_days: 30,
       summary: { authors: 2, works: 2, editions: 3, new_works: 0, new_editions: 0, unread_discoveries: 0, pending_merges: 0, pending_signals: 0, failed_provider_scans: 0, incomplete_works: 1 },
@@ -267,5 +269,18 @@ describe('catalog views', () => {
 
     expect(await screen.findByRole('heading', { name: '作品总览' })).toBeInTheDocument()
     expect(screen.queryByText('X 动态同步失败')).not.toBeInTheDocument()
+  })
+
+  it('exposes search, image search, and refresh buttons in works topbar and defaults fresh visits to workspace', async () => {
+    render(<App />)
+    await screen.findByRole('heading', { name: '作品总览' })
+    expect(screen.getByRole('button', { name: '以图搜库' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '刷新作品' })).toBeInTheDocument()
+    cleanup()
+
+    window.localStorage.clear()
+    window.history.replaceState(null, '', '/?view=overview')
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: '工作台' })).toBeInTheDocument()
   })
 })

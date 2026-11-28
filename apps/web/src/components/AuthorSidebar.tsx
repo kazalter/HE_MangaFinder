@@ -4,10 +4,7 @@ import {
   CaretDoubleLeft,
   CaretDoubleRight,
   ChartBar,
-  ClockCounterClockwise,
-  ClipboardText,
   Check,
-  Crosshair,
   GearSix,
   ListMagnifyingGlass,
   MagnifyingGlass,
@@ -51,6 +48,7 @@ interface Props {
   sources: Source[]
   selectedId: number | null
   libraryMode: LibraryMode
+  todoCount?: number
   busy: boolean
   onSelect: (id: number | null) => void
   onModeChange: (mode: LibraryMode) => void
@@ -60,9 +58,7 @@ interface Props {
   settingsActive?: boolean
   onExpandedChange?: (expanded: boolean) => void
   onOpenSettings: () => void
-  onOpenRadar: () => void
   onOpenAssistant?: () => void
-  onOpenHistory?: () => void
 }
 
 interface SidebarAuthorRowProps {
@@ -117,6 +113,7 @@ export const AuthorSidebar = memo(function AuthorSidebar({
   sources,
   selectedId,
   libraryMode,
+  todoCount = 0,
   busy,
   onSelect,
   onModeChange,
@@ -126,9 +123,7 @@ export const AuthorSidebar = memo(function AuthorSidebar({
   settingsActive = false,
   onExpandedChange,
   onOpenSettings,
-  onOpenRadar,
   onOpenAssistant,
-  onOpenHistory,
 }: Props) {
   const [query, setQuery] = useState('')
   const [name, setName] = useState('')
@@ -288,6 +283,8 @@ export const AuthorSidebar = memo(function AuthorSidebar({
     updateSidebarState(true, () => collapseButtonRef.current)
   }
 
+  const todoBadge = todoCount > 99 ? '99+' : todoCount > 0 ? String(todoCount) : null
+
   return (
     <>
       <button className="sidebar-mobile-trigger" onClick={() => setMobileOpen(true)} aria-label="打开资料库导航">
@@ -301,7 +298,7 @@ export const AuthorSidebar = memo(function AuthorSidebar({
         aria-label="资料库导航"
         aria-hidden={mobileViewport ? !mobileOpen : false}
       >
-        <div className="sidebar-expanded-content">
+        <div className="sidebar-expanded-content" aria-hidden={mobileViewport ? undefined : !expanded}>
           <header className="library-brand-row">
             <span className="library-brand-mark" aria-hidden="true">
               <img src={mangaFinderMark} alt="" width={46} height={46} decoding="async" />
@@ -316,24 +313,39 @@ export const AuthorSidebar = memo(function AuthorSidebar({
             </button>
           </header>
 
-          <div className="library-tabs" role="group" aria-label="资料库范围">
-            <button className={libraryMode === 'overview' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('overview')}>总览</button>
-            <button className={libraryMode === 'todo' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('todo')}>待办</button>
-            <button className={libraryMode === 'works' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('works')}>作品</button>
-            <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('authors')}>作者 <span>{authors.length}</span></button>
-          </div>
-
-          <button className={`library-all-works ${libraryMode === 'works' && selectedId === null && !settingsActive ? 'active' : ''}`} onClick={() => selectAuthor(null)}>
-            <SquaresFour size={18} weight="fill" /><b>全部作品</b><span>{totalWorks}</span>
-          </button>
+          <nav className="library-tabs" aria-label="主导航">
+            <button
+              className={libraryMode === 'workspace' && !settingsActive ? 'active' : ''}
+              onClick={() => navigateMode('workspace')}
+            >
+              工作台{todoBadge ? <> <span>{todoBadge}</span></> : null}
+            </button>
+            <button
+              className={libraryMode === 'works' && !settingsActive ? 'active' : ''}
+              onClick={() => navigateMode('works')}
+            >
+              作品 <span>{totalWorks}</span>
+            </button>
+            <button
+              className={libraryMode === 'authors' && !settingsActive ? 'active' : ''}
+              onClick={() => navigateMode('authors')}
+            >
+              作者 <span>{authors.length}</span>
+            </button>
+          </nav>
 
           <section className="library-find-author">
-            <h2>查找作者</h2>
+            <div className="library-filter-heading">
+              <h2>按作者浏览作品</h2>
+              {libraryMode === 'works' && selectedId !== null && (
+                <button className="library-filter-reset" onClick={() => selectAuthor(null)}>查看全部 ({totalWorks})</button>
+              )}
+            </div>
             <div className="library-find-row">
               <label>
                 <MagnifyingGlass size={16} />
                 <span className="sr-only">搜索作者</span>
-                <input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：浅野一二〇" />
+                <input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索或筛选作者…" />
               </label>
               <button className={addOpen ? 'active' : ''} onClick={() => setAddOpen((value) => !value)} aria-label={addOpen ? '取消添加作者' : '添加作者'} aria-expanded={addOpen} aria-controls="library-add-panel">
                 <Plus size={20} />
@@ -356,7 +368,7 @@ export const AuthorSidebar = memo(function AuthorSidebar({
                   key={`pinned-${author.id}`}
                   author={author}
                   pinned
-                  active={selectedId === author.id}
+                  active={libraryMode === 'works' && selectedId === author.id}
                   isPinned={pinnedSet.has(author.id)}
                   managing={managing}
                   onSelect={selectAuthor}
@@ -383,7 +395,7 @@ export const AuthorSidebar = memo(function AuthorSidebar({
                   <SidebarAuthorRow
                     key={`all-${author.id}`}
                     author={author}
-                    active={selectedId === author.id}
+                    active={libraryMode === 'works' && selectedId === author.id}
                     isPinned={pinnedSet.has(author.id)}
                     managing={managing}
                     onSelect={selectAuthor}
@@ -397,30 +409,29 @@ export const AuthorSidebar = memo(function AuthorSidebar({
           </div>
 
           <footer className="library-sidebar-footer">
-            <nav className="library-quick-actions" aria-label="工具">
-              <button className="library-assistant-action" onClick={() => { onOpenAssistant?.(); setMobileOpen(false) }}><Sparkle size={19} /><span>AI 助手</span></button>
-              {onOpenHistory && <button onClick={() => { onOpenHistory(); setMobileOpen(false) }}><ClockCounterClockwise size={19} /><span>整理记录</span></button>}
-              <button className={settingsActive ? 'active' : ''} onClick={() => { onOpenSettings(); setMobileOpen(false) }}><GearSix size={19} /><span>系统设置</span></button>
+            <nav className="library-quick-actions" aria-label="全局工具">
+              <button className="library-assistant-action" onClick={() => { onOpenAssistant?.(); setMobileOpen(false) }}><Sparkle size={18} /><span>AI 助手</span></button>
+              <button className={settingsActive ? 'active' : ''} onClick={() => { onOpenSettings(); setMobileOpen(false) }}><GearSix size={18} /><span>系统设置</span></button>
             </nav>
             <div className="library-source-status"><span className="status-dot" /><div><b>{sources.length} 个来源已启用</b><small>{sources.map((source) => source.display_name).join(' · ') || '正在连接'}</small></div></div>
           </footer>
         </div>
 
-        <div className="sidebar-collapsed-content">
+        <div className="sidebar-collapsed-content" aria-hidden={mobileViewport ? true : expanded}>
           <span className="library-brand-mark" aria-label="MangaFinder">
             <img src={mangaFinderMark} alt="" width={42} height={42} decoding="async" />
           </span>
           <button ref={expandButtonRef} onClick={expandSidebar} aria-label="展开资料库导航" title="展开资料库导航"><CaretDoubleRight size={21} /></button>
           <nav aria-label="快捷导航">
-            <button className={libraryMode === 'overview' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('overview')} aria-label="资料库总览" title="资料库总览"><ChartBar size={21} /></button>
-            <button className={libraryMode === 'todo' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('todo')} aria-label="待办工作台" title="待办工作台"><ClipboardText size={21} /></button>
-            <button className={libraryMode === 'works' && selectedId === null && !settingsActive ? 'active' : ''} onClick={() => selectAuthor(null)} aria-label="全部作品" title="全部作品"><SquaresFour size={21} /></button>
-            <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('authors')} aria-label="作者" title="作者"><User size={22} /></button>
-            <button onClick={onOpenRadar} aria-label="动态雷达" title="动态雷达"><Crosshair size={22} /></button>
-            <button onClick={() => onOpenAssistant?.()} aria-label="AI 助手" title="AI 助手"><Sparkle size={21} /></button>
-            {onOpenHistory && <button onClick={onOpenHistory} aria-label="整理记录" title="整理记录"><ClockCounterClockwise size={21} /></button>}
+            <button className={libraryMode === 'workspace' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('workspace')} aria-label="工作台" title="工作台">
+              <ChartBar size={21} />
+              {todoBadge && <em className="collapsed-badge">{todoBadge}</em>}
+            </button>
+            <button className={libraryMode === 'works' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('works')} aria-label="作品库" title="作品库"><SquaresFour size={21} /></button>
+            <button className={libraryMode === 'authors' && !settingsActive ? 'active' : ''} onClick={() => navigateMode('authors')} aria-label="作者中心" title="作者中心"><User size={22} /></button>
           </nav>
           <div>
+            <button onClick={() => onOpenAssistant?.()} aria-label="AI 助手" title="AI 助手"><Sparkle size={21} /></button>
             <button className={settingsActive ? 'active' : ''} onClick={onOpenSettings} aria-label="系统设置" title="系统设置"><GearSix size={22} /></button>
             <span className="collapsed-source-status" title={`${sources.length} 个来源已启用`}><span className="status-dot" /></span>
           </div>

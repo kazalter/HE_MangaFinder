@@ -23,7 +23,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof AuthorSidebar>[0]> =
     onRefresh: vi.fn().mockResolvedValue(undefined),
     onDelete: vi.fn().mockResolvedValue(undefined),
     onOpenSettings: vi.fn(),
-    onOpenRadar: vi.fn(),
+    onOpenAssistant: vi.fn(),
     ...overrides,
   }
   return { ...render(<AuthorSidebar {...props} />), props }
@@ -58,6 +58,14 @@ describe('AuthorSidebar', () => {
     expect(props.onSelect).toHaveBeenCalledWith(3)
   })
 
+  it('shows todo badge on workspace and reset link when filtering works by an author', () => {
+    const { props } = renderSidebar({ selectedId: 2, todoCount: 4 })
+
+    expect(screen.getByRole('button', { name: '工作台 4' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看全部 (25)' }))
+    expect(props.onSelect).toHaveBeenCalledWith(null)
+  })
+
   it('uses the confirmed X account avatar when the author has one', () => {
     const { container } = renderSidebar()
 
@@ -72,12 +80,15 @@ describe('AuthorSidebar', () => {
     expect(props.onModeChange).toHaveBeenCalledWith('authors')
   })
 
-  it('persists the collapsed state and opens again from the compact rail', () => {
-    renderSidebar()
+  it('persists the collapsed state and keeps parity across expanded and compact rails', () => {
+    renderSidebar({ todoCount: 2 })
 
     fireEvent.click(screen.getByRole('button', { name: '收起资料库导航' }))
     expect(screen.getByLabelText('资料库导航')).toHaveClass('collapsed')
     expect(window.localStorage.getItem('mangafinder:library-sidebar-expanded')).toBe('false')
+    expect(screen.getByRole('button', { name: '工作台' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '作品库' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '作者中心' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '展开资料库导航' }))
     expect(screen.getByLabelText('资料库导航')).toHaveClass('expanded')
@@ -141,7 +152,7 @@ describe('AuthorSidebar', () => {
       addEventListener: vi.fn(), removeEventListener: vi.fn(),
     }))
     const { props } = renderSidebar()
-    for (const [name, mode] of [['总览', 'overview'], ['作品', 'works'], ['作者 3', 'authors']] as const) {
+    for (const [name, mode] of [['工作台', 'workspace'], ['作品 25', 'works'], ['作者 3', 'authors']] as const) {
       fireEvent.click(screen.getByRole('button', { name: '打开资料库导航' }))
       fireEvent.click(screen.getByRole('button', { name }))
       expect(props.onModeChange).toHaveBeenLastCalledWith(mode)

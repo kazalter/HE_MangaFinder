@@ -1,7 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Author, ReleaseSignal, SocialStatus, WorkGroup } from '../types'
-import { SocialRadar } from './SocialRadar'
+import { AuthorXAccountsPanel, SocialRadar } from './SocialRadar'
 
 const apiMocks = vi.hoisted(() => ({
   socialAccounts: vi.fn(),
@@ -13,10 +13,18 @@ const apiMocks = vi.hoisted(() => ({
 
 vi.mock('../lib/api', () => ({ api: apiMocks }))
 
-const authors: Author[] = [
-  { id: 1, name: '作者甲', avatar_url: null, x_handle: 'author_a', x_display_name: null, x_last_synced_at: '2026-07-19T06:00:00Z', x_sync_error: null, created_at: '', last_checked_at: null, work_count: 12 },
-  { id: 2, name: '作者乙', avatar_url: null, x_handle: 'author_b', x_display_name: null, x_last_synced_at: null, x_sync_error: null, created_at: '', last_checked_at: null, work_count: 8 },
-]
+const author: Author = {
+  id: 1,
+  name: '作者甲',
+  avatar_url: null,
+  x_handle: 'author_a',
+  x_display_name: null,
+  x_last_synced_at: '2026-07-19T06:00:00Z',
+  x_sync_error: null,
+  created_at: '',
+  last_checked_at: null,
+  work_count: 12,
+}
 
 const status: SocialStatus = {
   enabled: true,
@@ -33,7 +41,7 @@ const status: SocialStatus = {
   daily_digest_timezone: 'Asia/Shanghai',
 }
 
-describe('SocialRadar author rail', () => {
+describe('SocialRadar inline panel', () => {
   beforeEach(() => {
     window.localStorage.clear()
     apiMocks.socialAccounts.mockResolvedValue([])
@@ -45,50 +53,32 @@ describe('SocialRadar author rail', () => {
 
   afterEach(cleanup)
 
-  it('switches authors inside the radar and remembers the radar-only choice', async () => {
-    render(
+  it('loads author feed views and binds X accounts cleanly in accounts panel', async () => {
+    const { rerender } = render(
       <SocialRadar
+        author={author}
         status={status}
-        signals={[]}
-        authors={authors}
         works={[]}
-        selectedAuthorId={null}
         busy={false}
         focusSignalId={null}
-        onClose={vi.fn()}
         onChanged={vi.fn().mockResolvedValue(undefined)}
         onOpenWork={vi.fn()}
       />,
     )
 
     await waitFor(() => expect(apiMocks.socialActivity).toHaveBeenCalledWith(1))
-    expect(screen.getByRole('heading', { name: '作者甲' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '立即扫描动态' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /作者乙/ }))
-    await waitFor(() => expect(apiMocks.socialActivity).toHaveBeenCalledWith(2))
-    expect(screen.getByRole('heading', { name: '作者乙' })).toBeInTheDocument()
-    expect(window.localStorage.getItem('mangafinder:radar-author')).toBe('2')
-
-    fireEvent.click(screen.getByRole('button', { name: '账号与同步' }))
-    expect(screen.getByText('作者乙 的 X 账号')).toBeInTheDocument()
-  })
-
-  it('keeps the author order and scroll position when selecting an author', async () => {
-    render(
-      <SocialRadar status={status} signals={[]} authors={authors} works={[]} selectedAuthorId={1} busy={false} focusSignalId={null}
-        onClose={vi.fn()} onChanged={vi.fn().mockResolvedValue(undefined)} onOpenWork={vi.fn()} />,
+    rerender(
+      <AuthorXAccountsPanel
+        author={author}
+        status={status}
+        busy={false}
+        onChanged={vi.fn().mockResolvedValue(undefined)}
+      />,
     )
-    const list = screen.getByRole('navigation', { name: '选择要查看动态的作者' })
-    const order = () => within(list).getAllByRole('button').map((button) => button.textContent)
-    const before = order()
-    list.scrollTop = 120
-
-    fireEvent.click(within(list).getByRole('button', { name: /作者乙/ }))
-
-    await waitFor(() => expect(apiMocks.socialActivity).toHaveBeenCalledWith(2))
-    expect(order()).toEqual(before)
-    expect(list.scrollTop).toBe(120)
-    expect(within(list).getByRole('button', { name: /作者乙/ })).toHaveAttribute('aria-current', 'true')
+    await waitFor(() => expect(apiMocks.socialAccounts).toHaveBeenCalledWith(1))
+    expect(screen.getByText('作者甲 的 X 账号')).toBeInTheDocument()
   })
 
   it('creates the large work selector only when a signal is being linked', async () => {
@@ -105,36 +95,22 @@ describe('SocialRadar author rail', () => {
     }))
     apiMocks.socialRadar.mockResolvedValue([signal])
     render(
-      <SocialRadar status={status} signals={[signal]} authors={authors} works={works} selectedAuthorId={1} busy={false} focusSignalId={null}
-        onClose={vi.fn()} onChanged={vi.fn().mockResolvedValue(undefined)} onOpenWork={vi.fn()} />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: '作品情报' }))
-    await screen.findByRole('heading', { name: '新作' })
-    expect(screen.queryByRole('option', { name: '作品 100' })).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: '关联现有作品' }))
-    expect(screen.getByRole('option', { name: '作品 100' })).toBeInTheDocument()
-  })
-
-  it('filters the author rail by name or X handle', async () => {
-    render(
       <SocialRadar
+        author={author}
         status={status}
-        signals={[]}
-        authors={authors}
-        works={[]}
-        selectedAuthorId={1}
+        works={works}
         busy={false}
         focusSignalId={null}
-        onClose={vi.fn()}
         onChanged={vi.fn().mockResolvedValue(undefined)}
         onOpenWork={vi.fn()}
       />,
     )
 
-    fireEvent.change(screen.getByLabelText('搜索雷达作者'), { target: { value: 'author_b' } })
-    expect(screen.getByRole('button', { name: /作者乙/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /作者甲/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /作品情报/ }))
+    await screen.findByRole('heading', { name: '新作' })
+    expect(screen.queryByRole('option', { name: '作品 100' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '关联现有作品' }))
+    expect(screen.getByRole('option', { name: '作品 100' })).toBeInTheDocument()
   })
 })

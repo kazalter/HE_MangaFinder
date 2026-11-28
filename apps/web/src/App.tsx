@@ -1,30 +1,29 @@
+import { ArrowsClockwise, ImageSquare } from '@phosphor-icons/react'
 import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AuthorSidebar } from './components/AuthorSidebar'
-import { Dashboard } from './components/Dashboard'
 import { PageSelector } from './components/PageSelector'
 import { ThemedSelect } from './components/ThemedSelect'
 import { WorkCard } from './components/WorkCard'
 import { WorkCoverTile } from './components/WorkCoverTile'
 import { WorkListRow } from './components/WorkListRow'
+import { Workspace, type WorkspaceTab } from './components/Workspace'
+import type { AuthorCenterTab } from './components/AuthorDirectory'
+import type { RadarFeedTab } from './components/SocialRadar'
 import { api } from './lib/api'
-import type { AgentStatus, Author, CatalogEvent, DashboardData, Edition, Job, MergeSuggestion, ReleaseSignal, SeriesCandidate, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkMetadataPatch, WorkSource } from './types'
+import type { AgentStatus, Author, DashboardData, Edition, Job, MergeSuggestion, SeriesCandidate, SocialStatus, Source, WorkGroup, WorkGroupDetail, WorkMetadataPatch, WorkSource } from './types'
 
 const loadWorkDetail = () => import('./components/WorkDetail').then((m) => ({ default: m.WorkDetail }))
 const WorkDetail = lazy(loadWorkDetail)
 const AuthorDirectory = lazy(() => import('./components/AuthorDirectory').then((m) => ({ default: m.AuthorDirectory })))
-const TodoWorkbench = lazy(() => import('./components/TodoWorkbench').then((m) => ({ default: m.TodoWorkbench })))
-const MergeReview = lazy(() => import('./components/MergeReview').then((m) => ({ default: m.MergeReview })))
-const OperationHistory = lazy(() => import('./components/OperationHistory').then((m) => ({ default: m.OperationHistory })))
 const ImageSearch = lazy(() => import('./components/ImageSearch').then((m) => ({ default: m.ImageSearch })))
 const AssistantChat = lazy(() => import('./components/AssistantChat').then((m) => ({ default: m.AssistantChat })))
-const SocialRadar = lazy(() => import('./components/SocialRadar').then((m) => ({ default: m.SocialRadar })))
 const SystemSettings = lazy(() => import('./components/SystemSettings').then((m) => ({ default: m.SystemSettings })))
 
 type ViewMode = 'cards' | 'covers' | 'list'
 type WorkFilter = 'all' | 'ongoing' | 'completed' | 'multi' | 'review'
 type WorkSort = 'first' | 'updated' | 'title' | 'year' | 'editions'
 type GroupMode = 'none' | 'author'
-export type LibraryMode = 'overview' | 'works' | 'authors' | 'todo'
+export type LibraryMode = 'workspace' | 'works' | 'authors'
 
 const JOB_LABELS: Record<string, string> = {
   discover_author: '作品发现',
@@ -45,6 +44,23 @@ function savedChoice<T extends string>(key: string, choices: readonly T[], fallb
   }
 }
 
+function savedLibraryMode(): LibraryMode {
+  const params = new URLSearchParams(window.location.search)
+  if (params.has('radar')) return 'authors'
+  const requested = params.get('view')
+  if (requested === 'workspace' || requested === 'todo' || requested === 'overview') return 'workspace'
+  if (requested === 'authors') return 'authors'
+  if (requested === 'works') return 'works'
+  try {
+    const stored = window.localStorage.getItem('mangafinder:library-mode')
+    if (stored === 'overview' || stored === 'todo' || stored === 'workspace') return 'workspace'
+    if (stored === 'works' || stored === 'authors') return stored
+  } catch {
+    // Ignore storage errors and use default workspace view.
+  }
+  return 'workspace'
+}
+
 function saveChoice(key: string, value: string) {
   try {
     window.localStorage.setItem(key, value)
@@ -61,6 +77,7 @@ export function calculateCoverColumns(width: number): number {
   const gap = width <= 600 ? 13 : 17
   return Math.max(2, Math.min(12, Math.floor((width + gap) / (idealCoverWidth + gap))))
 }
+
 const workFilterOptions: readonly { value: WorkFilter, label: string }[] = [
   { value: 'all', label: '全部作品' }, { value: 'ongoing', label: '连载中' },
   { value: 'completed', label: '已完结' }, { value: 'multi', label: '多版本' },
@@ -74,6 +91,7 @@ const workSortOptions: readonly { value: WorkSort, label: string }[] = [
 const groupOptions: readonly { value: GroupMode, label: string }[] = [
   { value: 'none', label: '不分组' }, { value: 'author', label: '按作者' },
 ]
+
 function savedAuthorId(): number | null {
   try {
     const urlValue = new URLSearchParams(window.location.search).get('author')
@@ -95,10 +113,7 @@ function saveAuthorId(id: number | null) {
   }
 }
 
-const jobTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
-  dateStyle: 'medium',
-  timeStyle: 'medium',
-})
+const jobTimeFormatter = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium' })
 const workTitleCollator = new Intl.Collator('zh-CN')
 
 function toTimestamp(value: string | null | undefined): number {
@@ -160,29 +175,26 @@ export default function App() {
   const [seriesCandidates, setSeriesCandidates] = useState<SeriesCandidate[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
-  const [discoveryEvents, setDiscoveryEvents] = useState<CatalogEvent[]>([])
   const [openedWork, setOpenedWork] = useState<WorkGroupDetail | null>(null)
-  const [reviewOpen, setReviewOpen] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
   const [imageSearchOpen, setImageSearchOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
-  const [radarOpen, setRadarOpen] = useState(() => new URLSearchParams(window.location.search).has('radar'))
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('discovery')
+  const [syncSeq, setSyncSeq] = useState(0)
   const [focusSignalId] = useState<number | null>(() => {
     const value = new URLSearchParams(window.location.search).get('radar')
     return value && /^\d+$/.test(value) ? Number(value) : null
   })
+  const [authorCenterTab, setAuthorCenterTab] = useState<AuthorCenterTab>(() => (
+    new URLSearchParams(window.location.search).has('radar') ? 'radar' : 'overview'
+  ))
+  const [authorRadarTab, setAuthorRadarTab] = useState<RadarFeedTab>(() => (
+    new URLSearchParams(window.location.search).has('radar') ? 'releases' : 'overview'
+  ))
   const [socialStatus, setSocialStatus] = useState<SocialStatus | null>(null)
-  const [socialSignals, setSocialSignals] = useState<ReleaseSignal[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(savedAuthorId)
   const [previewAuthorId, setPreviewAuthorId] = useState<number | null>(savedAuthorId)
-  const [libraryMode, setLibraryMode] = useState<LibraryMode>(() => {
-    const requested = new URLSearchParams(window.location.search).get('view')
-    if (requested === 'todo') return 'todo'
-    if (requested === 'authors') return 'authors'
-    if (requested === 'overview') return 'overview'
-    return savedChoice('mangafinder:library-mode', ['overview', 'works', 'authors', 'todo'], 'overview')
-  })
+  const [libraryMode, setLibraryMode] = useState<LibraryMode>(savedLibraryMode)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -197,11 +209,12 @@ export default function App() {
     catch { return true }
   })
   const catalogTopRef = useRef<HTMLElement>(null)
+  const radarDeepLinked = useRef(false)
   const [dismissedJobThrough, setDismissedJobThrough] = useState(() => {
     try { return Number(window.sessionStorage.getItem('mangafinder:dismissed-job-through') ?? 0) || 0 }
     catch { return 0 }
   })
-  const hasModal = !settingsOpen && Boolean(openedWork || reviewOpen || radarOpen || imageSearchOpen || historyOpen || assistantOpen)
+  const hasModal = !settingsOpen && Boolean(openedWork || imageSearchOpen || assistantOpen)
 
   const loadGeneration = useRef(0)
   const load = useCallback(async () => {
@@ -230,21 +243,32 @@ export default function App() {
       update('来源', api.sources(), setSources),
       update('聚合候选', api.mergeSuggestions(), setSuggestions),
       update('来源状态', api.socialStatus(), setSocialStatus),
+      update('资料库总览', api.dashboard(), setDashboard),
     ]
-    if (libraryMode === 'works') {
+    if (libraryMode === 'works' || libraryMode === 'workspace') {
       tasks.push(update('系列候选', api.seriesCandidates(activeAuthorId ?? undefined), setSeriesCandidates))
     }
-    if (libraryMode === 'overview') {
-      tasks.push(update('资料库总览', api.dashboard(), setDashboard))
-      tasks.push(update('新发现', api.discoveryInbox(), setDiscoveryEvents))
+    if (libraryMode === 'workspace') {
+      tasks.push(update('聚合审核状态', api.agentStatus(), setAgentStatus))
     }
-    if (reviewOpen) tasks.push(update('聚合审核状态', api.agentStatus(), setAgentStatus))
-    if (radarOpen) tasks.push(update('动态雷达', api.socialRadar(activeAuthorId ?? undefined), setSocialSignals))
     await Promise.all(tasks)
     if (loadGeneration.current === generation) {
       setError(failed.length ? `${failed.join('、')}加载失败，请重试` : null)
     }
-  }, [libraryMode, selectedId, reviewOpen, radarOpen])
+  }, [libraryMode, selectedId])
+
+  useEffect(() => {
+    if (!focusSignalId || radarDeepLinked.current) return
+    radarDeepLinked.current = true
+    void api.socialRadar().then((signals) => {
+      const target = signals.find((signal) => signal.id === focusSignalId)
+      if (!target) return
+      setPreviewAuthorId(target.author_id)
+      setLibraryMode('authors')
+      setAuthorCenterTab('radar')
+      setAuthorRadarTab('releases')
+    }).catch(() => { /* Signal lookup failed; author center still works manually. */ })
+  }, [focusSignalId])
 
   const worksScope = libraryMode === 'works' && selectedId !== null ? String(selectedId) : 'all'
   const previousWorksScope = useRef(worksScope)
@@ -292,7 +316,7 @@ export default function App() {
   useEffect(() => {
     const url = new URL(window.location.href)
     if (libraryMode === 'authors') url.searchParams.set('view', 'authors')
-    else if (libraryMode === 'overview') url.searchParams.set('view', 'overview')
+    else if (libraryMode === 'works') url.searchParams.set('view', 'works')
     else url.searchParams.delete('view')
     if (libraryMode === 'works' && selectedId !== null) url.searchParams.set('author', String(selectedId))
     else url.searchParams.delete('author')
@@ -409,6 +433,7 @@ export default function App() {
     () => jobs.find((job) => job.kind === 'download_chapter' && job.status === 'succeeded' && job.payload.output_path),
     [jobs],
   )
+  const todoCount = (dashboard?.summary.unread_discoveries ?? 0) + suggestions.length + (socialStatus?.pending_count ?? 0)
 
   useEffect(() => {
     if (!(socialStatus?.processing_pending)) return
@@ -473,15 +498,9 @@ export default function App() {
     setError(null)
     try {
       const check = await api.libraryCheck(edition.work_id, source.provider)
-      const matches = check.matches.map((item) => `• ${item.title}（${item.reason}）`).join('\n')
-      const detail = [check.message, matches].filter(Boolean).join('\n')
-      if (!window.confirm(`${detail}\n\n${check.status === 'not_found' ? '继续检查下载来源？' : '仍要继续下载吗？'}`)) return
       const chapters = await api.chapters(edition.work_id, source.provider)
       if (!chapters.length) throw new Error('这个来源暂时没有可下载章节')
-      const chapter = chapters[0]
-      const label = chapter.number ? `第 ${chapter.number} 话` : (chapter.title ?? '最新章节')
-      if (!window.confirm(`从 ${source.provider} 把《${edition.title}》${label}加入 CBZ 下载队列？`)) return
-      await api.downloadChapter(edition.work_id, source.provider, chapter.external_id, check.status !== 'not_found')
+      await api.downloadChapter(edition.work_id, source.provider, chapters[0].external_id, check.status !== 'not_found')
       await load()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '创建下载任务失败')
@@ -543,15 +562,10 @@ export default function App() {
     }))
   }, [page, pageCount])
 
-  const showDashboard = useCallback(() => {
+  const showWorkspace = useCallback((nextTab?: WorkspaceTab) => {
     setSettingsOpen(false)
-    setLibraryMode('overview')
-    setSelectedId(null)
-  }, [])
-
-  const showTodo = useCallback(() => {
-    setSettingsOpen(false)
-    setLibraryMode('todo')
+    if (nextTab) setWorkspaceTab(nextTab)
+    setLibraryMode('workspace')
     setSelectedId(null)
   }, [])
 
@@ -562,9 +576,16 @@ export default function App() {
     setSelectedId(null)
   }, [])
 
-  const showAuthorDirectory = useCallback(() => {
+  const openAuthorDirectory = useCallback((authorId?: number, focusRadar = false) => {
     setSettingsOpen(false)
     setPage(1)
+    if (authorId !== undefined) setPreviewAuthorId(authorId)
+    if (focusRadar) {
+      setAuthorCenterTab('radar')
+      setAuthorRadarTab('releases')
+    } else {
+      setAuthorCenterTab('overview')
+    }
     setLibraryMode('authors')
     setSelectedId(null)
   }, [])
@@ -584,11 +605,10 @@ export default function App() {
   }, [openAuthorWorks, showAllWorks])
 
   const handleModeChange = useCallback((mode: LibraryMode) => {
-    if (mode === 'overview') showDashboard()
-    else if (mode === 'todo') showTodo()
-    else if (mode === 'authors') showAuthorDirectory()
+    if (mode === 'workspace') showWorkspace()
+    else if (mode === 'authors') openAuthorDirectory()
     else showAllWorks()
-  }, [showAllWorks, showAuthorDirectory, showDashboard, showTodo])
+  }, [openAuthorDirectory, showAllWorks, showWorkspace])
 
   const handleAddAuthor = useCallback(
     (name: string, aliases?: string[]) => actForAuthorEdit(() => api.createAuthor(name, aliases)),
@@ -607,23 +627,12 @@ export default function App() {
     setAssistantOpen(false)
     setSettingsOpen(true)
   }, [])
-  const handleOpenRadar = useCallback(() => setRadarOpen(true), [])
   const handleOpenAssistant = useCallback(() => setAssistantOpen(true), [])
-  const handleOpenHistory = useCallback(() => {
-    setSettingsOpen(false)
-    setHistoryOpen(true)
-  }, [])
-  const handleOpenReviews = useCallback(() => setReviewOpen(true), [])
-  const handleReload = useCallback(() => { void load() }, [load])
-  const handleDashboardOpenWork = useCallback((id: number) => { void openWork(id) }, [openWork])
-  const handleSetEventState = useCallback(
-    (id: number, state: CatalogEvent['state']) => { void act(() => api.updateDiscoveryEvent(id, state)) },
-    [act],
-  )
-  const handleReadAllEvents = useCallback(
-    () => { void act(() => api.updateAllDiscoveryEvents()) },
-    [act],
-  )
+  const handleReload = useCallback(async () => {
+    await load()
+    setSyncSeq((value) => value + 1)
+  }, [load])
+  const handleOpenWorkById = useCallback((id: number) => { void openWork(id) }, [openWork])
   const handleUpdateAuthorIdentity = useCallback(
     (id: number, identity: Pick<Author, 'name'> & Partial<Pick<Author, 'aliases' | 'circle_names'>>) =>
       actForAuthorEdit(() => api.updateAuthorIdentity(id, identity)),
@@ -651,6 +660,7 @@ export default function App() {
         sources={sources}
         selectedId={settingsOpen ? -1 : selectedId}
         libraryMode={libraryMode}
+        todoCount={todoCount}
         busy={busy}
         onExpandedChange={setSidebarExpanded}
         onSelect={handleSidebarSelect}
@@ -660,41 +670,53 @@ export default function App() {
         onDelete={handleDeleteAuthor}
         settingsActive={settingsOpen}
         onOpenSettings={handleOpenSettings}
-        onOpenRadar={handleOpenRadar}
         onOpenAssistant={handleOpenAssistant}
-        onOpenHistory={handleOpenHistory}
       />
 
-      <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : libraryMode === 'overview' || libraryMode === 'todo' ? 'dashboard-main' : ''}>
+      <main className={settingsOpen ? 'settings-main' : libraryMode === 'authors' ? 'author-directory-main' : libraryMode === 'workspace' ? 'dashboard-main' : ''}>
         {error && <div className="alert" role="alert">
           <div className="alert-copy"><strong>操作失败</strong><span>{error}</span></div>
           <button className="alert-close" onClick={() => setError(null)} aria-label="关闭错误提示">×</button>
         </div>}
         {settingsOpen
           ? <Suspense fallback={<section className="settings-loading"><span className="spinner" /> 正在读取系统设置…</section>}><SystemSettings onClose={() => setSettingsOpen(false)} /></Suspense>
-          : libraryMode === 'todo'
-            ? <Suspense fallback={<section className="settings-loading"><span className="spinner" /> 正在加载待办工作台…</section>}><TodoWorkbench works={works} onOpenWork={handleDashboardOpenWork} onOpenReviews={handleOpenReviews} onChanged={handleReload} /></Suspense>
-          : libraryMode === 'overview'
-            ? dashboard
-              ? <Dashboard
-                  data={dashboard}
-                  events={discoveryEvents}
-                  busy={busy}
-                  onReload={handleReload}
-                  onOpenWork={handleDashboardOpenWork}
-                  onOpenRadar={handleOpenRadar}
-                  onSetEventState={handleSetEventState}
-                  onReadAll={handleReadAllEvents}
-                  onOpenReviews={handleOpenReviews}
-                />
-              : <section className="settings-loading"><span className="spinner" /> 正在读取资料库总览…</section>
+          : libraryMode === 'workspace'
+            ? <Workspace
+                tab={workspaceTab}
+                onTabChange={setWorkspaceTab}
+                refreshKey={syncSeq}
+                data={dashboard}
+                works={works}
+                suggestions={suggestions}
+                seriesCandidates={seriesCandidates}
+                agentStatus={agentStatus}
+                busy={busy}
+                onReload={handleReload}
+                onOpenWork={handleOpenWorkById}
+                onOpenAuthorCenter={openAuthorDirectory}
+                onRunAgent={() => void act(() => api.runAgentReviews())}
+                onAcceptMerge={(id) => void reviewSuggestion(id, true)}
+                onRejectMerge={(id) => void reviewSuggestion(id, false)}
+                onCreateSeries={(candidate) => void act(() => api.createSeriesFromCandidate(candidate))}
+                onChanged={handleReload}
+              />
             : libraryMode === 'authors'
-              ? <Suspense fallback={<section className="settings-loading"><span className="spinner" /> 正在加载作者目录…</section>}><AuthorDirectory
+              ? <Suspense fallback={<section className="settings-loading"><span className="spinner" /> 正在加载作者中心…</section>}><AuthorDirectory
                   authors={authors}
                   works={works}
+                  socialStatus={socialStatus}
                   previewAuthorId={previewAuthorId}
+                  initialTab={authorCenterTab}
+                  initialRadarTab={authorRadarTab}
+                  focusSignalId={focusSignalId}
+                  busy={busy}
                   onPreviewAuthor={setPreviewAuthorId}
-                  onOpenAuthor={openAuthorWorks}
+                  onOpenAuthorWorks={openAuthorWorks}
+                  onOpenWork={handleOpenWorkById}
+                  onAddAuthor={handleAddAuthor}
+                  onRefreshAuthor={handleRefreshAuthor}
+                  onDeleteAuthor={handleDeleteAuthor}
+                  onChanged={handleReload}
                   onGetQueryName={api.authorQueryName}
                   onUpdateAuthor={handleUpdateAuthorIdentity}
                 /></Suspense>
@@ -706,12 +728,21 @@ export default function App() {
             <p>{selectedAuthor ? '这个作者在所有来源中的作品' : '你订阅作者的作品，都在这里。'}</p>
           </div>
           <div className="topbar-tools">
-            <button className="radar-button" onClick={() => setImageSearchOpen(true)}>以图搜库</button>
-            <button className="radar-button" onClick={() => setRadarOpen(true)}>动态雷达{socialStatus?.unread_count ? <span>{socialStatus.unread_count}</span> : null}</button>
             <div className="search-box">
               <span aria-hidden="true">⌕</span>
               <input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="搜索作品、作者或标签" aria-label="搜索作品" />
             </div>
+            <button className="topbar-tool-button" onClick={() => setImageSearchOpen(true)}>
+              <ImageSquare size={17} /><span>以图搜库</span>
+            </button>
+            {selectedAuthor && (
+              <button className="topbar-tool-button" onClick={() => openAuthorDirectory(selectedAuthor.id, true)}>
+                <span>作者动态与资料 →</span>
+              </button>
+            )}
+            <button className="topbar-tool-button" onClick={() => void load()} disabled={busy} aria-label="刷新作品">
+              <ArrowsClockwise size={17} /><span>刷新</span>
+            </button>
           </div>
         </header>
 
@@ -724,19 +755,14 @@ export default function App() {
           <button className="alert-close" onClick={() => dismissFailedJob(failedJob.id)} aria-label="关闭任务失败提示">×</button>
         </div>}
         {activeJobs.length > 0 && <div className="sync-banner"><span className="spinner" /> 正在向来源查询，作品会自动出现…</div>}
-        {suggestions.length > 0 && <button className="review-banner" onClick={() => setReviewOpen(true)}>有 {suggestions.length} 个相似作品等待确认聚合 <span>去审核 →</span></button>}
-        {seriesCandidates.slice(0, 1).map((candidate) => <button className="review-banner" key={`${candidate.normalized_title}:${candidate.author_ids.join('-')}`} onClick={() => {
-          const gap = candidate.missing_volumes.length ? `，可能缺少第 ${candidate.missing_volumes.join('、')} 卷` : ''
-          if (window.confirm(`将 ${candidate.groups.length} 部作品建立为“${candidate.title}”系列${gap}？`)) void act(() => api.createSeriesFromCandidate(candidate))
-        }}>发现系列候选「{candidate.title}」 · {candidate.groups.length} 卷{candidate.missing_volumes.length ? ` · 缺 ${candidate.missing_volumes.join('、')}` : ''}<span>确认系列 →</span></button>)}
+        {suggestions.length > 0 && (
+          <button className="review-banner" onClick={() => showWorkspace('merges')}>
+            有 {suggestions.length} 组相似作品待确认聚合 <span>前往工作台审核 →</span>
+          </button>
+        )}
         {readyDownloadJob && (
           <div className="download-ready" key={readyDownloadJob.id}>CBZ 已准备好 <a href={`/api/jobs/${readyDownloadJob.id}/file`}>保存到本机 ↓</a></div>
         )}
-
-        <section className="section-head">
-          <div><h2>发现的作品</h2><span>{visibleWorks.length}</span></div>
-          <button onClick={() => void load()} disabled={busy}>刷新视图</button>
-        </section>
 
         {works.length > 0 && <section className="catalog-toolbar" aria-label="作品显示设置" ref={catalogTopRef}>
           <div className="view-switch" role="group" aria-label="显示方式">
@@ -773,17 +799,30 @@ export default function App() {
           <section className="empty-state">
             <div className="empty-symbol">冊</div>
             <h2>{works.length ? '当前条件下没有作品' : authors.length ? '还没有发现作品' : '从一位作者开始'}</h2>
-            <p>{works.length ? '可以清除搜索词或切换筛选条件。' : authors.length ? '来源查询可能仍在进行，也可以点击作者旁的刷新按钮重试。' : '在左侧输入作者名，我们会在已启用来源中建立他的作品档案。'}</p>
+            <p>{works.length ? '可以清除搜索词或切换筛选条件。' : authors.length ? '来源查询可能仍在进行，也可以点击刷新或去作者中心处理。' : '在左侧输入作者名，我们会在已启用来源中建立他的作品档案。'}</p>
           </section>
         )}
             </>}
       </main>
       <Suspense fallback={null}>
-        {!settingsOpen && historyOpen && <OperationHistory onClose={() => setHistoryOpen(false)} onChanged={async () => { setOpenedWork(null); await load() }} />}
         {!settingsOpen && imageSearchOpen && <ImageSearch onClose={() => setImageSearchOpen(false)} onOpenWork={(id) => { setImageSearchOpen(false); void openWork(id) }} />}
-        {!settingsOpen && openedWork && <WorkDetail group={openedWork} allGroups={works} busy={busy} enabledProviders={enabledProviders} activeAuthorId={selectedId} onClose={() => setOpenedWork(null)} onDownload={(edition, source) => void downloadEdition(edition, source)} onUpdateMetadata={updateMetadata} onSplit={(workId) => void splitEdition(workId)} onMerge={(targetId) => void mergeCurrentInto(targetId)} onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)} onExcludeGroup={(authorId) => void excludeGroup(authorId)} />}
-        {!settingsOpen && reviewOpen && <MergeReview suggestions={suggestions} agentStatus={agentStatus} busy={busy} onRunAgent={() => void act(() => api.runAgentReviews())} onOpenGroup={(id) => void openWork(id)} onClose={() => setReviewOpen(false)} onAccept={(id) => void reviewSuggestion(id, true)} onReject={(id) => void reviewSuggestion(id, false)} />}
-        {!settingsOpen && radarOpen && socialStatus && <SocialRadar status={socialStatus} signals={socialSignals} authors={authors} works={works} selectedAuthorId={selectedId} busy={busy} focusSignalId={focusSignalId} onClose={() => setRadarOpen(false)} onChanged={load} onOpenWork={(id) => { setRadarOpen(false); void openWork(id) }} />}
+        {!settingsOpen && openedWork && (
+          <WorkDetail
+            group={openedWork}
+            allGroups={works}
+            busy={busy}
+            enabledProviders={enabledProviders}
+            activeAuthorId={selectedId}
+            onClose={() => setOpenedWork(null)}
+            onDownload={(edition, source) => void downloadEdition(edition, source)}
+            onDownloadQueued={load}
+            onUpdateMetadata={updateMetadata}
+            onSplit={(workId) => void splitEdition(workId)}
+            onMerge={(targetId) => void mergeCurrentInto(targetId)}
+            onExcludeEdition={(authorId, workId) => void excludeEdition(authorId, workId)}
+            onExcludeGroup={(authorId) => void excludeGroup(authorId)}
+          />
+        )}
         {assistantOpen && <AssistantChat open={assistantOpen} onClose={() => setAssistantOpen(false)} />}
       </Suspense>
     </div>

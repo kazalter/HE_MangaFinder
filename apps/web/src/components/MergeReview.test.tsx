@@ -1,5 +1,5 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MergeSuggestion, WorkGroup } from '../types'
 import { MergeReview } from './MergeReview'
 
@@ -21,7 +21,9 @@ function group(id: number, title: string, provider: string): WorkGroup {
 }
 
 describe('MergeReview', () => {
-  it('shows both covers and opens the same group detail flow', () => {
+  afterEach(cleanup)
+
+  it('shows both covers, opens work detail, and triggers accept/reject actions', () => {
     const source = group(11, '作品 A', 'wnacg')
     const target = group(22, '作品 B', 'nhentai')
     const suggestion: MergeSuggestion = {
@@ -48,6 +50,7 @@ describe('MergeReview', () => {
       shared_context: [],
     }
     const onOpenGroup = vi.fn()
+    const onAccept = vi.fn()
 
     render(
       <MergeReview
@@ -56,9 +59,8 @@ describe('MergeReview', () => {
         busy={false}
         onRunAgent={() => undefined}
         onOpenGroup={onOpenGroup}
-        onAccept={() => undefined}
+        onAccept={onAccept}
         onReject={() => undefined}
-        onClose={() => undefined}
       />,
     )
 
@@ -68,20 +70,24 @@ describe('MergeReview', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '查看《作品 B》的作品详情' }))
     expect(onOpenGroup).toHaveBeenCalledWith(22)
+
+    fireEvent.click(screen.getByRole('button', { name: '确认合并' }))
+    expect(onAccept).toHaveBeenCalledWith(1)
   })
 
-  it('plays its closing state before unmounting', () => {
-    vi.useFakeTimers()
-    const onClose = vi.fn()
-    const { container } = render(
-      <MergeReview suggestions={[]} agentStatus={null} busy={false} onRunAgent={vi.fn()} onOpenGroup={vi.fn()} onAccept={vi.fn()} onReject={vi.fn()} onClose={onClose} />,
+  it('shows empty state when no merge suggestions remain', () => {
+    render(
+      <MergeReview
+        suggestions={[]}
+        agentStatus={null}
+        busy={false}
+        onRunAgent={vi.fn()}
+        onOpenGroup={vi.fn()}
+        onAccept={vi.fn()}
+        onReject={vi.fn()}
+      />,
     )
 
-    fireEvent.click(within(container).getByRole('button', { name: '关闭' }))
-    expect(container.querySelector('.modal-backdrop')).toHaveClass('is-closing')
-    expect(onClose).not.toHaveBeenCalled()
-    act(() => vi.advanceTimersByTime(180))
-    expect(onClose).toHaveBeenCalledOnce()
-    vi.useRealTimers()
+    expect(screen.getByText('没有待确认的聚合候选。')).toBeInTheDocument()
   })
 })

@@ -1,7 +1,19 @@
 import { memo, useMemo, useState, type FormEvent } from 'react'
-import type { Edition, WorkGroup, WorkGroupDetail, WorkMetadataPatch, WorkSource } from '../types'
+import { api } from '../lib/api'
+import type { Chapter, Edition, WorkGroup, WorkGroupDetail, WorkMetadataPatch, WorkSource } from '../types'
 import { useAnimatedClose } from '../hooks/useAnimatedClose'
 import { CoverImage } from './CoverImage'
+
+export interface PreparedDownload {
+  key: string
+  edition: Edition
+  source: WorkSource
+  checkStatus: 'found' | 'possible' | 'not_found' | 'unavailable'
+  checkMessage: string
+  matches: { id: number; title: string; reason: string }[]
+  chapters: Chapter[]
+  selectedChapterId: string
+}
 
 interface Props {
   group: WorkGroupDetail
@@ -11,6 +23,7 @@ interface Props {
   activeAuthorId: number | null
   onClose: () => void
   onDownload: (edition: Edition, source: WorkSource) => void
+  onDownloadQueued?: () => Promise<void> | void
   onUpdateMetadata: (patch: WorkMetadataPatch) => Promise<boolean>
   onSplit: (workId: number) => void
   onMerge: (targetGroupId: number) => void
@@ -24,20 +37,104 @@ function displayDate(value: string | null) {
   return value ? detailDateFormatter.format(new Date(value)) : '日期未知'
 }
 
-export const WorkDetail = memo(function WorkDetail({ group, allGroups, busy, enabledProviders, activeAuthorId, onClose, onDownload, onUpdateMetadata, onSplit, onMerge, onExcludeEdition, onExcludeGroup }: Props) {
+export const WorkDetail = memo(function WorkDetail({
+  group,
+  allGroups,
+  busy,
+  enabledProviders,
+  activeAuthorId,
+  onClose,
+  onDownload,
+  onDownloadQueued,
+  onUpdateMetadata,
+  onSplit,
+  onMerge,
+  onExcludeEdition,
+  onExcludeGroup,
+}: Props) {
   const { closing, requestClose } = useAnimatedClose(onClose)
   const [provider, setProvider] = useState('all')
   const [mergeTarget, setMergeTarget] = useState('')
   const [mergePickerOpen, setMergePickerOpen] = useState(false)
   const [editingMetadata, setEditingMetadata] = useState(false)
   const [metadataError, setMetadataError] = useState('')
+  const [preparingKey, setPreparingKey] = useState<string | null>(null)
+  const [prepared, setPrepared] = useState<PreparedDownload | null>(null)
+  const [downloadError, setDownloadError] = useState<{ key: string; message: string } | null>(null)
+  const [queuedKey, setQueuedKey] = useState<string | null>(null)
+  const [submittingDownload, setSubmittingDownload] = useState(false)
   const overrides = group.metadata_overrides ?? {}
+
   async function saveMetadata(patch: WorkMetadataPatch): Promise<boolean> {
     setMetadataError('')
     const ok = await onUpdateMetadata(patch)
     if (!ok) setMetadataError('保存失败，请检查输入或登录状态后重试。')
     return ok
   }
+
+  async function startInlineDownload(edition: Edition, source: WorkSource) {
+    if (!onDownloadQueued) {
+      onDownload(edition, source)
+      return
+    }
+    const key = `${edition.work_id}:${source.provider}`
+    setPreparingKey(key)
+    setPrepared(null)
+    setDownloadError(null)
+    setQueuedKey(null)
+    try {
+      const [check, chapters] = await Promise.all([
+        api.libraryCheck(edition.work_id, source.provider),
+        api.chapters(edition.work_id, source.provider),
+      ])
+      if (!chapters.length) {
+        setDownloadError({ key, message: '这个来源暂时没有可下载章节' })
+        return
+      }
+      setPrepared({
+        key,
+        edition,
+        source,
+        checkStatus: check.status,
+        checkMessage: check.message,
+        matches: check.matches,
+        chapters,
+        selectedChapterId: chapters[0].external_id,
+      })
+    } catch (reason) {
+      setDownloadError({
+        key,
+        message: reason instanceof Error ? reason.message : '检查下载来源失败',
+      })
+    } finally {
+      setPreparingKey(null)
+    }
+  }
+
+  async function confirmInlineDownload() {
+    if (!prepared) return
+    setSubmittingDownload(true)
+    setDownloadError(null)
+    try {
+      await api.downloadChapter(
+        prepared.edition.work_id,
+        prepared.source.provider,
+        prepared.selectedChapterId,
+        prepared.checkStatus !== 'not_found',
+      )
+      setQueuedKey(prepared.key)
+      setPrepared(null)
+      await onDownloadQueued?.()
+    } catch (reason) {
+      setDownloadError({
+        key: prepared.key,
+        message: reason instanceof Error ? reason.message : '创建下载任务失败',
+      })
+    } finally {
+      setSubmittingDownload(false)
+    }
+  }
+
   const [exclusionAuthor, setExclusionAuthor] = useState(() => {
     if (activeAuthorId && group.authors.some((author) => author.id === activeAuthorId)) return String(activeAuthorId)
     return group.authors.length === 1 ? String(group.authors[0].id) : ''
@@ -61,7 +158,7 @@ export const WorkDetail = memo(function WorkDetail({ group, allGroups, busy, ena
           <div>
             <p className="eyebrow">WORK / EDITIONS</p>
             <h2>{group.title}</h2>
-            <p>{group.description?.replace(/\[[^\]]+\]\([^\)]+\)/g, '') || '暂无简介'}</p>
+            <p>{group.description?.replace(/\[[^\]]+\]\([^)]+\)/g, '') || '暂无简介'}</p>
             <div className="source-badges large">
               {providers.map((item) => <span className={`source-badge source-${item}`} key={item}>{item}</span>)}
               <small>{group.edition_count} 个版本 · 作品年份 {group.year ?? '未知'} · 最早来源时间 {displayDate(group.first_source_at)} · 最近来源时间 {displayDate(group.latest_source_at)} · 收录发现 {displayDate(group.first_discovered_at ?? null)}</small>
@@ -70,7 +167,13 @@ export const WorkDetail = memo(function WorkDetail({ group, allGroups, busy, ena
         </header>
 
         <section className="metadata-panel">
-          <header><div><strong>作品资料</strong><small>年份表示作品年份，来源时间来自站点；收录发现时间取当前作者关联记录中的最早时间。</small></div><button onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? '收起' : '编辑资料'}</button></header>
+          <header>
+            <div>
+              <strong>作品资料</strong>
+              <small>年份表示作品年份，来源时间来自站点；收录发现时间取当前作者关联记录中的最早时间。</small>
+            </div>
+            <button onClick={() => setEditingMetadata((value) => !value)}>{editingMetadata ? '收起' : '编辑资料'}</button>
+          </header>
           {group.metadata_sources && <div className="metadata-sources">
             {([['title', '标题'], ['cover_url', '封面'], ['year', '年份'], ['description', '简介'], ['status', '状态'], ['language', '语言'], ['tags', '标签']] as const).map(([key, label]) => {
               const source = group.metadata_sources?.[key]
@@ -117,19 +220,64 @@ export const WorkDetail = memo(function WorkDetail({ group, allGroups, busy, ena
                   {edition.variant_labels.length ? edition.variant_labels.map((label) => <span key={label}>{label}</span>) : <span>普通版</span>}
                 </div>
                 <div className="edition-sources">
-                  {edition.sources.filter((source) => provider === 'all' || source.provider === provider).map((source) => (
-                    <div key={`${source.provider}-${source.external_id}`}>
-                      <span className={`source-badge source-${source.provider}`}>{source.provider}</span>
-                      <a href={source.source_url} target="_blank" rel="noreferrer">原站 ↗</a>
-                      <button disabled={busy || !enabledProviders.includes(source.provider)} onClick={() => onDownload(edition, source)}>{enabledProviders.includes(source.provider) ? '选择章节并下载 ↓' : '历史来源（已停用）'}</button>
-                    </div>
-                  ))}
+                  {edition.sources.filter((source) => provider === 'all' || source.provider === provider).map((source) => {
+                    const sourceKey = `${edition.work_id}:${source.provider}`
+                    const isPreparing = preparingKey === sourceKey
+                    const activePrepare = prepared?.key === sourceKey ? prepared : null
+                    const sourceError = downloadError?.key === sourceKey ? downloadError.message : null
+                    const isQueued = queuedKey === sourceKey
+                    return (
+                      <div className="edition-source-block" key={`${source.provider}-${source.external_id}`}>
+                        <div className="edition-source-row">
+                          <span className={`source-badge source-${source.provider}`}>{source.provider}</span>
+                          <a href={source.source_url} target="_blank" rel="noreferrer">原站 ↗</a>
+                          <button
+                            disabled={busy || isPreparing || !enabledProviders.includes(source.provider)}
+                            onClick={() => void startInlineDownload(edition, source)}
+                          >
+                            {!enabledProviders.includes(source.provider)
+                              ? '历史来源（已停用）'
+                              : isPreparing
+                                ? '检查章节与馆藏…'
+                                : '下载 CBZ ↓'}
+                          </button>
+                        </div>
+                        {activePrepare && (
+                          <div className={`inline-download-box status-${activePrepare.checkStatus}`}>
+                            <div className="inline-download-status">
+                              <strong>{activePrepare.checkMessage}</strong>
+                              {activePrepare.matches.length > 0 && (
+                                <small>{activePrepare.matches.map((item) => `• ${item.title}（${item.reason}）`).join(' ')}</small>
+                              )}
+                            </div>
+                            <div className="inline-download-controls">
+                              <select
+                                aria-label="选择章节"
+                                value={activePrepare.selectedChapterId}
+                                onChange={(e) => setPrepared({ ...activePrepare, selectedChapterId: e.target.value })}
+                              >
+                                {activePrepare.chapters.map((chapter) => (
+                                  <option key={chapter.external_id} value={chapter.external_id}>
+                                    {chapter.number ? `第 ${chapter.number} 话` : (chapter.title ?? '完整章节')}
+                                  </option>
+                                ))}
+                              </select>
+                              <button className="confirm-btn" disabled={submittingDownload} onClick={() => void confirmInlineDownload()}>
+                                {submittingDownload ? '提交中…' : activePrepare.checkStatus === 'not_found' ? '确认加入下载队列' : '仍要加入下载队列'}
+                              </button>
+                              <button className="cancel-btn" disabled={submittingDownload} onClick={() => setPrepared(null)}>取消</button>
+                            </div>
+                          </div>
+                        )}
+                        {sourceError && <p className="inline-download-error" role="alert">{sourceError}</p>}
+                        {isQueued && <p className="inline-download-queued" role="status">✓ 已加入后台 CBZ 下载队列</p>}
+                      </div>
+                    )
+                  })}
                 </div>
                 <div className="edition-correction-actions">
                   <button disabled={busy} onClick={() => void saveMetadata({ preferred_work_id: overrides.preferred_work_id === edition.work_id ? null : edition.work_id })}>{overrides.preferred_work_id === edition.work_id ? '已设为首选 · 恢复自动' : '设为首选版本'}</button>
                   {edition.cover_url && <button disabled={busy} onClick={() => void saveMetadata({ cover_work_id: overrides.cover_work_id === edition.work_id ? null : edition.work_id })}>{overrides.cover_work_id === edition.work_id ? '已固定封面 · 恢复自动' : '固定此封面'}</button>}
-                </div>
-                <div className="edition-correction-actions">
                   {group.edition_count > 1 && <button className="split-link" disabled={busy} onClick={() => onSplit(edition.work_id)}>聚合有误？拆分此版本</button>}
                   {exclusionAuthor && edition.authors.some((author) => author.id === Number(exclusionAuthor)) && <button className="exclude-link" disabled={busy} onClick={() => onExcludeEdition(Number(exclusionAuthor), edition.work_id)}>不是该作者的版本</button>}
                 </div>
@@ -138,29 +286,31 @@ export const WorkDetail = memo(function WorkDetail({ group, allGroups, busy, ena
           ))}
         </div>
 
-        {group.authors.length > 0 && <section className="exclusion-panel">
-          <div><strong>纠正误收录</strong><small>移除后会记入排除名单，今后刷新不会再次自动添加同一来源。</small></div>
-          <select value={exclusionAuthor} onChange={(event) => setExclusionAuthor(event.target.value)} aria-label="选择要纠正的作者">
-            <option value="">选择作者…</option>
-            {group.authors.map((author) => <option value={author.id} key={author.id}>{author.name}</option>)}
-          </select>
-          <button className="danger" disabled={!exclusionAuthor || busy} onClick={() => onExcludeGroup(Number(exclusionAuthor))}>整部都不是该作者作品</button>
-        </section>}
+        <section className="work-detail-tools" aria-label="作品整理与纠错">
+          {group.authors.length > 0 && <div className="exclusion-panel">
+            <div><strong>纠正误收录</strong><small>移除后会记入排除名单，今后刷新不会再次自动添加同一来源。</small></div>
+            <select value={exclusionAuthor} onChange={(event) => setExclusionAuthor(event.target.value)} aria-label="选择要纠正的作者">
+              <option value="">选择作者…</option>
+              {group.authors.map((author) => <option value={author.id} key={author.id}>{author.name}</option>)}
+            </select>
+            <button className="danger" disabled={!exclusionAuthor || busy} onClick={() => onExcludeGroup(Number(exclusionAuthor))}>整部都不是该作者作品</button>
+          </div>}
 
-        <footer className="manual-merge">
-          <div><strong>人工合并</strong><small>自动算法漏掉时，可把当前作品并入另一部作品；此操作会被保护。</small></div>
-          {showMergeSelect ? (
-            <>
-              <select value={mergeTarget} onChange={(event) => setMergeTarget(event.target.value)}>
-                <option value="">选择目标作品…</option>
-                {mergeTargets.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}
-              </select>
-              <button disabled={!mergeTarget || busy} onClick={() => onMerge(Number(mergeTarget))}>确认合并</button>
-            </>
-          ) : (
-            <button type="button" disabled={busy} onClick={() => setMergePickerOpen(true)}>选择目标作品…</button>
-          )}
-        </footer>
+          <footer className="manual-merge">
+            <div><strong>人工合并</strong><small>自动算法漏掉时，可把当前作品并入另一部作品；此操作会被保护。</small></div>
+            {showMergeSelect ? (
+              <>
+                <select value={mergeTarget} onChange={(event) => setMergeTarget(event.target.value)}>
+                  <option value="">选择目标作品…</option>
+                  {mergeTargets.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}
+                </select>
+                <button disabled={!mergeTarget || busy} onClick={() => onMerge(Number(mergeTarget))}>确认合并</button>
+              </>
+            ) : (
+              <button type="button" disabled={busy} onClick={() => setMergePickerOpen(true)}>选择目标作品…</button>
+            )}
+          </footer>
+        </section>
       </section>
     </div>
   )
