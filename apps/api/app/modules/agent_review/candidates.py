@@ -106,7 +106,7 @@ def _group_evidence(group: WorkGroup) -> GroupEvidence:
                 identity_core=title.identity_core,
                 context_terms=list(title.context_terms),
                 aliases=fingerprint.title_aliases if fingerprint else [],
-                number_signature=list(identity_number_signature(title.identity_core)),
+                number_signature=list(identity_number_signature(normalized)),
                 variant_labels=fingerprint.variant_labels if fingerprint else [],
                 language=work.language,
                 year=work.year,
@@ -208,20 +208,26 @@ def _title_similarity(left: GroupEvidence, right: GroupEvidence) -> float:
 
 def _cover_comparisons(left: WorkGroup, right: WorkGroup) -> list[CoverComparison]:
     left_prepared = [
-        prepare_cover_fingerprint(
-            member.work.fingerprint.cover_fingerprint,
-            legacy=member.work.fingerprint.cover_hash,
-        )
+        prepared
         for member in left.members
         if member.work.fingerprint
+        and not (
+            prepared := prepare_cover_fingerprint(
+                member.work.fingerprint.cover_fingerprint,
+                legacy=member.work.fingerprint.cover_hash,
+            )
+        ).is_low_entropy
     ]
     right_prepared = [
-        prepare_cover_fingerprint(
-            member.work.fingerprint.cover_fingerprint,
-            legacy=member.work.fingerprint.cover_hash,
-        )
+        prepared
         for member in right.members
         if member.work.fingerprint
+        and not (
+            prepared := prepare_cover_fingerprint(
+                member.work.fingerprint.cover_fingerprint,
+                legacy=member.work.fingerprint.cover_hash,
+            )
+        ).is_low_entropy
     ]
     if not left_prepared or not right_prepared:
         return []

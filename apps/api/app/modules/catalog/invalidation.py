@@ -18,7 +18,7 @@ from app.db.models import (
     WorkGroupMember,
 )
 
-AGGREGATION_ALGORITHM_VERSION = "agg-v4"
+AGGREGATION_ALGORITHM_VERSION = "agg-v5"
 
 
 def current_algorithm_version() -> str:

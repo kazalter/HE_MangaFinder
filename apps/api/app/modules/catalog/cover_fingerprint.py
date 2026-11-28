@@ -40,6 +40,44 @@ class PreparedVariant:
 class PreparedCoverFingerprint:
     variants: tuple[PreparedVariant, ...]
     legacy_hash: int | None
+    is_low_entropy: bool = False
+    variant_tuples: tuple[tuple[float, int, int, bool, object], ...] = ()
+
+
+def _is_low_entropy_stats(dhash: int, phash: int, histogram: object) -> bool:
+    """Detect nearly blank/monochrome covers that produce accidental zero hash distances."""
+    del phash  # DCT float roundoff on constant pixels produces arbitrary pHash bits.
+    d_ones = dhash.bit_count()
+    if 2 < d_ones < 62:
+        return False
+    if not isinstance(histogram, list) or len(histogram) != 24:
+        return d_ones == 0
+    try:
+        return all(
+            max(int(v) for v in histogram[offset : offset + 8]) >= 248
+            for offset in (0, 8, 16)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def is_low_entropy_fingerprint(value: dict[str, Any] | None) -> bool:
+    if not is_current_fingerprint(value):
+        return False
+    assert value is not None
+    if value.get("low_entropy") is True:
+        return True
+    full_variants = [
+        v
+        for v in value.get("variants", [])
+        if isinstance(v, dict) and v.get("kind") == "full"
+    ]
+    target = full_variants[0] if full_variants else value["variants"][0]
+    dhash = _parse_hex_hash(target.get("dhash"))
+    phash = _parse_hex_hash(target.get("phash"))
+    if dhash is None or phash is None:
+        return False
+    return _is_low_entropy_stats(dhash, phash, target.get("histogram"))
 
 
 def _parse_hex_hash(value: object) -> int | None:
@@ -85,7 +123,21 @@ def prepare_cover_fingerprint(
             )
         )
     variants.sort(key=lambda item: item.log_ratio)
-    return PreparedCoverFingerprint(variants=tuple(variants), legacy_hash=legacy_hash)
+    full_item = next((item for item in variants if item.is_full), variants[0] if variants else None)
+    low_entropy = bool(value.get("low_entropy")) or (
+        full_item is not None
+        and _is_low_entropy_stats(full_item.dhash, full_item.phash, full_item.histogram)
+    )
+    variant_tuples = tuple(
+        (item.log_ratio, item.dhash, item.phash, item.is_full, item.histogram)
+        for item in variants
+    )
+    return PreparedCoverFingerprint(
+        variants=tuple(variants),
+        legacy_hash=legacy_hash,
+        is_low_entropy=low_entropy,
+        variant_tuples=variant_tuples,
+    )
 
 
 def compare_prepared_fingerprints(
@@ -110,40 +162,55 @@ def compare_prepared_fingerprints(
     best_data: tuple[int, str, int, int] | None = None
     had_matching_ratio = False
     tol = _RATIO_TOLERANCE
-    right_variants = right.variants
-    for lv in left.variants:
-        lv_ratio = lv.log_ratio
+    left_tuples = left.variant_tuples or tuple(
+        (item.log_ratio, item.dhash, item.phash, item.is_full, item.histogram)
+        for item in left.variants
+    )
+    right_tuples = right.variant_tuples or tuple(
+        (item.log_ratio, item.dhash, item.phash, item.is_full, item.histogram)
+        for item in right.variants
+    )
+    r_len = len(right_tuples)
+    r_start = 0
+    max_base_int = max_distance * 100 + 50 if max_distance is not None else None
+    for lv_ratio, lv_dhash, lv_phash, lv_full, lv_hist in left_tuples:
         lv_min = lv_ratio - tol
         lv_max = lv_ratio + tol
-        lv_dhash = lv.dhash
-        lv_phash = lv.phash
-        lv_full = lv.is_full
-        for rv in right_variants:
-            rv_ratio = rv.log_ratio
-            if rv_ratio < lv_min:
-                continue
+        while r_start < r_len and right_tuples[r_start][0] < lv_min:
+            r_start += 1
+        for idx in range(r_start, r_len):
+            rv_ratio, rv_dhash, rv_phash, rv_full, rv_hist = right_tuples[idx]
             if rv_ratio > lv_max:
                 break
             had_matching_ratio = True
-            dhash = (lv_dhash ^ rv.dhash).bit_count()
-            phash = (lv_phash ^ rv.phash).bit_count()
+            phash = (lv_phash ^ rv_phash).bit_count()
+            if max_distance is not None:
+                if phash > 18 and max_distance < 14:
+                    continue
+                if max_base_int is not None and 46 * phash > max_base_int:
+                    continue
+            if best_key is not None and best_key[0] < 14 and phash > 18:
+                continue
+            dhash = (lv_dhash ^ rv_dhash).bit_count()
             dh_ph_max = dhash if dhash >= phash else phash
-            base = 0.34 * dhash + 0.46 * phash
             if max_distance is not None:
                 if dh_ph_max > 18 and max_distance < 14:
                     continue
-                if round(base) > max_distance:
+                if max_base_int is not None and 34 * dhash + 46 * phash > max_base_int:
                     continue
+            base = 0.34 * dhash + 0.46 * phash
+            if max_distance is not None and round(base) > max_distance:
+                continue
             if best_key is not None:
                 if best_key[0] < 14 and dh_ph_max > 18:
                     continue
                 if round(base) > best_key[0]:
                     continue
-            histogram = _histogram_distance(lv.histogram, rv.histogram)
+            histogram = _histogram_distance(lv_hist, rv_hist)
             distance = round(base + 0.20 * histogram)
             if max_distance is not None and distance > max_distance:
                 continue
-            both_full = lv_full and rv.is_full
+            both_full = lv_full and rv_full
             key = (distance, dh_ph_max, histogram, 0 if both_full else 1)
             if best_key is None or key < best_key:
                 best_key = key
@@ -185,7 +252,11 @@ def fingerprint_image(image: Image.Image) -> dict[str, Any]:
     width, height = normalized.size
     if width < 8 or height < 8:
         raise ValueError("封面尺寸过小")
-    variants = [_variant(normalized, "full", width / height)]
+    full_variant = _variant(normalized, "full", width / height)
+    full_dhash = int(full_variant["dhash"], 16)
+    full_phash = int(full_variant["phash"], 16)
+    low_entropy = _is_low_entropy_stats(full_dhash, full_phash, full_variant["histogram"])
+    variants = [full_variant]
     seen_boxes: set[tuple[int, int, int, int]] = {(0, 0, width, height)}
     for ratio in _CROP_RATIOS:
         for position, box in _crop_boxes(width, height, ratio):
@@ -200,6 +271,7 @@ def fingerprint_image(image: Image.Image) -> dict[str, Any]:
         "width": width,
         "height": height,
         "aspect_ratio": round(width / height, 5),
+        "low_entropy": low_entropy,
         "variants": variants,
     }
 

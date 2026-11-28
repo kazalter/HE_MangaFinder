@@ -551,3 +551,541 @@ def test_compare_prepared_fingerprints_respects_max_distance_with_legacy() -> No
         )
         is None
     )
+
+
+def test_chapters_never_merge_and_normalization_preserves_word_parts() -> None:
+    assert normalize_title("Love Story Rev2 [中文] [DL]", "Author") == "love story rev2"
+    assert normalize_title("Scandal Night [Scan]", "Author") == "scandal night"
+    assert normalize_title("Chinese Dress [English]", "Author") == "chinese dress"
+    assert normalize_title("My Manga (全12話)", "Author") == "my manga"
+    assert normalize_title("My Manga 第1話", "Author") == normalize_title(
+        "My Manga Ch. 1", "Author"
+    )
+    assert normalize_title("My Manga 第1話", "Author") != normalize_title(
+        "My Manga 第2話", "Author"
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="SerialAuthor")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+        ch1 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="ch-1",
+                title="Serial Tale 第1話 [汉化]",
+                source_url="https://example.test/ch1",
+            ),
+        )
+        ch1_alt = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="ch-1-en",
+                title="Serial Tale Ch. 1 [English]",
+                source_url="https://example.test/ch1-en",
+            ),
+        )
+        ch2 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="ch-2",
+                title="Serial Tale 第2話 [汉化]",
+                source_url="https://example.test/ch2",
+            ),
+        )
+        g1 = aggregation.assign_without_cover(ch1, author)
+        g1_alt = aggregation.assign_without_cover(ch1_alt, author)
+        g2 = aggregation.assign_without_cover(ch2, author)
+
+        assert g1.id == g1_alt.id
+        assert g2.id != g1.id
+        assert len(list(session.scalars(select(WorkGroup)))) == 2
+
+
+async def test_one_sided_number_never_auto_merges_and_suggests_on_strong_cover() -> None:
+    cover = Image.new("RGB", (300, 420), "#f3ede4")
+    draw = ImageDraw.Draw(cover)
+    draw.rectangle((40, 50, 260, 350), fill="#224488")
+    draw.ellipse((90, 90, 210, 210), fill="#eeaa44")
+    fp = fingerprint_image(cover)
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="LongTitleAuthor")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+        w1 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="one-1",
+                title="Extremely Long Doujinshi Title About Everyday Life #01",
+                source_url="https://example.test/one-1",
+                year=2025,
+                raw_metadata={"page_count": 28},
+            ),
+        )
+        w2 = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="one-none",
+                title="Extremely Long Doujinshi Title About Everyday Life",
+                source_url="https://example.test/one-none",
+                year=2025,
+                raw_metadata={"page_count": 28},
+            ),
+        )
+        g1 = await aggregation.assign(w1, author)
+        g2 = await aggregation.assign(w2, author)
+        assert g1.id != g2.id
+
+        # Even with identical strong cover, one-sided missing number only creates a suggestion.
+        w1.fingerprint.cover_fingerprint = fp
+        w2.fingerprint.cover_fingerprint = fp
+        session.flush()
+        await aggregation.reaggregate_author(author)
+        assert w1.group_membership.group_id != w2.group_membership.group_id
+        suggestions = list(session.scalars(select(MergeSuggestion)))
+        assert len(suggestions) == 1
+        assert any("缺少作品编号" in reason for reason in suggestions[0].reasons)
+
+
+async def test_semantic_markers_and_extreme_page_mismatch_block_auto_merge() -> None:
+    cover = Image.new("RGB", (300, 420), "#e8dcd0")
+    draw = ImageDraw.Draw(cover)
+    draw.rectangle((30, 40, 270, 380), fill="#335577")
+    draw.line((30, 40, 270, 380), fill="#ffdd66", width=16)
+    fp = fingerprint_image(cover)
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="SemanticAuthor")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+        titles = [
+            ("s-base", "Very Long Doujinshi Title About School Days", 24),
+            ("s-comp", "Very Long Doujinshi Title About School Days 総集編", 24),
+            ("s-seq", "Very Long Doujinshi Title About School Days 续", 24),
+            ("s-spin", "Very Long Doujinshi Title About School Days 番外編", 24),
+            ("s-samp", "Very Long Doujinshi Title About School Days 体験版", 24),
+            ("s-front", "Long Split Tale 前編", 24),
+            ("s-back", "Long Split Tale 後編", 24),
+            ("s-rom1", "Long Split Tale Part I", 24),
+            ("s-rom2", "Long Split Tale Part II", 24),
+        ]
+        works = []
+        for ext_id, title, pages in titles:
+            w = catalog.upsert(
+                author.id,
+                "wnacg",
+                DiscoveredWork(
+                    external_id=ext_id,
+                    title=title,
+                    source_url=f"https://example.test/{ext_id}",
+                    year=2025,
+                    raw_metadata={"page_count": pages},
+                ),
+            )
+            agg_fp = aggregation._upsert_fingerprint(w, author.name)
+            agg_fp.cover_fingerprint = fp
+            works.append(w)
+
+        await aggregation.reaggregate_author(author)
+        group_ids = {w.group_membership.group_id for w in works}
+        assert len(group_ids) == len(titles)
+
+        # Identical core title but 2p excerpt vs 135p anthology must stay separate and suggest.
+        excerpt = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="ex-2p",
+                title="Shared Anthology Work",
+                source_url="https://example.test/ex-2p",
+                raw_metadata={"page_count": 2},
+            ),
+        )
+        anthology = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="ex-135p",
+                title="Shared Anthology Work",
+                source_url="https://example.test/ex-135p",
+                raw_metadata={"page_count": 135},
+            ),
+        )
+        g_ex = await aggregation.assign(excerpt, author)
+        g_an = await aggregation.assign(anthology, author)
+        assert g_ex.id != g_an.id
+        sug = session.scalar(
+            select(MergeSuggestion).where(
+                MergeSuggestion.source_group_id == g_an.id,
+                MergeSuggestion.target_group_id == g_ex.id,
+            )
+        )
+        assert sug is not None
+
+
+async def test_pair_constraint_blocks_auto_remerge_across_cover_and_anchor_drift() -> None:
+    from app.modules.agent_review.repository import AgentReviewRepository
+    from app.modules.catalog.pair_identity import candidate_key
+
+    cover = Image.new("RGB", (300, 420), "#f1e8dc")
+    ImageDraw.Draw(cover).rectangle((40, 60, 260, 340), fill="#882244")
+    fp = fingerprint_image(cover)
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="ConstraintAuthor")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+        w1 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="c-500",
+                title="Distinct Story Alpha",
+                source_url="https://example.test/c500",
+                year=2025,
+                raw_metadata={"page_count": 24},
+            ),
+        )
+        w2 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="c-600",
+                title="Distinct Story Beta",
+                source_url="https://example.test/c600",
+                year=2025,
+                raw_metadata={"page_count": 24},
+            ),
+        )
+        g1 = await aggregation.assign(w1, author)
+        g2 = await aggregation.assign(w2, author)
+        AgentReviewRepository(session).constrain_pair(
+            candidate_key(g1, g2), origin="human_rejection"
+        )
+        # Even if a smaller external_id edition joins g1 and covers are identical, never merge.
+        w1_extra = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="a-001",
+                title="Distinct Story Alpha [汉化]",
+                source_url="https://example.test/a001",
+                year=2025,
+                raw_metadata={"page_count": 24},
+            ),
+        )
+        await aggregation.assign(w1_extra, author)
+        assert w1_extra.group_membership.group_id == g1.id
+
+        w1.fingerprint.cover_fingerprint = fp
+        w2.fingerprint.cover_fingerprint = fp
+        session.flush()
+        await aggregation.reaggregate_author(author)
+        assert w1.group_membership.group_id != w2.group_membership.group_id
+
+
+async def test_aliases_circles_alttitles_context_and_trad_simp_folding() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(
+            name="AuthorMain",
+            aliases=["PenAlias"],
+            circle_names=["CircleStudio"],
+        )
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+
+        w1 = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="nh-ctx",
+                title="[CircleStudio] Ocean Story (Blue Archive)",
+                source_url="https://example.test/nh-ctx",
+                raw_metadata={
+                    "altTitles": ["[PenAlias] 海の物語 (ブルーアーカイブ) [Digital]"]
+                },
+            ),
+        )
+        w2 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="wn-ctx",
+                title="(同人誌) (C105) [PenAlias] 海の物語 (ブルーアーカイブ) [中文]",
+                source_url="https://example.test/wn-ctx",
+            ),
+        )
+        g1 = await aggregation.assign(w1, author)
+        g2 = await aggregation.assign(w2, author)
+        assert g1.id == g2.id
+
+        # Trad/Simp folding (Option A): uncorroborated -> suggest; corroborated -> merge
+        t_only = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="ts-1",
+                title="[CircleStudio] 美麗新世界 [漢化]",
+                source_url="https://example.test/ts1",
+            ),
+        )
+        s_only = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="ts-2",
+                title="[PenAlias] 美丽新世界 [汉化]",
+                source_url="https://example.test/ts2",
+            ),
+        )
+        gt = await aggregation.assign(t_only, author)
+        gs = await aggregation.assign(s_only, author)
+        assert gt.id != gs.id
+        sug = session.scalar(
+            select(MergeSuggestion).where(
+                MergeSuggestion.source_group_id == gs.id,
+                MergeSuggestion.target_group_id == gt.id,
+            )
+        )
+        assert sug is not None and any("繁简" in r for r in sug.reasons)
+
+        # Now provide matching page counts -> auto-merges on reaggregate.
+        t_only.sources[0].raw_metadata = {"page_count": 24}
+        s_only.sources[0].raw_metadata = {"page_count": 24}
+        await aggregation.reaggregate_author(author)
+        assert t_only.group_membership.group_id == s_only.group_membership.group_id
+
+
+async def test_low_entropy_cover_guard_and_top_k_fuzzy_cover_and_order_independence() -> None:
+    solid_white = fingerprint_image(Image.new("RGB", (320, 440), "white"))
+    cover_a = Image.new("RGB", (320, 440), "#f0e0d0")
+    ImageDraw.Draw(cover_a).rectangle((30, 30, 290, 410), fill="#114477")
+    cover_b = Image.new("RGB", (320, 440), "#d0e8f0")
+    ImageDraw.Draw(cover_b).ellipse((40, 80, 280, 360), fill="#aa3322")
+    fp_a = fingerprint_image(cover_a)
+    fp_b = fingerprint_image(cover_b)
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="CoverOrderAuthor")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+
+        # Solid white covers on distinct titles must NOT merge despite 0 Hamming distance.
+        u1 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="low-1",
+                title="Blank Cover Work One",
+                source_url="https://example.test/low1",
+                year=2025,
+                raw_metadata={"page_count": 20},
+            ),
+        )
+        u2 = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="low-2",
+                title="Completely Unrelated Work Two",
+                source_url="https://example.test/low2",
+                year=2025,
+                raw_metadata={"page_count": 20},
+            ),
+        )
+        aggregation._upsert_fingerprint(u1, author.name).cover_fingerprint = solid_white
+        aggregation._upsert_fingerprint(u2, author.name).cover_fingerprint = solid_white
+        g_u1 = await aggregation.assign(u1, author)
+        g_u2 = await aggregation.assign(u2, author)
+        assert g_u1.id != g_u2.id
+
+        # Top-k fuzzy cover: higher-title-score group with mismatched cover must not shadow
+        # second group with >=0.72 title score and matching cover.
+        shadow = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="tk-shadow",
+                title="Summer Vacation Diary",
+                source_url="https://example.test/tk1",
+                year=2025,
+                raw_metadata={"page_count": 24},
+            ),
+        )
+        match = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="tk-match",
+                title="Summer Holiday Journal",
+                source_url="https://example.test/tk2",
+                year=2025,
+                raw_metadata={"page_count": 24},
+            ),
+        )
+        incoming = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="tk-in",
+                title="Summer Vacation Journal",
+                source_url="https://example.test/tk3",
+                year=2025,
+                raw_metadata={"page_count": 24},
+            ),
+        )
+        aggregation._upsert_fingerprint(shadow, author.name).cover_fingerprint = fp_a
+        aggregation._upsert_fingerprint(match, author.name).cover_fingerprint = fp_b
+        aggregation._upsert_fingerprint(incoming, author.name).cover_fingerprint = fp_b
+        g_shadow = await aggregation.assign(shadow, author)
+        g_match = await aggregation.assign(match, author)
+        g_in = await aggregation.assign(incoming, author)
+        assert g_in.id == g_match.id
+        assert g_in.id != g_shadow.id
+
+
+async def test_reconcile_matches_initial_assign_order_and_manual_split_non_shadowing() -> None:
+    cover = Image.new("RGB", (320, 440), "#f3e5d8")
+    ImageDraw.Draw(cover).rectangle((30, 40, 290, 400), fill="#264b77")
+    fp = fingerprint_image(cover)
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="OrderAuthor")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        aggregation = AggregationService(session)
+
+        # Ingest without cover first, then backfill cover + reconcile (order independence).
+        w1 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="ord-1",
+                title="Moonlit Summer Holiday",
+                source_url="https://example.test/ord1",
+                year=2025,
+                raw_metadata={"page_count": 26},
+            ),
+        )
+        w2 = catalog.upsert(
+            author.id,
+            "nhentai",
+            DiscoveredWork(
+                external_id="ord-2",
+                title="Moonlit Summer Break",
+                source_url="https://example.test/ord2",
+                year=2025,
+                raw_metadata={"page_count": 26},
+            ),
+        )
+        g1 = aggregation.assign_without_cover(w1, author)
+        g2 = aggregation.assign_without_cover(w2, author)
+        assert g1.id != g2.id
+
+        w1.fingerprint.cover_fingerprint = fp
+        w2.fingerprint.cover_fingerprint = fp
+        session.flush()
+        await aggregation.reaggregate_author(author)
+        assert w1.group_membership.group_id == w2.group_membership.group_id
+
+        # Splitting a member into a manual group must not shadow another auto group target.
+        w3 = catalog.upsert(
+            author.id,
+            "local",
+            DiscoveredWork(
+                external_id="ord-3",
+                title="Moonlit Summer Holiday",
+                source_url="https://example.test/ord3",
+                year=2025,
+                raw_metadata={"page_count": 26},
+            ),
+        )
+        g_split = aggregation.split_member(w1.group_membership.group, w2.id)
+        assert g_split.members[0].is_manual is True
+        g3 = await aggregation.assign(w3, author)
+        # w3 must be able to reconcile with non-manual w1 group even if g_split shares title.
+        await aggregation.reaggregate_author(author)
+        assert g3.id == w1.group_membership.group_id or w3.group_membership.group_id == (
+            w1.group_membership.group_id
+        )
+        assert w2.group_membership.group_id == g_split.id
+
+
+def test_prune_invalid_suggestions_and_backfill_batching() -> None:
+    from app.modules.catalog.aggregation import backfill_work_groups, prune_invalid_suggestions
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        author = Author(name="PruneAuthor")
+        session.add(author)
+        session.flush()
+        catalog = CatalogRepository(session)
+        w1 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="bf-1",
+                title="Backfill Comic 第1話",
+                source_url="https://example.test/bf1",
+            ),
+        )
+        w2 = catalog.upsert(
+            author.id,
+            "wnacg",
+            DiscoveredWork(
+                external_id="bf-2",
+                title="Backfill Comic 第2話",
+                source_url="https://example.test/bf2",
+            ),
+        )
+        assert backfill_work_groups(session) == 2
+        g1 = w1.group_membership.group
+        g2 = w2.group_membership.group
+        assert g1.id != g2.id
+
+        session.add(
+            MergeSuggestion(
+                source_group_id=g1.id,
+                target_group_id=g2.id,
+                confidence=0.85,
+                reasons=["legacy chapter candidate"],
+            )
+        )
+        session.commit()
+
+        assert prune_invalid_suggestions(session) == 1
+        assert list(session.scalars(select(MergeSuggestion))) == []

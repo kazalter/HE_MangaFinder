@@ -393,12 +393,12 @@ async def test_invalidation_triggers_alias_split_constraint_exclusion_undo_cover
         # 7. Algorithm version upgrade triggers invalidation.
         await service.discover_author(author.id)
         assert not needs_author_aggregation(session, author.id)
-        monkeypatch.setattr(invalidation, "AGGREGATION_ALGORITHM_VERSION", "agg-v5")
+        monkeypatch.setattr(invalidation, "AGGREGATION_ALGORITHM_VERSION", "agg-v99")
         assert needs_author_aggregation(session, author.id)
         await service.discover_author(author.id)
         state = session.get(AuthorAggregationState, author.id)
         assert state is not None
-        assert state.algorithm_version == "agg-v5"
+        assert state.algorithm_version == "agg-v99"
         assert not needs_author_aggregation(session, author.id)
 
 
